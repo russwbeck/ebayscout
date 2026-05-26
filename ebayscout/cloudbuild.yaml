@@ -28,16 +28,16 @@ steps:
       - --all-tags
       - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout
 
-  # Update the Cloud Run Job to use the new image
+  # Deploy to Cloud Run Service
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: gcloud
     args:
       - run
-      - jobs
-      - update
+      - deploy
       - ebay-scout
       - --image=us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:$COMMIT_SHA
       - --region=us-east1
+      - --no-traffic   # don't shift traffic until image passes health check
 
 images:
   - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout

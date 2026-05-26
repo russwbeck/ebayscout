@@ -1,6 +1,5 @@
-# eBay Button Scout — Cloud Run Job
+# eBay Button Scout — Cloud Run Service
 # Build context: repo root (buybot/)
-# CMD: python run.py  (runs ebayscout/run.py → ebayscout/job.py)
 
 FROM python:3.11-slim
 
@@ -13,15 +12,11 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Install Python deps
 COPY ebayscout/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the ebayscout package
 COPY ebayscout/ ./ebayscout/
 
-# Entry point
-CMD ["python", "ebayscout/run.py"]
+CMD ["gunicorn", "--config", "ebayscout/gunicorn.conf.py", "ebayscout.main:flask_app"]
