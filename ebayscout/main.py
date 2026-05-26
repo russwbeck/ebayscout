@@ -29,6 +29,7 @@ from . import clip_matcher
 from . import sheets_client
 from . import image_proc
 from . import notifier
+from . import etsy_client
 from .utils import parse_price_source, format_manual_result
 
 # ---------------------------------------------------------------------------
@@ -356,30 +357,63 @@ def health():
 
 def _run_daily_scan() -> None:
     """
-    Runs the full eBay scan pipeline.  Mirrors job.py but uses the already-
-    loaded buy_rules and clip_matcher state rather than re-initialising.
+    Runs the full eBay + Etsy scan pipeline.  Mirrors job.py but uses the
+    already-loaded buy_rules and clip_matcher state rather than re-initialising.
     """
     from . import ebay_client, seen_items as seen_store
 
-    print(">>> SCAN: Daily eBay scan starting...", flush=True)
+    print(">>> SCAN: Daily scan starting (eBay + Etsy)...", flush=True)
 
+    # eBay listings
     try:
         ebay_app_id = _get_secret("EBAY_APP_ID")
     except Exception as exc:
         print(f"!!! SCAN: EBAY_APP_ID not available: {exc}", flush=True)
-        return
+        ebay_app_id = None
 
-    seen  = seen_store.load_seen()
+    seen = seen_store.load_seen()
 
+    all_listings: list[dict] = []
+
+    if ebay_app_id:
+        try:
+            ebay_listings = ebay_client.find_all_listings(
+                app_id=ebay_app_id,
+                queries=config.EBAY_SEARCH_QUERIES,
+                excluded_sellers=config.EXCLUDED_SELLERS,
+                max_results=config.EBAY_MAX_RESULTS,
+            )
+            all_listings.extend(ebay_listings)
+            print(f">>> SCAN: eBay returned {len(ebay_listings)} listings.", flush=True)
+        except Exception as exc:
+            print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
+    else:
+        print(">>> SCAN: Skipping eBay (no EBAY_APP_ID).", flush=True)
+
+    # Etsy listings
     try:
-        all_listings = ebay_client.find_all_listings(
-            app_id=ebay_app_id,
-            queries=config.EBAY_SEARCH_QUERIES,
-            excluded_sellers=config.EXCLUDED_SELLERS,
-            max_results=config.EBAY_MAX_RESULTS,
-        )
+        etsy_api_key = _get_secret("ETSY_API_KEY")
     except Exception as exc:
-        print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
+        print(f"!!! SCAN: ETSY_API_KEY not available — skipping Etsy: {exc}", flush=True)
+        etsy_api_key = None
+
+    if etsy_api_key:
+        try:
+            etsy_listings = etsy_client.find_all_listings(
+                api_key=etsy_api_key,
+                queries=config.EBAY_SEARCH_QUERIES,
+                excluded_sellers=config.ETSY_EXCLUDED_SELLERS,
+                max_results=config.EBAY_MAX_RESULTS,
+            )
+            all_listings.extend(etsy_listings)
+            print(f">>> SCAN: Etsy returned {len(etsy_listings)} listings.", flush=True)
+        except Exception as exc:
+            print(f"!!! SCAN: Etsy query failed: {exc}", flush=True)
+    else:
+        print(">>> SCAN: Skipping Etsy (no ETSY_API_KEY).", flush=True)
+
+    if not all_listings:
+        print(">>> SCAN: No listings retrieved from any source — exiting.", flush=True)
         return
 
     new_listings = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
@@ -390,9 +424,16 @@ def _run_daily_scan() -> None:
         asking  = listing.get("current_price", 0.0)
 
         try:
-            picture_urls = ebay_client.get_item_pictures(ebay_app_id, item_id)
-            if not picture_urls and listing.get("gallery_url"):
-                picture_urls = [listing["gallery_url"]]
+            # Etsy listings have the full image URL in gallery_url already;
+            # eBay listings need a separate Shopping API call for full-size images.
+            if item_id.startswith("etsy_"):
+                picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
+            elif ebay_app_id:
+                picture_urls = ebay_client.get_item_pictures(ebay_app_id, item_id)
+                if not picture_urls and listing.get("gallery_url"):
+                    picture_urls = [listing["gallery_url"]]
+            else:
+                picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
 
             matched: dict[tuple, dict] = {}
             unmatched_count = 0

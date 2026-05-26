@@ -25,11 +25,14 @@ EBAY_SHOPPING_URL = "https://open.api.ebay.com/shopping"
 EBAY_MAX_RESULTS  = 100          # per query; eBay page size limit is 100
 MAX_PHOTOS_PER_LISTING = 1       # only process the first photo per listing
 
-# --- Sellers to exclude (exact eBay username, case-insensitive match) ---
+# --- eBay sellers to exclude (exact username, case-insensitive) ---
 EXCLUDED_SELLERS: list[str] = [
     "kling24toys",
     "gertb2002",
 ]
+
+# --- Etsy sellers to exclude (shop_name, case-insensitive) ---
+ETSY_EXCLUDED_SELLERS: list[str] = []
 
 # --- Multi-query search strategy ---
 # "Central Counties Bank" runs standalone (no button-type suffix) because it is a

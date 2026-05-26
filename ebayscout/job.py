@@ -25,6 +25,7 @@ from google.cloud import secretmanager
 
 from . import config
 from . import ebay_client
+from . import etsy_client
 from . import seen_items as seen_store
 from . import sheets_client
 from . import clip_matcher
@@ -55,7 +56,6 @@ def main() -> int:
     # ------------------------------------------------------------------
     print(">>> EBAYSCOUT: Fetching secrets...", flush=True)
     try:
-        ebay_app_id    = _get_secret("EBAY_APP_ID")
         slack_token    = _get_secret("EBAY_BOT_TOKEN")
         slack_channel  = _get_secret("CHANNEL_ID_EBAY")
         sheets_json    = _get_secret("GOOGLE_SHEETS_JSON")
@@ -63,6 +63,23 @@ def main() -> int:
     except Exception as exc:
         print(f"!!! EBAYSCOUT: Failed to fetch secrets: {exc}", flush=True)
         traceback.print_exc()
+        return 1
+
+    # Optional secrets — log warning but continue if unavailable
+    try:
+        ebay_app_id = _get_secret("EBAY_APP_ID")
+    except Exception as exc:
+        print(f"!!! EBAYSCOUT: EBAY_APP_ID not available — skipping eBay: {exc}", flush=True)
+        ebay_app_id = None
+
+    try:
+        etsy_api_key = _get_secret("ETSY_API_KEY")
+    except Exception as exc:
+        print(f"!!! EBAYSCOUT: ETSY_API_KEY not available — skipping Etsy: {exc}", flush=True)
+        etsy_api_key = None
+
+    if not ebay_app_id and not etsy_api_key:
+        print("!!! EBAYSCOUT: No API keys available (EBAY_APP_ID, ETSY_API_KEY) — nothing to scan.", flush=True)
         return 1
 
     if config.DRY_RUN:
@@ -100,24 +117,47 @@ def main() -> int:
         return 1
 
     # ------------------------------------------------------------------
-    # 5. Find new eBay listings
+    # 5. Find new listings (eBay + Etsy)
     # ------------------------------------------------------------------
-    print(">>> EBAYSCOUT: Querying eBay...", flush=True)
-    try:
-        all_listings = ebay_client.find_all_listings(
-            app_id=ebay_app_id,
-            queries=config.EBAY_SEARCH_QUERIES,
-            excluded_sellers=config.EXCLUDED_SELLERS,
-            max_results=config.EBAY_MAX_RESULTS,
-        )
-    except Exception as exc:
-        print(f"!!! EBAYSCOUT: eBay find_all_listings failed: {exc}", flush=True)
-        traceback.print_exc()
-        return 1
+    all_listings: list[dict] = []
+
+    if ebay_app_id:
+        print(">>> EBAYSCOUT: Querying eBay...", flush=True)
+        try:
+            ebay_listings = ebay_client.find_all_listings(
+                app_id=ebay_app_id,
+                queries=config.EBAY_SEARCH_QUERIES,
+                excluded_sellers=config.EXCLUDED_SELLERS,
+                max_results=config.EBAY_MAX_RESULTS,
+            )
+            all_listings.extend(ebay_listings)
+            print(f">>> EBAYSCOUT: eBay returned {len(ebay_listings)} listings.", flush=True)
+        except Exception as exc:
+            print(f"!!! EBAYSCOUT: eBay find_all_listings failed: {exc}", flush=True)
+            traceback.print_exc()
+    else:
+        print(">>> EBAYSCOUT: Skipping eBay (no EBAY_APP_ID).", flush=True)
+
+    if etsy_api_key:
+        print(">>> EBAYSCOUT: Querying Etsy...", flush=True)
+        try:
+            etsy_listings = etsy_client.find_all_listings(
+                api_key=etsy_api_key,
+                queries=config.EBAY_SEARCH_QUERIES,
+                excluded_sellers=config.ETSY_EXCLUDED_SELLERS,
+                max_results=config.EBAY_MAX_RESULTS,
+            )
+            all_listings.extend(etsy_listings)
+            print(f">>> EBAYSCOUT: Etsy returned {len(etsy_listings)} listings.", flush=True)
+        except Exception as exc:
+            print(f"!!! EBAYSCOUT: Etsy find_all_listings failed: {exc}", flush=True)
+            traceback.print_exc()
+    else:
+        print(">>> EBAYSCOUT: Skipping Etsy (no ETSY_API_KEY).", flush=True)
 
     new_listings = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
     print(
-        f">>> EBAYSCOUT: {len(all_listings)} total listings, "
+        f">>> EBAYSCOUT: {len(all_listings)} total listings across all sources, "
         f"{len(new_listings)} new (not yet seen).",
         flush=True,
     )
@@ -139,9 +179,16 @@ def main() -> int:
 
         try:
             # a. Get full-size picture URLs
-            picture_urls = ebay_client.get_item_pictures(ebay_app_id, item_id)
-            if not picture_urls and listing.get("gallery_url"):
-                picture_urls = [listing["gallery_url"]]
+            # Etsy: full image already in gallery_url (url_fullxfull from API response)
+            # eBay: fetch via Shopping API; fall back to gallery_url thumbnail
+            if item_id.startswith("etsy_"):
+                picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
+            elif ebay_app_id:
+                picture_urls = ebay_client.get_item_pictures(ebay_app_id, item_id)
+                if not picture_urls and listing.get("gallery_url"):
+                    picture_urls = [listing["gallery_url"]]
+            else:
+                picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
 
             # b–c. Detect buttons and match across all photos
             all_match_keys: dict[tuple, dict] = {}   # (year, slogan) → best match dict
