@@ -28,6 +28,7 @@ MAX_PHOTOS_PER_LISTING = 1       # only process the first photo per listing
 # --- Sellers to exclude (exact eBay username, case-insensitive match) ---
 EXCLUDED_SELLERS: list[str] = [
     "kling24toys",
+    "gertb2002",
 ]
 
 # --- Multi-query search strategy ---
