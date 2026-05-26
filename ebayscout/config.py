@@ -23,7 +23,7 @@ SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
 EBAY_FINDING_URL  = "https://svcs.ebay.com/services/search/FindingService/v1"
 EBAY_SHOPPING_URL = "https://open.api.ebay.com/shopping"
 EBAY_MAX_RESULTS  = 100          # per query; eBay page size limit is 100
-MAX_PHOTOS_PER_LISTING = 8       # cap photos processed per listing
+MAX_PHOTOS_PER_LISTING = 1       # only process the first photo per listing
 
 # --- Sellers to exclude (exact eBay username, case-insensitive match) ---
 EXCLUDED_SELLERS: list[str] = [
