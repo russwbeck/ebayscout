@@ -1,0 +1,1 @@
+# ebayscout package

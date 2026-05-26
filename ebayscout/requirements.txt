@@ -1,0 +1,41 @@
+# eBay Button Scout — Python dependencies
+# No Flask, gunicorn, or slack-bolt needed (batch job, not a server).
+# PyTorch CPU-only to keep the image small.
+
+--index-url https://download.pytorch.org/whl/cpu
+
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
+
+--extra-index-url https://pypi.org/simple
+
+# CLIP (from source — same as buybot and buttonmatcher)
+clip @ git+https://github.com/openai/CLIP.git
+
+# Computer vision
+opencv-python-headless==4.11.0.86
+pillow==12.2.0
+numpy==1.26.4
+
+# GCP clients
+google-cloud-secret-manager==2.27.0
+google-cloud-storage==3.10.1
+google-auth==2.50.0
+
+# Google Sheets
+gspread==6.2.1
+
+# Slack (WebClient only — no Bolt)
+slack-sdk==3.41.0
+
+# HTTP
+requests==2.33.1
+certifi==2026.4.22
+charset-normalizer==3.4.7
+idna==3.13
+urllib3==2.6.3
+
+# Misc
+ftfy==6.3.1
+regex==2026.4.4
+tqdm==4.67.3

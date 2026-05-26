@@ -1,0 +1,46 @@
+# Cloud Build trigger for the ebayscout Cloud Run Job image.
+# This is separate from the buybot service trigger so they don't interfere.
+#
+# Configure in GCP Console → Cloud Build → Triggers:
+#   - Name: ebayscout-job
+#   - Repo: russwbeck/buybot
+#   - Branch: main
+#   - Included files filter: ebayscout/**
+#   - Config: ebayscout/cloudbuild.yaml
+
+steps:
+  # Build the Docker image
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - build
+      - -f
+      - ebayscout/Dockerfile
+      - -t
+      - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:$COMMIT_SHA
+      - -t
+      - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:latest
+      - .   # build context is repo root
+
+  # Push both tags
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - push
+      - --all-tags
+      - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout
+
+  # Update the Cloud Run Job to use the new image
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - update
+      - ebay-scout
+      - --image=us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:$COMMIT_SHA
+      - --region=us-east1
+
+images:
+  - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout
+
+options:
+  logging: CLOUD_LOGGING_ONLY
