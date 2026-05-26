@@ -56,7 +56,8 @@ def main() -> int:
     print(">>> EBAYSCOUT: Fetching secrets...", flush=True)
     try:
         ebay_app_id    = _get_secret("EBAY_APP_ID")
-        slack_token    = _get_secret("SLACK_SCOUT_TOKEN")
+        slack_token    = _get_secret("EBAY_BOT_TOKEN")
+        slack_channel  = _get_secret("CHANNEL_ID_EBAY")
         sheets_json    = _get_secret("GOOGLE_SHEETS_JSON")
         spreadsheet_id = _get_secret("SPREADSHEET_ID")
     except Exception as exc:
@@ -64,9 +65,9 @@ def main() -> int:
         traceback.print_exc()
         return 1
 
-    slack_channel = (
-        "#ebay-scout-test" if config.DRY_RUN else config.SLACK_SCOUT_CHANNEL
-    )
+    if config.DRY_RUN:
+        slack_channel = slack_channel + "-test"   # post to a test channel in dry-run mode
+
     print(
         f">>> EBAYSCOUT: Slack channel: {slack_channel} "
         f"{'(DRY RUN)' if config.DRY_RUN else ''}",

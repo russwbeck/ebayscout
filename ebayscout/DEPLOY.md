@@ -28,13 +28,18 @@ Estimated cost: **~$1/month** (Cloud Run Job + Cloud Scheduler).
 
 ### 3. GCP Secrets (add to existing Secret Manager)
 ```bash
-# New secrets
-echo -n "YOUR_EBAY_APP_ID"      | gcloud secrets create EBAY_APP_ID    --data-file=-
-echo -n "xoxb-YOUR-SLACK-TOKEN" | gcloud secrets create SLACK_SCOUT_TOKEN --data-file=-
+# New secrets — EBAY_BOT_TOKEN, SIGNING_SECRET_ES, CHANNEL_ID_EBAY
+# already created via the GCP Console.
+# Once eBay API approval arrives, add the App ID:
+echo -n "YOUR_EBAY_APP_ID" | gcloud secrets create EBAY_APP_ID --data-file=-
 
 # The following already exist from buybot — no action needed:
 # GOOGLE_SHEETS_JSON, SPREADSHEET_ID
 ```
+
+> **Note:** `SIGNING_SECRET_ES` is not used by the batch job (it's only
+> needed for a Slack server that receives and verifies incoming events).
+> It's safe to leave it in Secret Manager for future use.
 
 ### 4. Service Account
 ```bash
@@ -50,7 +55,7 @@ gsutil iam ch serviceAccount:${SA}:objectAdmin \
   gs://60d488c5-9c8e-4acc-aac-button-data
 
 # Secret Manager access
-for SECRET in EBAY_APP_ID SLACK_SCOUT_TOKEN GOOGLE_SHEETS_JSON SPREADSHEET_ID; do
+for SECRET in EBAY_APP_ID EBAY_BOT_TOKEN CHANNEL_ID_EBAY GOOGLE_SHEETS_JSON SPREADSHEET_ID; do
   gcloud secrets add-iam-policy-binding ${SECRET} \
     --member="serviceAccount:${SA}" \
     --role="roles/secretmanager.secretAccessor"

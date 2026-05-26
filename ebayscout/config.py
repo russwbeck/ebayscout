@@ -46,9 +46,6 @@ EBAY_SEARCH_QUERIES: list[str] = (
 #   "Nittany Lions button", "Nittany Lions pin", "Nittany Lions badge", "Nittany Lions pinback",
 #   "Central Counties Bank"
 
-# --- Slack ---
-SLACK_SCOUT_CHANNEL = "#ebay-scout"
-
 # --- Dry-run mode (set True for smoke testing) ---
 # When True: skips save_seen() and sends Slack to #ebay-scout-test instead.
 DRY_RUN = False
