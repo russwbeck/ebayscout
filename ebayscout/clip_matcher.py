@@ -103,6 +103,10 @@ def match_crop(pil_image: Image.Image) -> dict | None:
          image_score: float, slogan_score: float}
 
     Returns None if best overall score < CONFIDENCE_THRESHOLD.
+
+    Year candidate selection uses a combined image+slogan score so that strong
+    text evidence can promote the correct year even when image similarity alone
+    is ambiguous between nearby years.
     """
     if not _initialized:
         raise RuntimeError("clip_matcher.init() must be called before match_crop().")
@@ -118,27 +122,44 @@ def match_crop(pil_image: Image.Image) -> dict | None:
     # Text similarities against all text embeddings
     text_sims  = (vec @ _text_features.T).cpu().numpy()[0] # [M]
 
-    # Build year → best image score map
-    year_scores: dict[int, float] = {}
+    # Build year → best image score map from reference vectors
+    year_image_scores: dict[int, float] = {}
     for i, label in enumerate(_ref_labels):
-        # Labels are "YEAR SLOGAN" strings; extract first token as year
         try:
             year = int(label.split()[0])
         except (ValueError, IndexError):
             continue
         score = float(image_sims[i])
-        if year not in year_scores or score > year_scores[year]:
-            year_scores[year] = score
+        if year not in year_image_scores or score > year_image_scores[year]:
+            year_image_scores[year] = score
 
-    # Take top 5 years by image score as candidates
-    top_years = sorted(year_scores.items(), key=lambda x: x[1], reverse=True)[:5]
-    top_year_scores = {year: score for year, score in top_years}
-    allowed_years   = set(top_year_scores.keys())
+    # Build year → best raw text similarity (before normalisation)
+    # This lets slogan evidence vote on which year is the right candidate.
+    years_arr = np.array(_text_years, dtype=np.int32)
+    year_text_best: dict[int, float] = {}
+    for year in year_image_scores:
+        mask = years_arr == year
+        year_text_best[year] = float(text_sims[mask].max()) if mask.any() else 0.0
+
+    # Rank candidate years by combined image+slogan score.
+    # Using the same ALPHA/BETA weights as the final formula so the year that
+    # would win the overall comparison is also the one that gets promoted here.
+    year_combined: dict[int, float] = {
+        year: (config.ALPHA * img_score)
+              + (config.BETA * _normalize_slogan(year_text_best.get(year, 0.0)))
+        for year, img_score in year_image_scores.items()
+    }
+
+    # Take top 5 years by combined score (not image score alone)
+    top_years = sorted(year_combined.items(), key=lambda x: x[1], reverse=True)[:5]
+    # Pass the original image scores to _score_slogans — it does its own combination
+    top_year_image_scores = {year: year_image_scores[year] for year, _ in top_years}
+    allowed_years = set(top_year_image_scores.keys())
 
     # Score slogans for each candidate year
     results = _score_slogans(
         text_sims=np.array(text_sims, dtype=np.float32),
-        year_scores=top_year_scores,
+        year_scores=top_year_image_scores,
         allowed_years=allowed_years,
     )
 
