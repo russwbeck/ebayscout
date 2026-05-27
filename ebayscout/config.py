@@ -7,7 +7,7 @@ Edit EXCLUDED_SELLERS and SLACK_SCOUT_CHANNEL before first deploy.
 
 # --- GCP ---
 BUCKET_NAME    = "60d488c5-9c8e-4acc-aac-button-data"
-PROJECT_NUMBER = "5194730759"
+PROJECT_NUMBER = "404960106109"
 
 # --- CLIP scoring (match buttonmatcher's constants) ---
 CONFIDENCE_THRESHOLD      = 0.72   # above → confident match, eligible for alerts
