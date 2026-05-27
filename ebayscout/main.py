@@ -541,6 +541,7 @@ def _run_daily_scan() -> None:
     for listing in new_listings:
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
+        title   = listing.get("title", "?")
 
         try:
             if item_id.startswith("etsy_"):
@@ -583,13 +584,25 @@ def _run_daily_scan() -> None:
 
             if photos_processed == 0 or best_score_seen < config.REJECTION_THRESHOLD:
                 stat_rejected += 1
+                # Greppable title log for tuning EXCLUDED_KEYWORDS over time:
+                # apparel/non-buttons that slipped past the keyword filter land
+                # here. Filter Cloud Logging for "TITLE: [rejected".
+                print(f">>> TITLE: [rejected {best_score_seen:.2f}] {title}", flush=True)
                 seen_store.mark_seen(item_id, seen)
                 continue
 
             if not matched:
                 stat_low_confidence += 1
+                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] {title}", flush=True)
                 seen_store.mark_seen(item_id, seen)
                 continue
+
+            best_match = max(matched.values(), key=lambda m: m["overall"])
+            print(
+                f">>> TITLE: [match {best_match['overall']:.2f} "
+                f"{best_match['year']} {best_match['slogan']}] {title}",
+                flush=True,
+            )
 
             enriched_matches = []
             for (year, slogan), match in matched.items():
