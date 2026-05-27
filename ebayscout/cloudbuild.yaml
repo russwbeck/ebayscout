@@ -37,6 +37,8 @@ steps:
       - ebay-scout
       - --image=us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:$COMMIT_SHA
       - --region=us-east1
+      - --memory=4Gi
+      - --cpu=2
       - --traffic=LATEST
 
 images:
