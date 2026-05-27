@@ -131,6 +131,51 @@ def send_needed_alert(
     _post_message(slack_token, channel, full_text)
 
 
+def send_scan_summary(
+    slack_token: str,
+    channel: str,
+    alerted: int,
+    low_confidence: int,
+    rejected: int,
+    ebay_count: int,
+    etsy_count: int,
+) -> None:
+    """
+    Post a single end-of-scan summary message.
+
+    alerted:        listings that triggered at least one alert
+    low_confidence: listings where best crop score was between
+                    REJECTION_THRESHOLD and CONFIDENCE_THRESHOLD
+    rejected:       listings where every crop scored below REJECTION_THRESHOLD
+    ebay_count:     new eBay listings processed
+    etsy_count:     new Etsy listings processed
+    """
+    from datetime import date
+    today      = date.today().strftime("%a %b %-d")
+    total      = alerted + low_confidence + rejected
+    source_str = f"eBay: {ebay_count}"
+    if etsy_count:
+        source_str += f" · Etsy: {etsy_count}"
+
+    lines = [f"🔍 *Daily scan — {today}*", f"📦 {total} new listings  ({source_str})"]
+
+    if alerted:
+        lines.append(f"🔔 {alerted} alert{'s' if alerted != 1 else ''} sent")
+    else:
+        lines.append("🔔 No alerts — nothing undervalued or needed")
+
+    if low_confidence:
+        lines.append(
+            f"🟡 {low_confidence} possible bank button{'s' if low_confidence != 1 else ''}"
+            f"  (45–72% confidence — no alert)"
+        )
+
+    if rejected:
+        lines.append(f"🗑️ {rejected} not bank buttons  (<45% confidence)")
+
+    _post_message(slack_token, channel, "\n".join(lines))
+
+
 def send_warning(slack_token: str, channel: str, message: str) -> None:
     """Post a plain-text operational warning to the scout channel."""
     _post_message(slack_token, channel, f"⚠️ *ebayscout warning*: {message}")
