@@ -1,12 +1,8 @@
-# Cloud Build trigger for the ebayscout Cloud Run Job image.
+# Cloud Build trigger for the ebayscout Cloud Run service image.
 # This is separate from the buybot service trigger so they don't interfere.
 #
-# Configure in GCP Console → Cloud Build → Triggers:
-#   - Name: ebayscout-job
-#   - Repo: russwbeck/buybot
-#   - Branch: main
-#   - Included files filter: ebayscout/**
-#   - Config: ebayscout/cloudbuild.yaml
+# Trigger is configured to watch: main branch, ebayscout/** file filter
+# Console: Cloud Build → Triggers → ebayscout-job → Edit → Branch: ^main$
 
 steps:
   # Build the Docker image
