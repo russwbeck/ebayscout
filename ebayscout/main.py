@@ -426,23 +426,11 @@ def ebay_account_deletion():
         return jsonify({"challengeResponse": challenge_response})
 
     # ------------------------------------------------------------------ POST
-    # Account deletion notification — acknowledge immediately, then log.
-    # ebayscout does not persist eBay user personal data, so no deletion is
-    # needed.  We log the userId for audit purposes only.
-    try:
-        payload  = request.get_json(silent=True) or {}
-        notif    = payload.get("notification", {})
-        data     = notif.get("data", {})
-        user_id  = data.get("userId", "unknown")
-        notif_id = notif.get("notificationId", "unknown")
-        print(
-            f">>> EBAY DELETION: Notification received — "
-            f"notificationId={notif_id} userId={user_id}",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"!!! EBAY DELETION: Error parsing notification body: {exc}", flush=True)
-
+    # Account deletion notification. ebayscout stores no eBay user personal
+    # data (seen_items.json holds only public listing IDs), so there is
+    # nothing to delete — just acknowledge with 200. We intentionally do not
+    # log these: eBay sends a high, constant volume and the lines drown out
+    # the scan logs.
     return "", 200
 
 
