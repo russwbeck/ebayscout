@@ -29,10 +29,15 @@ PENALTY_MULTIPLIER        = 0.7
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
 
-# --- eBay API ---
-EBAY_FINDING_URL  = "https://svcs.ebay.com/services/search/FindingService/v1"
-EBAY_SHOPPING_URL = "https://open.api.ebay.com/shopping"
-EBAY_MAX_RESULTS  = 100          # per query; eBay page size limit is 100
+# --- eBay Browse API ---
+# Replaces the Finding + Shopping APIs, both decommissioned by eBay 2025-02-05.
+# Browse requires an OAuth application token (client-credentials grant) built
+# from the App ID (client id) + Cert ID (client secret).
+EBAY_OAUTH_URL         = "https://api.ebay.com/identity/v1/oauth2/token"
+EBAY_OAUTH_SCOPE       = "https://api.ebay.com/oauth/api_scope"
+EBAY_BROWSE_SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+EBAY_BROWSE_ITEM_URL   = "https://api.ebay.com/buy/browse/v1/item"
+EBAY_MAX_RESULTS  = 100          # per query; Browse page size limit is 200
 MAX_PHOTOS_PER_LISTING = 1       # only process the first photo per listing
 
 # --- eBay sellers to exclude (exact username, case-insensitive) ---
@@ -81,5 +86,6 @@ EBAY_SEARCH_QUERIES: list[str] = (
 #   "Central Counties Bank"
 
 # --- Dry-run mode (set True for smoke testing) ---
-# When True: skips save_seen() and sends Slack to #ebay-scout-test instead.
+# When True: the scan runs end-to-end but posts no Slack messages and does
+# not write seen_items.json — it logs "[DRY RUN]" lines instead.
 DRY_RUN = False

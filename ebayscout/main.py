@@ -452,28 +452,31 @@ def ebay_account_deletion():
 
 def _run_daily_scan() -> None:
     """
-    Runs the full eBay + Etsy scan pipeline.  Mirrors job.py but uses the
-    already-loaded buy_rules and clip_matcher state rather than re-initialising.
+    Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
+    buy_rules and clip_matcher state rather than re-initialising.
     """
     from . import ebay_client, seen_items as seen_store
 
     print(">>> SCAN: Daily scan starting (eBay + Etsy)...", flush=True)
 
-    # eBay listings
+    # eBay credentials — Browse API needs both the App ID (client id) and
+    # the Cert ID (client secret) for the client-credentials OAuth grant.
     try:
-        ebay_app_id = _get_secret("EBAY_APP_ID")
+        ebay_app_id  = _get_secret("EBAY_APP_ID")
+        ebay_cert_id = _get_secret("EBAY_CERT_ID")
     except Exception as exc:
-        print(f"!!! SCAN: EBAY_APP_ID not available: {exc}", flush=True)
-        ebay_app_id = None
+        print(f"!!! SCAN: eBay credentials not available — skipping eBay: {exc}", flush=True)
+        ebay_app_id = ebay_cert_id = None
 
     seen = seen_store.load_seen()
 
     all_listings: list[dict] = []
 
-    if ebay_app_id:
+    if ebay_app_id and ebay_cert_id:
         try:
             ebay_listings = ebay_client.find_all_listings(
-                app_id=ebay_app_id,
+                client_id=ebay_app_id,
+                client_secret=ebay_cert_id,
                 queries=config.EBAY_SEARCH_QUERIES,
                 excluded_sellers=config.EXCLUDED_SELLERS,
                 max_results=config.EBAY_MAX_RESULTS,
@@ -483,7 +486,7 @@ def _run_daily_scan() -> None:
         except Exception as exc:
             print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
     else:
-        print(">>> SCAN: Skipping eBay (no EBAY_APP_ID).", flush=True)
+        print(">>> SCAN: Skipping eBay (no EBAY_APP_ID / EBAY_CERT_ID).", flush=True)
 
     # Etsy listings
     try:
@@ -530,8 +533,8 @@ def _run_daily_scan() -> None:
         try:
             if item_id.startswith("etsy_"):
                 picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
-            elif ebay_app_id:
-                picture_urls = ebay_client.get_item_pictures(ebay_app_id, item_id)
+            elif ebay_app_id and ebay_cert_id:
+                picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
                 if not picture_urls and listing.get("gallery_url"):
                     picture_urls = [listing["gallery_url"]]
             else:
@@ -592,27 +595,33 @@ def _run_daily_scan() -> None:
             listing_alerted = False
 
             if margin > 0:
-                notifier.send_undervalued_alert(
-                    slack_token=_slack_token,
-                    channel=_channel_id,
-                    listing=listing,
-                    matches=enriched_matches,
-                    lot_value=lot_value,
-                    asking_price=asking,
-                    margin=margin,
-                    unmatched_count=0,
-                )
+                if config.DRY_RUN:
+                    print(f"    [DRY RUN] Would post undervalued alert for {item_id}", flush=True)
+                else:
+                    notifier.send_undervalued_alert(
+                        slack_token=_slack_token,
+                        channel=_channel_id,
+                        listing=listing,
+                        matches=enriched_matches,
+                        lot_value=lot_value,
+                        asking_price=asking,
+                        margin=margin,
+                        unmatched_count=0,
+                    )
                 listing_alerted = True
 
             if needed_found:
-                notifier.send_needed_alert(
-                    slack_token=_slack_token,
-                    channel=_channel_id,
-                    listing=listing,
-                    needed_buttons=needed_found,
-                    asking_price=asking,
-                    lot_value=lot_value,
-                )
+                if config.DRY_RUN:
+                    print(f"    [DRY RUN] Would post needed-buttons alert for {item_id}", flush=True)
+                else:
+                    notifier.send_needed_alert(
+                        slack_token=_slack_token,
+                        channel=_channel_id,
+                        listing=listing,
+                        needed_buttons=needed_found,
+                        asking_price=asking,
+                        lot_value=lot_value,
+                    )
                 listing_alerted = True
 
             if listing_alerted:
@@ -626,22 +635,31 @@ def _run_daily_scan() -> None:
 
         seen_store.mark_seen(item_id, seen)
 
-    if not seen_store.save_seen(seen):
+    if config.DRY_RUN:
+        print("[DRY RUN] Skipping save_seen().", flush=True)
+    elif not seen_store.save_seen(seen):
         notifier.send_warning(_slack_token, _channel_id,
                               "Failed to save seen_items.json — next scan may re-alert.")
 
-    try:
-        notifier.send_scan_summary(
-            slack_token=_slack_token,
-            channel=_channel_id,
-            alerted=stat_alerted,
-            low_confidence=stat_low_confidence,
-            rejected=stat_rejected,
-            ebay_count=ebay_new,
-            etsy_count=etsy_new,
+    if config.DRY_RUN:
+        print(
+            f"[DRY RUN] Summary: alerted={stat_alerted}, "
+            f"low_conf={stat_low_confidence}, rejected={stat_rejected}",
+            flush=True,
         )
-    except Exception as exc:
-        print(f"!!! SCAN: Failed to post scan summary: {exc}", flush=True)
+    else:
+        try:
+            notifier.send_scan_summary(
+                slack_token=_slack_token,
+                channel=_channel_id,
+                alerted=stat_alerted,
+                low_confidence=stat_low_confidence,
+                rejected=stat_rejected,
+                ebay_count=ebay_new,
+                etsy_count=etsy_new,
+            )
+        except Exception as exc:
+            print(f"!!! SCAN: Failed to post scan summary: {exc}", flush=True)
 
     print(">>> SCAN: Daily scan complete.", flush=True)
 

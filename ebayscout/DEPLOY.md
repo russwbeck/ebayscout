@@ -1,10 +1,19 @@
 # eBay Button Scout — Deployment Guide
 
-A Cloud Run **Job** (not a service) that scans eBay daily for Penn State
-football button lots and posts Slack alerts for undervalued lots and listings
-containing buttons you still need.
+A Cloud Run **Service** (gunicorn + Flask, entry point `ebayscout/main.py`)
+that scans eBay + Etsy for Penn State football button lots and posts Slack
+alerts for undervalued lots and listings containing buttons you still need.
 
-Estimated cost: **~$1/month** (Cloud Run Job + Cloud Scheduler).
+The daily scan is triggered by **Cloud Scheduler → `POST /run-scan`**. The same
+service also handles Slack file-upload events (`/slack/events`) and the eBay
+Marketplace Account Deletion endpoint (`/ebay/account-deletion`).
+
+Estimated cost: **~$1/month** (Cloud Run + Cloud Scheduler).
+
+> **eBay API note:** This bot uses the eBay **Browse API**. The legacy Finding
+> and Shopping APIs were decommissioned by eBay on **2025-02-05** and no longer
+> work. The Browse API requires an OAuth application token built from your
+> **App ID (client id)** + **Cert ID (client secret)** — see below.
 
 ---
 
@@ -13,11 +22,15 @@ Estimated cost: **~$1/month** (Cloud Run Job + Cloud Scheduler).
 ### 1. eBay Developer Account (free)
 1. Register at https://developer.ebay.com
 2. Sign in → **My Account → Application Keys**
-3. Create a **Production** app
-4. Copy the **App ID (Client ID)** — this is your `EBAY_APP_ID`
+3. Create a **Production** app (or use an existing one)
+4. Copy the **App ID (Client ID)** → secret `EBAY_APP_ID`
+5. Copy the **Cert ID (Client Secret)** → secret `EBAY_CERT_ID`
 
-> Only the App ID is needed. The Finding API and Shopping API are both
-> free and require no OAuth token — just the App ID as a query parameter.
+> The Browse API uses the OAuth **client-credentials** grant: the bot exchanges
+> the App ID + Cert ID for a short-lived application access token at runtime
+> (scope `https://api.ebay.com/oauth/api_scope`). No user login or refresh
+> token is involved. The default application scope is sufficient for
+> `item_summary/search`.
 
 ### 2. Slack App
 1. Go to https://api.slack.com/apps → **Create New App → From Scratch**
@@ -30,8 +43,10 @@ Estimated cost: **~$1/month** (Cloud Run Job + Cloud Scheduler).
 ```bash
 # New secrets — EBAY_BOT_TOKEN, SIGNING_SECRET_ES, CHANNEL_ID_EBAY
 # already created via the GCP Console.
-# Once eBay API approval arrives, add the App ID:
-echo -n "YOUR_EBAY_APP_ID" | gcloud secrets create EBAY_APP_ID --data-file=-
+
+# eBay Browse API credentials (both required):
+echo -n "YOUR_EBAY_APP_ID"  | gcloud secrets create EBAY_APP_ID  --data-file=-
+echo -n "YOUR_EBAY_CERT_ID" | gcloud secrets create EBAY_CERT_ID --data-file=-
 
 # The following already exist from buybot — no action needed:
 # GOOGLE_SHEETS_JSON, SPREADSHEET_ID
@@ -55,7 +70,7 @@ gsutil iam ch serviceAccount:${SA}:objectAdmin \
   gs://60d488c5-9c8e-4acc-aac-button-data
 
 # Secret Manager access
-for SECRET in EBAY_APP_ID EBAY_BOT_TOKEN CHANNEL_ID_EBAY GOOGLE_SHEETS_JSON SPREADSHEET_ID; do
+for SECRET in EBAY_APP_ID EBAY_CERT_ID EBAY_BOT_TOKEN CHANNEL_ID_EBAY GOOGLE_SHEETS_JSON SPREADSHEET_ID; do
   gcloud secrets add-iam-policy-binding ${SECRET} \
     --member="serviceAccount:${SA}" \
     --role="roles/secretmanager.secretAccessor"
@@ -95,25 +110,31 @@ docker push us-east1-docker.pkg.dev/${PROJECT_ID}/buttons/ebayscout:latest
 
 ---
 
-## Create the Cloud Run Job
+## Create the Cloud Run Service
 ```bash
-gcloud run jobs create ebay-scout \
+gcloud run deploy ebay-scout \
   --image=us-east1-docker.pkg.dev/${PROJECT_ID}/buttons/ebayscout:latest \
   --region=us-east1 \
-  --task-count=1 \
-  --max-retries=1 \
-  --task-timeout=600s \
-  --memory=2Gi \
+  --memory=4Gi \
   --cpu=2 \
+  --no-allow-unauthenticated \
   --service-account=${SA}
 ```
+
+> Subsequent deploys are handled automatically by the Cloud Build trigger
+> (see below) — you only run this manually for the first deploy.
 
 ---
 
 ## Create the Cloud Scheduler Trigger (daily 9 AM ET)
+The scheduler calls the service's `/run-scan` endpoint, which kicks off the
+daily scan in a background thread and returns 200 immediately.
 ```bash
-# Grant Scheduler permission to invoke the job
-gcloud run jobs add-iam-policy-binding ebay-scout \
+SERVICE_URL=$(gcloud run services describe ebay-scout \
+  --region=us-east1 --format='value(status.url)')
+
+# Grant Scheduler permission to invoke the service
+gcloud run services add-iam-policy-binding ebay-scout \
   --member="serviceAccount:${SA}" \
   --role="roles/run.invoker" \
   --region=us-east1
@@ -122,9 +143,10 @@ gcloud scheduler jobs create http ebay-scout-daily \
   --location=us-east1 \
   --schedule="0 9 * * *" \
   --time-zone="America/New_York" \
-  --uri="https://us-east1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/ebay-scout:run" \
+  --uri="${SERVICE_URL}/run-scan" \
   --http-method=POST \
-  --oauth-service-account-email=${SA}
+  --oidc-service-account-email=${SA} \
+  --oidc-token-audience="${SERVICE_URL}"
 ```
 
 ---
@@ -138,28 +160,39 @@ gcloud scheduler jobs create http ebay-scout-daily \
    - Build configuration: `ebayscout/cloudbuild.yaml`
 3. Save
 
+> **One deploy path only.** `cloudbuild.yaml` builds, pushes, and runs
+> `gcloud run deploy` — this Cloud Build trigger is the single source of
+> deploys. (A previous `deploy-ebayscout.yml` GitHub Action that also ran
+> builds was removed to stop two concurrent builds racing on every push.)
+
 ---
 
 ## Smoke Test (before enabling the scheduler)
 ```bash
-# Set DRY_RUN = True in ebayscout/config.py, then rebuild + push, then:
-gcloud run jobs execute ebay-scout --region=us-east1 --wait
+# Set DRY_RUN = True in ebayscout/config.py, push (auto-deploys), then
+# trigger a scan manually against the running service:
+SERVICE_URL=$(gcloud run services describe ebay-scout \
+  --region=us-east1 --format='value(status.url)')
+
+curl -X POST "${SERVICE_URL}/run-scan" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
 
 # Check logs
-gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=ebay-scout" \
+gcloud logging read \
+  "resource.type=cloud_run_revision AND resource.labels.service_name=ebay-scout" \
   --limit=100 --format=json | jq '.[].textPayload'
 ```
 
 Verify in the logs:
+- An eBay OAuth token was obtained (no `EBAY AUTH` errors)
 - At least one listing fetched from eBay
 - CLIP matching ran without errors
-- `[DRY RUN]` lines appear instead of Slack posts
 - `seen_items.json` is NOT written
 
 After a successful smoke test:
 1. Set `DRY_RUN = False` in `ebayscout/config.py`
-2. Rebuild + push the image
-3. Re-run manually once to confirm Slack messages appear in `#ebay-scout`
+2. Push (auto-deploys)
+3. `POST /run-scan` once to confirm Slack messages appear in `#ebay-scout`
 4. Verify `ebay_scout/seen_items.json` appears in the GCS bucket
 5. Re-run immediately — confirm no duplicate Slack messages (dedup working)
 
