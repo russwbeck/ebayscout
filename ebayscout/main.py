@@ -25,12 +25,14 @@ from slack_bolt.adapter.flask import SlackRequestHandler
 from google.cloud import secretmanager
 
 from . import config
-from . import clip_matcher
 from . import sheets_client
-from . import image_proc
 from . import notifier
 from . import etsy_client
 from .utils import parse_price_source, format_manual_result
+
+# clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
+# a missing .so or slow first-import doesn't kill the entire process at startup.
+# They are imported inside startup() and the scan/analysis functions.
 
 # ---------------------------------------------------------------------------
 # Secrets — fetched at module load so the Slack App can be created immediately
@@ -219,7 +221,8 @@ def _run_manual_analysis(
 
     # Detect button crops
     try:
-        crops = image_proc.detect_and_crop(image_bytes)
+        from . import image_proc as _ip   # lazy import
+        crops = _ip.detect_and_crop(image_bytes)
     except Exception as exc:
         print(f"!!! MANUAL: detect_and_crop failed: {exc}", flush=True)
         _reply("❌ Couldn't detect buttons in that image.")
@@ -233,9 +236,10 @@ def _run_manual_analysis(
     matched: dict[tuple, dict] = {}   # (year, slogan) → enriched match
     unmatched_count = 0
 
+    from . import clip_matcher as _cm   # lazy import (already loaded if CLIP ready)
     for crop in crops:
         try:
-            match = clip_matcher.match_crop(crop)
+            match = _cm.match_crop(crop)
         except Exception as exc:
             print(f"!!! MANUAL: match_crop error: {exc}", flush=True)
             unmatched_count += 1
@@ -346,9 +350,100 @@ def run_scan():
 
 @flask_app.route("/health", methods=["GET"])
 def health():
+    # Always return 200 so Cloud Run health probes don't kill the container
+    # during the 30-60s CLIP hydration window.
     if not vectors_loaded:
-        return "hydrating", 503
-    return "OK — ready", 200
+        return "OK - hydrating", 200
+    return "OK - ready", 200
+
+
+# ---------------------------------------------------------------------------
+# eBay Marketplace Account Deletion endpoint (required for production API)
+# ---------------------------------------------------------------------------
+#
+# eBay requires all Developers Program apps to either subscribe to account-
+# deletion notifications or opt out.  This endpoint handles both legs of the
+# protocol:
+#
+#   GET  /ebay/account-deletion?challenge_code=<code>
+#        → eBay sends this immediately after you save the endpoint URL in the
+#          developer portal to verify you own the URL.
+#        → We respond with SHA-256(challengeCode + verificationToken + endpoint)
+#          as {"challengeResponse": "<hex>"}.
+#
+#   POST /ebay/account-deletion
+#        → eBay sends this whenever an eBay user requests data deletion.
+#        → ebayscout does NOT store eBay user personal data (seen_items.json
+#          contains only public listing IDs, not user identifiers), so no
+#          deletion action is needed — we just acknowledge receipt.
+#
+# Setup:
+#   1. Store a 32-80 char token (alphanumeric + _ -) in Secret Manager:
+#        printf 'YOUR_TOKEN_HERE' | gcloud secrets create \
+#          EBAY_DELETION_VERIFICATION_TOKEN --data-file=- \
+#          --project=project-60d488c5-9c8e-4acc-aac
+#   2. In developer.ebay.com → Application Keys → Notifications:
+#        Endpoint:           https://ebay-scout-404960106109.us-east1.run.app/ebay/account-deletion
+#        Verification token: <same token you stored above>
+
+_ebay_deletion_token: str | None = None   # lazily fetched on first GET
+
+
+@flask_app.route("/ebay/account-deletion", methods=["GET", "POST"])
+def ebay_account_deletion():
+    global _ebay_deletion_token
+
+    # ------------------------------------------------------------------ GET
+    # eBay challenge handshake — called once when you save the endpoint URL
+    # in the developer portal.
+    if request.method == "GET":
+        import hashlib
+
+        challenge_code = request.args.get("challenge_code", "")
+        if not challenge_code:
+            return jsonify({"error": "missing challenge_code"}), 400
+
+        # Fetch and cache the verification token
+        if _ebay_deletion_token is None:
+            try:
+                _ebay_deletion_token = _get_secret("EBAY_DELETION_VERIFICATION_TOKEN")
+            except Exception as exc:
+                print(f"!!! EBAY DELETION: Failed to fetch verification token: {exc}",
+                      flush=True)
+                return jsonify({"error": "server configuration error"}), 500
+
+        endpoint = config.EBAY_DELETION_ENDPOINT
+
+        # Hash order mandated by eBay: challengeCode + verificationToken + endpoint
+        m = hashlib.sha256()
+        m.update(challenge_code.encode("utf-8"))
+        m.update(_ebay_deletion_token.encode("utf-8"))
+        m.update(endpoint.encode("utf-8"))
+        challenge_response = m.hexdigest()
+
+        print(f">>> EBAY DELETION: Challenge OK — code={challenge_code[:8]}...",
+              flush=True)
+        return jsonify({"challengeResponse": challenge_response})
+
+    # ------------------------------------------------------------------ POST
+    # Account deletion notification — acknowledge immediately, then log.
+    # ebayscout does not persist eBay user personal data, so no deletion is
+    # needed.  We log the userId for audit purposes only.
+    try:
+        payload  = request.get_json(silent=True) or {}
+        notif    = payload.get("notification", {})
+        data     = notif.get("data", {})
+        user_id  = data.get("userId", "unknown")
+        notif_id = notif.get("notificationId", "unknown")
+        print(
+            f">>> EBAY DELETION: Notification received — "
+            f"notificationId={notif_id} userId={user_id}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"!!! EBAY DELETION: Error parsing notification body: {exc}", flush=True)
+
+    return "", 200
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +520,9 @@ def _run_daily_scan() -> None:
     stat_low_confidence = 0
     stat_rejected       = 0
 
+    from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
+    from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
+
     for listing in new_listings:
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
@@ -445,8 +543,8 @@ def _run_daily_scan() -> None:
 
             for photo_url in picture_urls[: config.MAX_PHOTOS_PER_LISTING]:
                 try:
-                    image_bytes = image_proc.download_image(photo_url)
-                    crops       = image_proc.detect_and_crop(image_bytes)
+                    image_bytes = _ip.download_image(photo_url)
+                    crops       = _ip.detect_and_crop(image_bytes)
                 except Exception as exc:
                     print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
                     continue
@@ -455,7 +553,7 @@ def _run_daily_scan() -> None:
 
                 for crop in crops:
                     try:
-                        match = clip_matcher.match_crop(
+                        match = _cm.match_crop(
                             crop, threshold=config.REJECTION_THRESHOLD
                         )
                     except Exception:
@@ -567,7 +665,8 @@ def startup() -> None:
     def _hydrate():
         global vectors_loaded
         try:
-            clip_matcher.init(config.BUCKET_NAME)
+            from . import clip_matcher as cm   # lazy: torch+clip imported here
+            cm.init(config.BUCKET_NAME)
             vectors_loaded = True
             print(">>> STARTUP: CLIP ready.", flush=True)
         except Exception as exc:
