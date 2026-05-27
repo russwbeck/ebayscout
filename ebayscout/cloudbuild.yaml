@@ -37,7 +37,7 @@ steps:
       - ebay-scout
       - --image=us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:$COMMIT_SHA
       - --region=us-east1
-      - --no-traffic   # don't shift traffic until image passes health check
+      - --traffic=LATEST
 
 images:
   - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout
