@@ -358,6 +358,95 @@ def health():
 
 
 # ---------------------------------------------------------------------------
+# eBay Marketplace Account Deletion endpoint (required for production API)
+# ---------------------------------------------------------------------------
+#
+# eBay requires all Developers Program apps to either subscribe to account-
+# deletion notifications or opt out.  This endpoint handles both legs of the
+# protocol:
+#
+#   GET  /ebay/account-deletion?challenge_code=<code>
+#        → eBay sends this immediately after you save the endpoint URL in the
+#          developer portal to verify you own the URL.
+#        → We respond with SHA-256(challengeCode + verificationToken + endpoint)
+#          as {"challengeResponse": "<hex>"}.
+#
+#   POST /ebay/account-deletion
+#        → eBay sends this whenever an eBay user requests data deletion.
+#        → ebayscout does NOT store eBay user personal data (seen_items.json
+#          contains only public listing IDs, not user identifiers), so no
+#          deletion action is needed — we just acknowledge receipt.
+#
+# Setup:
+#   1. Store a 32-80 char token (alphanumeric + _ -) in Secret Manager:
+#        printf 'YOUR_TOKEN_HERE' | gcloud secrets create \
+#          EBAY_DELETION_VERIFICATION_TOKEN --data-file=- \
+#          --project=project-60d488c5-9c8e-4acc-aac
+#   2. In developer.ebay.com → Application Keys → Notifications:
+#        Endpoint:           https://ebay-scout-404960106109.us-east1.run.app/ebay/account-deletion
+#        Verification token: <same token you stored above>
+
+_ebay_deletion_token: str | None = None   # lazily fetched on first GET
+
+
+@flask_app.route("/ebay/account-deletion", methods=["GET", "POST"])
+def ebay_account_deletion():
+    global _ebay_deletion_token
+
+    # ------------------------------------------------------------------ GET
+    # eBay challenge handshake — called once when you save the endpoint URL
+    # in the developer portal.
+    if request.method == "GET":
+        import hashlib
+
+        challenge_code = request.args.get("challenge_code", "")
+        if not challenge_code:
+            return jsonify({"error": "missing challenge_code"}), 400
+
+        # Fetch and cache the verification token
+        if _ebay_deletion_token is None:
+            try:
+                _ebay_deletion_token = _get_secret("EBAY_DELETION_VERIFICATION_TOKEN")
+            except Exception as exc:
+                print(f"!!! EBAY DELETION: Failed to fetch verification token: {exc}",
+                      flush=True)
+                return jsonify({"error": "server configuration error"}), 500
+
+        endpoint = config.EBAY_DELETION_ENDPOINT
+
+        # Hash order mandated by eBay: challengeCode + verificationToken + endpoint
+        m = hashlib.sha256()
+        m.update(challenge_code.encode("utf-8"))
+        m.update(_ebay_deletion_token.encode("utf-8"))
+        m.update(endpoint.encode("utf-8"))
+        challenge_response = m.hexdigest()
+
+        print(f">>> EBAY DELETION: Challenge OK — code={challenge_code[:8]}...",
+              flush=True)
+        return jsonify({"challengeResponse": challenge_response})
+
+    # ------------------------------------------------------------------ POST
+    # Account deletion notification — acknowledge immediately, then log.
+    # ebayscout does not persist eBay user personal data, so no deletion is
+    # needed.  We log the userId for audit purposes only.
+    try:
+        payload  = request.get_json(silent=True) or {}
+        notif    = payload.get("notification", {})
+        data     = notif.get("data", {})
+        user_id  = data.get("userId", "unknown")
+        notif_id = notif.get("notificationId", "unknown")
+        print(
+            f">>> EBAY DELETION: Notification received — "
+            f"notificationId={notif_id} userId={user_id}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"!!! EBAY DELETION: Error parsing notification body: {exc}", flush=True)
+
+    return "", 200
+
+
+# ---------------------------------------------------------------------------
 # Daily scan (called from /run-scan endpoint)
 # ---------------------------------------------------------------------------
 

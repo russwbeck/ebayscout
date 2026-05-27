@@ -9,6 +9,15 @@ Edit EXCLUDED_SELLERS and SLACK_SCOUT_CHANNEL before first deploy.
 BUCKET_NAME    = "60d488c5-9c8e-4acc-aac-button-data"
 PROJECT_NUMBER = "404960106109"
 
+# --- eBay Marketplace Account Deletion endpoint ---
+# This URL must match exactly what is registered in the eBay Developer Portal
+# (developer.ebay.com → Application Keys → Notifications).
+# The verification token is stored in GCP Secret Manager as
+# EBAY_DELETION_VERIFICATION_TOKEN (32-80 chars, alphanumeric + _ -)
+EBAY_DELETION_ENDPOINT = (
+    "https://ebay-scout-404960106109.us-east1.run.app/ebay/account-deletion"
+)
+
 # --- CLIP scoring (match buttonmatcher's constants) ---
 CONFIDENCE_THRESHOLD      = 0.72   # above → confident match, eligible for alerts
 REJECTION_THRESHOLD       = 0.45   # below → clearly not a bank button
