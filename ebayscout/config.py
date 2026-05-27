@@ -29,10 +29,30 @@ MAX_PHOTOS_PER_LISTING = 1       # only process the first photo per listing
 EXCLUDED_SELLERS: list[str] = [
     "kling24toys",
     "gertb2002",
+    "wearepinstate",
 ]
 
 # --- Etsy sellers to exclude (shop_name, case-insensitive) ---
 ETSY_EXCLUDED_SELLERS: list[str] = []
+
+# --- Listing title keywords that indicate apparel/non-button items ---
+# Any listing whose title contains one of these words (case-insensitive) is
+# skipped by both the eBay and Etsy clients before CLIP processing.
+EXCLUDED_KEYWORDS: list[str] = [
+    "embroidered",
+    "drifit",
+    "hoodie",
+    "sweatshirt",
+    "stitched",
+    "polo",
+    "quarterzip",
+    "quarter zip",
+    "quarter-zip",
+    "denim",
+    "antigua",
+    "jacket",
+    "pullover",
+]
 
 # --- Multi-query search strategy ---
 # "Central Counties Bank" runs standalone (no button-type suffix) because it is a

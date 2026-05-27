@@ -200,7 +200,8 @@ class TestFindAllListings:
 
         call_count = []
 
-        def fake_find(api_key, keywords, excluded_sellers=None, max_results=100):
+        def fake_find(api_key, keywords, excluded_sellers=None,
+                      excluded_keywords=None, max_results=100):
             call_count.append(keywords)
             return []
 
@@ -208,3 +209,49 @@ class TestFindAllListings:
             etsy_client.find_all_listings(api_key="key")
 
         assert len(call_count) == len(config.EBAY_SEARCH_QUERIES)
+
+
+# ---------------------------------------------------------------------------
+# Keyword exclusion
+# ---------------------------------------------------------------------------
+
+class TestKeywordExclusion:
+    def test_apparel_title_excluded(self):
+        items = [
+            _make_item(1, "Penn State Embroidered Hoodie", "ShopA"),
+            _make_item(2, "PSU Football Button 1987",     "ShopB"),
+        ]
+        with patch("requests.get", return_value=_mock_response(items)):
+            results = etsy_client.find_listings(
+                "key", "Penn State button",
+                excluded_keywords=["hoodie", "embroidered"],
+            )
+        assert len(results) == 1
+        assert results[0]["item_id"] == "etsy_2"
+
+    def test_keyword_match_is_case_insensitive(self):
+        items = [_make_item(1, "PSU DRIFIT Polo Shirt", "ShopA")]
+        with patch("requests.get", return_value=_mock_response(items)):
+            results = etsy_client.find_listings(
+                "key", "PSU polo",
+                excluded_keywords=["polo", "drifit"],
+            )
+        assert results == []
+
+    def test_empty_excluded_keywords_keeps_all(self):
+        items = [_make_item(1, "Penn State Hoodie Pin", "ShopA")]
+        with patch("requests.get", return_value=_mock_response(items)):
+            results = etsy_client.find_listings(
+                "key", "Penn State pin",
+                excluded_keywords=[],
+            )
+        assert len(results) == 1
+
+    def test_uses_config_defaults_when_none(self):
+        """When excluded_keywords=None, config.EXCLUDED_KEYWORDS is used."""
+        from ebayscout import config
+        kw = config.EXCLUDED_KEYWORDS[0]
+        items = [_make_item(1, f"PSU {kw.title()} Shirt", "ShopA")]
+        with patch("requests.get", return_value=_mock_response(items)):
+            results = etsy_client.find_listings("key", "PSU button")
+        assert results == []

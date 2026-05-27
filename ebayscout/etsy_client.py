@@ -14,6 +14,7 @@ import time
 import requests
 
 from . import config
+from .utils import title_has_excluded_keyword
 
 _ETSY_BASE = "https://openapi.etsy.com/v3/application"
 
@@ -22,6 +23,7 @@ def find_listings(
     api_key: str,
     keywords: str,
     excluded_sellers: list[str] | None = None,
+    excluded_keywords: list[str] | None = None,
     max_results: int = 100,
 ) -> list[dict]:
     """
@@ -31,10 +33,13 @@ def find_listings(
         {item_id, title, current_price, currency, listing_url, gallery_url, seller}
 
     item_id is prefixed "etsy_" to avoid collisions with eBay IDs.
-    Applies excluded_sellers filter client-side (Etsy API has no server-side exclude).
+    Applies excluded_sellers and excluded_keywords filters client-side
+    (Etsy API has no server-side exclude).
     """
     if excluded_sellers is None:
         excluded_sellers = []
+    if excluded_keywords is None:
+        excluded_keywords = config.EXCLUDED_KEYWORDS
 
     excluded_lower = {s.lower() for s in excluded_sellers}
     results: dict[str, dict] = {}
@@ -95,6 +100,8 @@ def find_listings(
                 title       = item.get("title", "")
 
                 if etsy_id not in results:
+                    if title_has_excluded_keyword(title, excluded_keywords):
+                        continue
                     results[etsy_id] = {
                         "item_id":       etsy_id,
                         "title":         title,
@@ -123,6 +130,7 @@ def find_all_listings(
     api_key: str,
     queries: list[str] | None = None,
     excluded_sellers: list[str] | None = None,
+    excluded_keywords: list[str] | None = None,
     max_results: int = 100,
 ) -> list[dict]:
     """
@@ -133,12 +141,14 @@ def find_all_listings(
         queries = config.EBAY_SEARCH_QUERIES   # reuse same query list
     if excluded_sellers is None:
         excluded_sellers = config.ETSY_EXCLUDED_SELLERS
+    if excluded_keywords is None:
+        excluded_keywords = config.EXCLUDED_KEYWORDS
 
     seen_ids: set[str]    = set()
     all_listings: list[dict] = []
 
     for query in queries:
-        batch = find_listings(api_key, query, excluded_sellers, max_results)
+        batch = find_listings(api_key, query, excluded_sellers, excluded_keywords, max_results)
         for listing in batch:
             iid = listing["item_id"]
             if iid not in seen_ids:

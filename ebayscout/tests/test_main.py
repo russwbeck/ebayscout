@@ -8,7 +8,7 @@ module-level GCP secret fetching in main.py.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from ebayscout.utils import parse_price_source, format_manual_result
+from ebayscout.utils import parse_price_source, format_manual_result, title_has_excluded_keyword
 
 
 class TestParsePriceSource:
@@ -118,3 +118,36 @@ class TestFormatManualResult:
             needed=[self._matches()[0]], unmatched_count=0,
         )
         assert "need 2" in text
+
+
+class TestTitleHasExcludedKeyword:
+    _KEYWORDS = ["embroidered", "hoodie", "sweatshirt", "polo", "quarterzip",
+                 "quarter zip", "quarter-zip", "drifit", "stitched", "denim",
+                 "antigua", "jacket", "pullover"]
+
+    def test_exact_match(self):
+        assert title_has_excluded_keyword("Penn State Hoodie 2001", self._KEYWORDS)
+
+    def test_case_insensitive(self):
+        assert title_has_excluded_keyword("PSU EMBROIDERED Button Lot", self._KEYWORDS)
+
+    def test_keyword_mid_title(self):
+        assert title_has_excluded_keyword("Vintage Penn State denim jacket pin", self._KEYWORDS)
+
+    def test_normal_button_title_passes(self):
+        assert not title_has_excluded_keyword("Penn State Football Button 1987 Fiesta Bowl", self._KEYWORDS)
+
+    def test_empty_keywords_list_never_filters(self):
+        assert not title_has_excluded_keyword("Penn State Hoodie", [])
+
+    def test_empty_title(self):
+        assert not title_has_excluded_keyword("", self._KEYWORDS)
+
+    def test_quarter_zip_with_space(self):
+        assert title_has_excluded_keyword("PSU Quarter Zip Pullover pin", self._KEYWORDS)
+
+    def test_quarter_zip_hyphenated(self):
+        assert title_has_excluded_keyword("Penn State Quarter-Zip", self._KEYWORDS)
+
+    def test_antigua_brand(self):
+        assert title_has_excluded_keyword("Penn State Antigua polo shirt", self._KEYWORDS)

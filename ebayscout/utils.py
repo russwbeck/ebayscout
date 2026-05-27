@@ -29,6 +29,18 @@ def parse_price_source(text: str) -> tuple[float | None, str]:
         return None, ""
 
 
+def title_has_excluded_keyword(title: str, excluded_keywords: list[str]) -> bool:
+    """
+    Return True if the listing title contains any of the excluded keywords.
+    Comparison is case-insensitive substring match.
+
+    Used to filter out apparel/clothing listings from eBay and Etsy results
+    before CLIP processing.
+    """
+    title_lower = title.lower()
+    return any(kw.lower() in title_lower for kw in excluded_keywords)
+
+
 def format_manual_result(
     source:          str,
     asking_price:    float,

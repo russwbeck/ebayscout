@@ -11,12 +11,14 @@ import requests
 import xml.etree.ElementTree as ET
 
 from . import config
+from .utils import title_has_excluded_keyword
 
 
 def find_listings(
     app_id: str,
     keywords: str,
     excluded_sellers: list[str],
+    excluded_keywords: list[str] | None = None,
     max_results: int = 100,
 ) -> list[dict]:
     """
@@ -28,6 +30,9 @@ def find_listings(
     Applies ExcludeSeller itemFilter for each seller in excluded_sellers.
     Paginates if max_results > 100 (eBay page size hard limit is 100).
     """
+    if excluded_keywords is None:
+        excluded_keywords = config.EXCLUDED_KEYWORDS
+
     results: dict[str, dict] = {}  # item_id → listing dict (deduped within this query)
     page_size = min(max_results, 100)
     page_num  = 1
@@ -75,6 +80,8 @@ def find_listings(
                 gallery_url = item.get("galleryURL", [""])[0]
 
                 if item_id and item_id not in results:
+                    if title_has_excluded_keyword(title, excluded_keywords):
+                        continue
                     results[item_id] = {
                         "item_id":       item_id,
                         "title":         title,
@@ -98,6 +105,7 @@ def find_all_listings(
     app_id: str,
     queries: list[str] | None = None,
     excluded_sellers: list[str] | None = None,
+    excluded_keywords: list[str] | None = None,
     max_results: int = 100,
 ) -> list[dict]:
     """
@@ -108,12 +116,14 @@ def find_all_listings(
         queries = config.EBAY_SEARCH_QUERIES
     if excluded_sellers is None:
         excluded_sellers = config.EXCLUDED_SELLERS
+    if excluded_keywords is None:
+        excluded_keywords = config.EXCLUDED_KEYWORDS
 
     seen_ids: set[str] = set()
     all_listings: list[dict] = []
 
     for query in queries:
-        batch = find_listings(app_id, query, excluded_sellers, max_results)
+        batch = find_listings(app_id, query, excluded_sellers, excluded_keywords, max_results)
         for listing in batch:
             iid = listing["item_id"]
             if iid not in seen_ids:

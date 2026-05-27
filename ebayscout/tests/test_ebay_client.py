@@ -198,3 +198,55 @@ class TestGetItemPictures:
             urls = ebay_client.get_item_pictures("APP", "555")
 
         assert urls == ["https://i.ebayimg.com/only.jpg"]
+
+
+# ---------------------------------------------------------------------------
+# Keyword exclusion
+# ---------------------------------------------------------------------------
+
+class TestKeywordExclusion:
+    def _resp(self, items):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = _make_finding_response(items)
+        return mock_resp
+
+    def test_apparel_title_excluded(self):
+        items = [
+            _make_item("1", "Penn State Embroidered Hoodie"),
+            _make_item("2", "PSU Football Button 1987"),
+        ]
+        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
+            results = ebay_client.find_listings(
+                "APP", "Penn State button", [],
+                excluded_keywords=["hoodie", "embroidered"],
+            )
+        assert len(results) == 1
+        assert results[0]["item_id"] == "2"
+
+    def test_keyword_match_is_case_insensitive(self):
+        items = [_make_item("1", "PSU DRIFIT Polo Shirt")]
+        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
+            results = ebay_client.find_listings(
+                "APP", "PSU polo", [],
+                excluded_keywords=["polo", "drifit"],
+            )
+        assert results == []
+
+    def test_empty_excluded_keywords_keeps_all(self):
+        items = [_make_item("1", "Penn State Hoodie Pin")]
+        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
+            results = ebay_client.find_listings(
+                "APP", "Penn State pin", [],
+                excluded_keywords=[],
+            )
+        assert len(results) == 1
+
+    def test_uses_config_defaults_when_none(self):
+        """When excluded_keywords=None, config.EXCLUDED_KEYWORDS is used."""
+        from ebayscout import config
+        items = [_make_item("1", f"PSU {config.EXCLUDED_KEYWORDS[0].title()} Shirt")]
+        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
+            results = ebay_client.find_listings("APP", "PSU button", [])
+        # Should be filtered by the config default
+        assert results == []
