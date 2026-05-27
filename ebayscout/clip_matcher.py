@@ -200,9 +200,12 @@ def _score_slogans(
         slogan_score = _normalize_slogan(best_raw)
         overall      = (config.ALPHA * image_score) + (config.BETA * slogan_score)
 
-        # Boost for near-certain text match
+        # Boost for near-certain text match (>90%) — ramps fast
         if slogan_score > 0.9:
             overall += (slogan_score - 0.9) * 2.5
+        # Moderate boost for strong-but-not-certain text match (75–90%)
+        elif slogan_score > 0.75:
+            overall += (slogan_score - 0.75) * 1.2
         # Penalty for very weak text match
         if slogan_score < config.SLOGAN_PENALTY_THRESHOLD:
             overall *= config.PENALTY_MULTIPLIER

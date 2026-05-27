@@ -11,8 +11,8 @@ PROJECT_NUMBER = "5194730759"
 
 # --- CLIP scoring (match buttonmatcher's constants) ---
 CONFIDENCE_THRESHOLD      = 0.72
-ALPHA                     = 0.6   # image weight
-BETA                      = 0.4   # text weight
+ALPHA                     = 0.7   # image weight  (matches match_buttons.py)
+BETA                      = 0.3   # text weight   (matches match_buttons.py)
 SLOGAN_PENALTY_THRESHOLD  = 0.3   # below this slogan_score → penalise overall
 PENALTY_MULTIPLIER        = 0.7
 
