@@ -117,9 +117,15 @@ gcloud run deploy ebay-scout \
   --region=us-east1 \
   --memory=4Gi \
   --cpu=2 \
+  --timeout=1800 \
   --no-allow-unauthenticated \
   --service-account=${SA}
 ```
+
+> **`--timeout=1800` matters.** `/run-scan` runs the scan **synchronously** and
+> returns 200 only when it finishes — this is what keeps Cloud Run's CPU
+> allocated for the whole scan (a background thread gets throttled to ~0%).
+> The request timeout (max 3600s) must comfortably exceed a full scan.
 
 > Subsequent deploys are handled automatically by the Cloud Build trigger
 > (see below) — you only run this manually for the first deploy.
@@ -145,9 +151,16 @@ gcloud scheduler jobs create http ebay-scout-daily \
   --time-zone="America/New_York" \
   --uri="${SERVICE_URL}/run-scan" \
   --http-method=POST \
+  --attempt-deadline=1800s \
   --oidc-service-account-email=${SA} \
   --oidc-token-audience="${SERVICE_URL}"
 ```
+
+> `--attempt-deadline=1800s` (the max for HTTP targets) gives the synchronous
+> scan time to finish before Scheduler considers the attempt failed. If a scan
+> ever exceeds it, Scheduler may retry — but `/run-scan` holds a lock and
+> returns 409 to an overlapping trigger, so a retry can't start a second
+> concurrent scan.
 
 ---
 

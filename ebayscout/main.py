@@ -71,6 +71,10 @@ vectors_loaded: bool = False
 # Keyed by user so simultaneous uploads from different people work independently
 pending_scans: dict = {}
 
+# Held for the duration of a daily scan so an overlapping trigger can't start
+# a second concurrent run.
+_scan_lock = threading.Lock()
+
 # ---------------------------------------------------------------------------
 # Slack event: file uploaded to the scout channel
 # ---------------------------------------------------------------------------
@@ -342,10 +346,30 @@ def slack_events():
 def run_scan():
     """
     Triggered by Cloud Scheduler for the daily eBay scan.
-    Runs the scan in a background thread so Cloud Scheduler gets a quick 200.
+
+    Runs the scan synchronously and returns 200 only when it finishes. This
+    is deliberate: Cloud Run throttles CPU to ~0% outside request handling, so
+    a background thread would crawl. Running inline keeps the full CPU
+    allocated for the whole scan. A non-blocking lock makes a duplicate
+    trigger a no-op (409) rather than a second concurrent scan.
+
+    Cloud Run request timeout and the Scheduler attempt deadline must be long
+    enough to cover a full scan (see DEPLOY.md).
     """
-    threading.Thread(target=_run_daily_scan, daemon=True).start()
-    return jsonify({"status": "scan started"}), 200
+    if not vectors_loaded:
+        print(">>> SCAN: Trigger received but CLIP not ready — returning 503.", flush=True)
+        return jsonify({"status": "hydrating"}), 503
+
+    if not _scan_lock.acquire(blocking=False):
+        print(">>> SCAN: Already running — ignoring duplicate trigger.", flush=True)
+        return jsonify({"status": "already running"}), 409
+
+    try:
+        _run_daily_scan()
+    finally:
+        _scan_lock.release()
+
+    return jsonify({"status": "scan complete"}), 200
 
 
 @flask_app.route("/health", methods=["GET"])
@@ -426,23 +450,11 @@ def ebay_account_deletion():
         return jsonify({"challengeResponse": challenge_response})
 
     # ------------------------------------------------------------------ POST
-    # Account deletion notification — acknowledge immediately, then log.
-    # ebayscout does not persist eBay user personal data, so no deletion is
-    # needed.  We log the userId for audit purposes only.
-    try:
-        payload  = request.get_json(silent=True) or {}
-        notif    = payload.get("notification", {})
-        data     = notif.get("data", {})
-        user_id  = data.get("userId", "unknown")
-        notif_id = notif.get("notificationId", "unknown")
-        print(
-            f">>> EBAY DELETION: Notification received — "
-            f"notificationId={notif_id} userId={user_id}",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"!!! EBAY DELETION: Error parsing notification body: {exc}", flush=True)
-
+    # Account deletion notification. ebayscout stores no eBay user personal
+    # data (seen_items.json holds only public listing IDs), so there is
+    # nothing to delete — just acknowledge with 200. We intentionally do not
+    # log these: eBay sends a high, constant volume and the lines drown out
+    # the scan logs.
     return "", 200
 
 

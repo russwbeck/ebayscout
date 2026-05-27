@@ -36,9 +36,10 @@ def detect_and_crop(
     """
     Detect individual buttons in a lot photo and return PIL.Image crops (RGB).
 
-    Uses OpenCV Hough circle detection with a projection-based grid fallback,
-    ported from buttonmatcher's detect_buttons().  The `debug` parameter and
-    all Slack-posting logic have been removed for batch use.
+    Uses OpenCV Hough circle detection; when no usable circles are found it
+    falls back to matching the whole photo as a single crop (rather than
+    slicing a fabricated grid). The `rows`/`cols`/`expected` hints size the
+    expected button radius and cap the number of circle crops.
 
     Args:
         image_bytes: Raw image bytes (JPEG/PNG).
@@ -182,7 +183,7 @@ def detect_and_crop(
             flush=True,
         )
 
-        if len(cleaned) >= max(6, expected - 4):
+        if cleaned:
             row_tol  = int(expected_r * 1.5)
             rows_est: list[list] = []
             for c in sorted(cleaned, key=lambda c: (c[1], c[0])):
@@ -216,55 +217,14 @@ def detect_and_crop(
             if crops_bgr:
                 return _bgr_to_pil(crops_bgr)
 
-    # --- Projection-based grid fallback ---
-    print(">>> IMAGE: Using projection-based grid fallback.", flush=True)
-    _cell_h = h / rows
-    _cell_w = w / cols
-    _kh = max(5, int(_cell_h * 0.25))
-    _kw = max(5, int(_cell_w * 0.25))
-    _kh = _kh if _kh % 2 == 1 else _kh + 1
-    _kw = _kw if _kw % 2 == 1 else _kw + 1
-
-    row_proj = mask.sum(axis=1).astype(np.float32)
-    col_proj = mask.sum(axis=0).astype(np.float32)
-    row_proj = cv2.GaussianBlur(row_proj.reshape(-1, 1), (1, _kh), 0).ravel()
-    col_proj = cv2.GaussianBlur(col_proj.reshape(1, -1), (_kw, 1), 0).ravel()
-
-    def _band_peaks(proj: np.ndarray, n: int, length: int) -> list[int]:
-        centers = []
-        for i in range(n):
-            s = int(i * length / n)
-            e = int((i + 1) * length / n)
-            seg = proj[s:e]
-            centers.append(
-                s + int(np.argmax(seg)) if seg.max() > 0 else (s + e) // 2
-            )
-        return centers
-
-    row_centers = _band_peaks(row_proj, rows, h)
-    col_centers = _band_peaks(col_proj, cols, w)
-
-    pad_r = (int(float(np.median(np.diff(row_centers))) * 0.48)
-             if len(row_centers) > 1 else int(_cell_h * 0.48))
-    pad_c = (int(float(np.median(np.diff(col_centers))) * 0.48)
-             if len(col_centers) > 1 else int(_cell_w * 0.48))
-
-    idx = 1
-    for cy in row_centers:
-        for cx in col_centers:
-            if idx > expected:
-                break
-            y1 = max(0, cy - pad_r)
-            y2 = min(h, cy + pad_r)
-            x1 = max(0, cx - pad_c)
-            x2 = min(w, cx + pad_c)
-            crop = image_bgr[y1:y2, x1:x2]
-            if crop.size > 0:
-                crops_bgr.append(crop)
-            idx += 1
-
-    print(f">>> IMAGE: Returning {len(crops_bgr)} grid fallback crops.", flush=True)
-    return _bgr_to_pil(crops_bgr)
+    # --- Whole-image fallback ---
+    # Hough found no usable circles.  These photos are almost never a clean
+    # grid of buttons, so fabricating a fixed grid produced meaningless crops.
+    # Match the whole photo as a single button instead: correct for the common
+    # single-button listing, and harmless otherwise (a multi-button blend just
+    # scores below threshold and is rejected downstream).
+    print(">>> IMAGE: No circles detected — using whole image as a single crop.", flush=True)
+    return _bgr_to_pil([image_bgr])
 
 
 def _bgr_to_pil(crops_bgr: list[np.ndarray]) -> list[Image.Image]:

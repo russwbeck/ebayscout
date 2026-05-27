@@ -87,70 +87,60 @@ def find_listings(
         "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
     }
 
+    # A single page of the newest listings is plenty for a daily scan; the
+    # Browse API rejects deep offsets for application tokens, so we don't
+    # paginate. limit caps at the Browse page maximum of 200.
+    params = {
+        "q":     keywords,
+        "limit": str(min(200, max_results)),
+        "sort":  "newlyListed",
+    }
+    try:
+        resp = _get_with_retry(config.EBAY_BROWSE_SEARCH_URL, params, headers)
+    except Exception as exc:
+        print(f"!!! EBAY FIND: HTTP error for '{keywords}': {exc}", flush=True)
+        return []
+
+    try:
+        data = resp.json()
+    except Exception:
+        print(f"!!! EBAY FIND: JSON parse error for '{keywords}'", flush=True)
+        return []
+
     results: dict[str, dict] = {}
-    offset = 0
+    for item in data.get("itemSummaries") or []:
+        item_id = item.get("itemId")
+        if not item_id or item_id in results:
+            continue
 
-    while len(results) < max_results:
-        params = {
-            "q":      keywords,
-            "limit":  str(min(200, max_results - len(results))),  # Browse page cap is 200
-            "offset": str(offset),
-            "sort":   "newlyListed",
+        title  = item.get("title") or ""
+        seller = (item.get("seller") or {}).get("username", "") or ""
+        if seller.lower() in excluded_lower:
+            continue
+        if title_has_excluded_keyword(title, excluded_keywords):
+            continue
+
+        price_data = item.get("price") or {}
+        try:
+            price = float(price_data.get("value", "0"))
+        except (TypeError, ValueError):
+            price = 0.0
+
+        image = (item.get("image") or {}).get("imageUrl", "") or ""
+        if not image:
+            thumbs = item.get("thumbnailImages") or []
+            if thumbs:
+                image = thumbs[0].get("imageUrl", "") or ""
+
+        results[item_id] = {
+            "item_id":       item_id,
+            "title":         title,
+            "current_price": price,
+            "currency":      price_data.get("currency", "USD"),
+            "listing_url":   item.get("itemWebUrl", "") or "",
+            "gallery_url":   image,
+            "seller":        seller,
         }
-        try:
-            resp = _get_with_retry(config.EBAY_BROWSE_SEARCH_URL, params, headers)
-        except Exception as exc:
-            print(f"!!! EBAY FIND: HTTP error for '{keywords}': {exc}", flush=True)
-            break
-
-        try:
-            data = resp.json()
-        except Exception:
-            print(f"!!! EBAY FIND: JSON parse error for '{keywords}'", flush=True)
-            break
-
-        items = data.get("itemSummaries") or []
-        if not items:
-            break
-
-        for item in items:
-            item_id = item.get("itemId")
-            if not item_id or item_id in results:
-                continue
-
-            title  = item.get("title") or ""
-            seller = (item.get("seller") or {}).get("username", "") or ""
-            if seller.lower() in excluded_lower:
-                continue
-            if title_has_excluded_keyword(title, excluded_keywords):
-                continue
-
-            price_data = item.get("price") or {}
-            try:
-                price = float(price_data.get("value", "0"))
-            except (TypeError, ValueError):
-                price = 0.0
-
-            image = (item.get("image") or {}).get("imageUrl", "") or ""
-            if not image:
-                thumbs = item.get("thumbnailImages") or []
-                if thumbs:
-                    image = thumbs[0].get("imageUrl", "") or ""
-
-            results[item_id] = {
-                "item_id":       item_id,
-                "title":         title,
-                "current_price": price,
-                "currency":      price_data.get("currency", "USD"),
-                "listing_url":   item.get("itemWebUrl", "") or "",
-                "gallery_url":   image,
-                "seller":        seller,
-            }
-
-        total = int(data.get("total") or 0)
-        offset += len(items)
-        if offset >= total:
-            break
 
     print(f">>> EBAY FIND: '{keywords}' → {len(results)} unique listings", flush=True)
     return list(results.values())
