@@ -94,20 +94,29 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
     print(">>> CLIP: Initialization complete.", flush=True)
 
 
-def match_crop(pil_image: Image.Image) -> dict | None:
+def match_crop(
+    pil_image: Image.Image,
+    threshold: float | None = None,
+) -> dict | None:
     """
     Match a single PIL.Image (RGB) crop against the button database.
 
-    Returns a dict on confident match:
+    Returns a dict on a match above *threshold*:
         {year: str, slogan: str, overall: float,
          image_score: float, slogan_score: float}
 
-    Returns None if best overall score < CONFIDENCE_THRESHOLD.
+    Returns None if best overall score < threshold.
+
+    threshold defaults to config.CONFIDENCE_THRESHOLD (0.72).  Pass
+    config.REJECTION_THRESHOLD (0.45) to also surface low-confidence
+    matches for scan-summary categorisation without triggering alerts.
 
     Year candidate selection uses a combined image+slogan score so that strong
     text evidence can promote the correct year even when image similarity alone
     is ambiguous between nearby years.
     """
+    if threshold is None:
+        threshold = config.CONFIDENCE_THRESHOLD
     if not _initialized:
         raise RuntimeError("clip_matcher.init() must be called before match_crop().")
 
@@ -167,7 +176,7 @@ def match_crop(pil_image: Image.Image) -> dict | None:
         return None
 
     best = results[0]
-    if best["overall"] < config.CONFIDENCE_THRESHOLD:
+    if best["overall"] < threshold:
         return None
 
     return {

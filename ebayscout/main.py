@@ -417,15 +417,19 @@ def _run_daily_scan() -> None:
         return
 
     new_listings = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
+    ebay_new     = sum(1 for l in new_listings if not l["item_id"].startswith("etsy_"))
+    etsy_new     = sum(1 for l in new_listings if     l["item_id"].startswith("etsy_"))
     print(f">>> SCAN: {len(new_listings)} new listings to process.", flush=True)
+
+    stat_alerted        = 0
+    stat_low_confidence = 0
+    stat_rejected       = 0
 
     for listing in new_listings:
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
 
         try:
-            # Etsy listings have the full image URL in gallery_url already;
-            # eBay listings need a separate Shopping API call for full-size images.
             if item_id.startswith("etsy_"):
                 picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
             elif ebay_app_id:
@@ -436,7 +440,8 @@ def _run_daily_scan() -> None:
                 picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
 
             matched: dict[tuple, dict] = {}
-            unmatched_count = 0
+            best_score_seen = 0.0
+            photos_processed = 0
 
             for photo_url in picture_urls[: config.MAX_PHOTOS_PER_LISTING]:
                 try:
@@ -446,18 +451,32 @@ def _run_daily_scan() -> None:
                     print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
                     continue
 
+                photos_processed += 1
+
                 for crop in crops:
                     try:
-                        match = clip_matcher.match_crop(crop)
+                        match = clip_matcher.match_crop(
+                            crop, threshold=config.REJECTION_THRESHOLD
+                        )
                     except Exception:
-                        unmatched_count += 1
                         continue
                     if match is None:
-                        unmatched_count += 1
-                    else:
+                        continue
+                    best_score_seen = max(best_score_seen, match["overall"])
+                    if match["overall"] >= config.CONFIDENCE_THRESHOLD:
                         key = (match["year"], match["slogan"])
                         if key not in matched or match["overall"] > matched[key]["overall"]:
                             matched[key] = match
+
+            if photos_processed == 0 or best_score_seen < config.REJECTION_THRESHOLD:
+                stat_rejected += 1
+                seen_store.mark_seen(item_id, seen)
+                continue
+
+            if not matched:
+                stat_low_confidence += 1
+                seen_store.mark_seen(item_id, seen)
+                continue
 
             enriched_matches = []
             for (year, slogan), match in matched.items():
@@ -472,6 +491,7 @@ def _run_daily_scan() -> None:
             lot_value    = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_matches)
             margin       = lot_value - asking
             needed_found = [m for m in enriched_matches if m["amount_needed"] > 0]
+            listing_alerted = False
 
             if margin > 0:
                 notifier.send_undervalued_alert(
@@ -482,8 +502,9 @@ def _run_daily_scan() -> None:
                     lot_value=lot_value,
                     asking_price=asking,
                     margin=margin,
-                    unmatched_count=unmatched_count,
+                    unmatched_count=0,
                 )
+                listing_alerted = True
 
             if needed_found:
                 notifier.send_needed_alert(
@@ -494,6 +515,12 @@ def _run_daily_scan() -> None:
                     asking_price=asking,
                     lot_value=lot_value,
                 )
+                listing_alerted = True
+
+            if listing_alerted:
+                stat_alerted += 1
+            else:
+                stat_low_confidence += 1
 
         except Exception as exc:
             print(f"!!! SCAN: Error processing {item_id}: {exc}", flush=True)
@@ -504,6 +531,19 @@ def _run_daily_scan() -> None:
     if not seen_store.save_seen(seen):
         notifier.send_warning(_slack_token, _channel_id,
                               "Failed to save seen_items.json — next scan may re-alert.")
+
+    try:
+        notifier.send_scan_summary(
+            slack_token=_slack_token,
+            channel=_channel_id,
+            alerted=stat_alerted,
+            low_confidence=stat_low_confidence,
+            rejected=stat_rejected,
+            ebay_count=ebay_new,
+            etsy_count=etsy_new,
+        )
+    except Exception as exc:
+        print(f"!!! SCAN: Failed to post scan summary: {exc}", flush=True)
 
     print(">>> SCAN: Daily scan complete.", flush=True)
 

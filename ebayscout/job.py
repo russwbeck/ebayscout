@@ -156,6 +156,8 @@ def main() -> int:
         print(">>> EBAYSCOUT: Skipping Etsy (no ETSY_API_KEY).", flush=True)
 
     new_listings = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
+    ebay_new     = sum(1 for l in new_listings if not l["item_id"].startswith("etsy_"))
+    etsy_new     = sum(1 for l in new_listings if     l["item_id"].startswith("etsy_"))
     print(
         f">>> EBAYSCOUT: {len(all_listings)} total listings across all sources, "
         f"{len(new_listings)} new (not yet seen).",
@@ -165,7 +167,10 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 6. Process each new listing
     # ------------------------------------------------------------------
-    alerts_sent = 0
+    # Scan-summary counters
+    stat_alerted        = 0   # listings that triggered at least one alert
+    stat_low_confidence = 0   # best crop 45–72% — might be a button, no alert
+    stat_rejected       = 0   # best crop <45%  — clearly not a bank button
 
     for listing in new_listings:
         item_id = listing["item_id"]
@@ -190,9 +195,13 @@ def main() -> int:
             else:
                 picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
 
-            # b–c. Detect buttons and match across all photos
-            all_match_keys: dict[tuple, dict] = {}   # (year, slogan) → best match dict
-            unmatched_count = 0
+            # b–c. Detect buttons and match across all photos.
+            # match_crop is called at REJECTION_THRESHOLD so we capture every
+            # result ≥ 0.45.  Confident matches (≥ CONFIDENCE_THRESHOLD) go into
+            # all_match_keys for alerts; sub-threshold results only affect the
+            # summary counter.
+            all_match_keys: dict[tuple, dict] = {}   # (year, slogan) → best confident match
+            best_score_seen = 0.0                    # highest overall score across all crops
             photos_processed = 0
 
             for photo_url in picture_urls[: config.MAX_PHOTOS_PER_LISTING]:
@@ -212,26 +221,46 @@ def main() -> int:
 
                 for crop in crops:
                     try:
-                        match = clip_matcher.match_crop(crop)
+                        # Use REJECTION_THRESHOLD so low-confidence crops are visible
+                        match = clip_matcher.match_crop(
+                            crop, threshold=config.REJECTION_THRESHOLD
+                        )
                     except Exception as exc:
                         print(f"!!! LISTING: match_crop failed: {exc}", flush=True)
-                        unmatched_count += 1
                         continue
 
                     if match is None:
-                        unmatched_count += 1
-                    else:
+                        continue   # below REJECTION_THRESHOLD — truly not a button
+
+                    best_score_seen = max(best_score_seen, match["overall"])
+
+                    if match["overall"] >= config.CONFIDENCE_THRESHOLD:
                         key = (match["year"], match["slogan"])
-                        # Keep the highest-confidence match across photos
                         if key not in all_match_keys or match["overall"] > all_match_keys[key]["overall"]:
                             all_match_keys[key] = match
 
             if photos_processed == 0:
                 print(f"!!! LISTING: No photos could be processed for {item_id}.", flush=True)
+                stat_rejected += 1
                 seen_store.mark_seen(item_id, seen)
                 continue
 
-            # d. Enrich matches with price data
+            # Categorise listing for the summary
+            if not all_match_keys and best_score_seen < config.REJECTION_THRESHOLD:
+                stat_rejected += 1
+                print(f">>> LISTING: Rejected — best score {best_score_seen:.2f}", flush=True)
+                seen_store.mark_seen(item_id, seen)
+                continue
+            elif not all_match_keys:
+                stat_low_confidence += 1
+                print(
+                    f">>> LISTING: Low confidence — best score {best_score_seen:.2f}, no alert",
+                    flush=True,
+                )
+                seen_store.mark_seen(item_id, seen)
+                continue
+
+            # d. Enrich confident matches with price data
             high_conf_matches: list[dict] = []
             for (year, slogan), match in all_match_keys.items():
                 price_single, price_year, notes, amount_needed = sheets_client.get_buy_decision(
@@ -245,24 +274,23 @@ def main() -> int:
                 high_conf_matches.append(enriched)
 
             # e–f. Calculate lot value and find needed buttons
-            lot_value = 0.0
-            for m in high_conf_matches:
-                lot_value += sheets_client.parse_price(m["max_price_single"])
-
+            lot_value    = sum(sheets_client.parse_price(m["max_price_single"]) for m in high_conf_matches)
+            unmatched    = 0   # crops below confidence but above rejection (already tracked via best_score_seen)
             margin       = lot_value - asking
             needed_found = [m for m in high_conf_matches if m["amount_needed"] > 0]
 
             print(
-                f">>> LISTING: {len(high_conf_matches)} matched, "
-                f"{unmatched_count} unmatched | "
+                f">>> LISTING: {len(high_conf_matches)} matched | "
                 f"lot_value=${lot_value:.2f}, asking=${asking:.2f}, margin=${margin:.2f} | "
-                f"{len(needed_found)} needed buttons",
+                f"{len(needed_found)} needed",
                 flush=True,
             )
 
             # g. Send alerts
+            listing_alerted = False
+
             if margin > 0:
-                print(f">>> ALERT: Undervalued lot — sending Slack notification.", flush=True)
+                print(">>> ALERT: Undervalued lot — sending Slack notification.", flush=True)
                 if not config.DRY_RUN:
                     notifier.send_undervalued_alert(
                         slack_token=slack_token,
@@ -272,14 +300,14 @@ def main() -> int:
                         lot_value=lot_value,
                         asking_price=asking,
                         margin=margin,
-                        unmatched_count=unmatched_count,
+                        unmatched_count=unmatched,
                     )
                 else:
                     print(f"    [DRY RUN] Would post undervalued alert to {slack_channel}", flush=True)
-                alerts_sent += 1
+                listing_alerted = True
 
             if needed_found:
-                print(f">>> ALERT: Needed buttons found — sending Slack notification.", flush=True)
+                print(">>> ALERT: Needed buttons found — sending Slack notification.", flush=True)
                 if not config.DRY_RUN:
                     notifier.send_needed_alert(
                         slack_token=slack_token,
@@ -291,7 +319,13 @@ def main() -> int:
                     )
                 else:
                     print(f"    [DRY RUN] Would post needed-buttons alert to {slack_channel}", flush=True)
-                alerts_sent += 1
+                listing_alerted = True
+
+            if listing_alerted:
+                stat_alerted += 1
+            else:
+                # Confident match found but no alert condition met
+                stat_low_confidence += 1
 
         except Exception as exc:
             print(f"!!! LISTING: Unexpected error processing {item_id}: {exc}", flush=True)
@@ -306,7 +340,6 @@ def main() -> int:
     if not config.DRY_RUN:
         success = seen_store.save_seen(seen)
         if not success:
-            # Warn via Slack — the job succeeded but dedup state is not persisted
             try:
                 notifier.send_warning(
                     slack_token,
@@ -319,11 +352,34 @@ def main() -> int:
     else:
         print("[DRY RUN] Skipping save_seen().", flush=True)
 
+    # ------------------------------------------------------------------
+    # 8. Post scan summary
+    # ------------------------------------------------------------------
     print(
         f"\n>>> EBAYSCOUT: Done. "
-        f"{len(new_listings)} listings processed, {alerts_sent} alert(s) sent.",
+        f"alerted={stat_alerted}, low_conf={stat_low_confidence}, rejected={stat_rejected}",
         flush=True,
     )
+    if not config.DRY_RUN:
+        try:
+            notifier.send_scan_summary(
+                slack_token=slack_token,
+                channel=slack_channel,
+                alerted=stat_alerted,
+                low_confidence=stat_low_confidence,
+                rejected=stat_rejected,
+                ebay_count=ebay_new,
+                etsy_count=etsy_new,
+            )
+        except Exception as exc:
+            print(f"!!! EBAYSCOUT: Failed to post scan summary: {exc}", flush=True)
+    else:
+        print(
+            f"[DRY RUN] Summary: alerted={stat_alerted}, "
+            f"low_conf={stat_low_confidence}, rejected={stat_rejected}",
+            flush=True,
+        )
+
     return 0
 
 
