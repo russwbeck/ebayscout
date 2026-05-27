@@ -1,8 +1,7 @@
 """
-Tests for ebayscout/ebay_client.py
+Tests for ebayscout/ebay_client.py (eBay Browse API).
 """
 
-import json
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -16,30 +15,53 @@ from ebayscout import ebay_client
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_finding_response(items: list[dict], total_pages: int = 1):
-    """Build a minimal eBay Finding API JSON response."""
+def _browse_response(items: list[dict], total: int | None = None):
+    """Build a minimal Browse API item_summary/search JSON response."""
     return {
-        "findItemsAdvancedResponse": [{
-            "ack": ["Success"],
-            "paginationOutput": [{"totalPages": [str(total_pages)]}],
-            "searchResult": [{
-                "item": items
-            }]
-        }]
+        "itemSummaries": items,
+        "total": total if total is not None else len(items),
     }
 
 
-def _make_item(item_id="123", title="Penn State Button", seller="testseller",
-               price="5.00", listing_url="https://ebay.com/123",
-               gallery_url="https://thumbs.ebay.com/123"):
+def _summary(item_id="v1|111|0", title="Penn State Button", seller="testseller",
+             price="5.00", currency="USD", image="https://i.ebayimg.com/x.jpg",
+             url="https://ebay.com/itm/111"):
     return {
-        "itemId": [item_id],
-        "title": [title],
-        "sellerInfo": [{"sellerUserName": [seller]}],
-        "sellingStatus": [{"currentPrice": [{"__value__": price, "@currencyId": "USD"}]}],
-        "viewItemURL": [listing_url],
-        "galleryURL": [gallery_url],
+        "itemId":     item_id,
+        "title":      title,
+        "seller":     {"username": seller},
+        "price":      {"value": price, "currency": currency},
+        "image":      {"imageUrl": image},
+        "itemWebUrl": url,
     }
+
+
+def _mock_get(json_payload):
+    resp = MagicMock(status_code=200)
+    resp.json.return_value = json_payload
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Token handling
+# ---------------------------------------------------------------------------
+
+class TestAppToken:
+    def setup_method(self):
+        ebay_client._token_cache["token"] = None
+        ebay_client._token_cache["expires_at"] = 0.0
+
+    def test_fetches_and_caches_token(self):
+        post_resp = MagicMock(status_code=200)
+        post_resp.json.return_value = {"access_token": "TOK123", "expires_in": 7200}
+
+        with patch("ebayscout.ebay_client.requests.post", return_value=post_resp) as mock_post:
+            t1 = ebay_client._get_app_token("id", "secret")
+            t2 = ebay_client._get_app_token("id", "secret")
+
+        assert t1 == "TOK123"
+        assert t2 == "TOK123"
+        assert mock_post.call_count == 1   # second call served from cache
 
 
 # ---------------------------------------------------------------------------
@@ -48,81 +70,65 @@ def _make_item(item_id="123", title="Penn State Button", seller="testseller",
 
 class TestFindListings:
     def test_parses_item_fields_correctly(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = _make_finding_response([
-            _make_item("111", "Lot of PSU buttons", "seller_a", "10.00")
-        ])
-
-        with patch("ebayscout.ebay_client.requests.get", return_value=mock_resp):
-            results = ebay_client.find_listings("FAKE_APP_ID", "PSU button", [])
+        resp = _mock_get(_browse_response([
+            _summary("v1|1|0", "Lot of PSU buttons", "seller_a", "10.00")
+        ]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            results = ebay_client.find_listings("id", "sec", "PSU button", [])
 
         assert len(results) == 1
         r = results[0]
-        assert r["item_id"] == "111"
+        assert r["item_id"] == "v1|1|0"
         assert r["title"] == "Lot of PSU buttons"
         assert r["seller"] == "seller_a"
         assert r["current_price"] == 10.0
         assert r["currency"] == "USD"
+        assert r["gallery_url"] == "https://i.ebayimg.com/x.jpg"
 
     def test_deduplicates_within_query(self):
-        """Same item_id appearing twice should only appear once in results."""
-        item = _make_item("dupe_id")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = _make_finding_response([item, item])
-
-        with patch("ebayscout.ebay_client.requests.get", return_value=mock_resp):
-            results = ebay_client.find_listings("APP", "PSU button", [])
+        item = _summary("dupe_id")
+        resp = _mock_get(_browse_response([item, item], total=2))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            results = ebay_client.find_listings("id", "sec", "PSU button", [])
 
         assert len(results) == 1
         assert results[0]["item_id"] == "dupe_id"
 
-    def test_exclude_seller_param_sent(self):
-        """ExcludeSeller filter parameters must be present in the request."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = _make_finding_response([])
+    def test_excludes_seller_client_side(self):
+        resp = _mock_get(_browse_response([
+            _summary("v1|1|0", "PSU button", seller="badguy"),
+            _summary("v1|2|0", "PSU button", seller="goodseller"),
+        ]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            results = ebay_client.find_listings("id", "sec", "PSU button", ["BadGuy"])
 
-        with patch("ebayscout.ebay_client.requests.get", return_value=mock_resp) as mock_get:
-            ebay_client.find_listings("APP", "keyword", ["badguy", "anotherbad"])
+        assert len(results) == 1
+        assert results[0]["seller"] == "goodseller"
 
-        call_kwargs = mock_get.call_args
-        params = call_kwargs[1].get("params", call_kwargs[0][1] if len(call_kwargs[0]) > 1 else {})
-        # params may be a dict or the second positional arg
-        if isinstance(call_kwargs, tuple):
-            # check via the mock's call_args
-            params = mock_get.call_args.kwargs.get("params") or mock_get.call_args.args[1] if len(mock_get.call_args.args) > 1 else mock_get.call_args.kwargs.get("params", {})
+    def test_falls_back_to_thumbnail_image(self):
+        item = _summary("v1|1|0")
+        del item["image"]
+        item["thumbnailImages"] = [{"imageUrl": "https://thumb/x.jpg"}]
+        resp = _mock_get(_browse_response([item]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            results = ebay_client.find_listings("id", "sec", "PSU button", [])
 
-        # Reconstruct params from the actual call
-        actual_params = mock_get.call_args[1].get("params", {})
-        if not actual_params:
-            actual_params = mock_get.call_args[0][1] if len(mock_get.call_args[0]) > 1 else {}
-
-        assert "itemFilter(0).name" in actual_params
-        assert actual_params["itemFilter(0).name"] == "ExcludeSeller"
-        assert actual_params["itemFilter(0).value"] == "badguy"
-        assert actual_params["itemFilter(1).value"] == "anotherbad"
-
-    def test_api_error_returns_empty_list(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "findItemsAdvancedResponse": [{
-                "ack": ["Failure"],
-                "errorMessage": [{"error": [{"message": ["Invalid appId"]}]}],
-            }]
-        }
-
-        with patch("ebayscout.ebay_client.requests.get", return_value=mock_resp):
-            results = ebay_client.find_listings("BAD_APP", "keyword", [])
-
-        assert results == []
+        assert results[0]["gallery_url"] == "https://thumb/x.jpg"
 
     def test_http_error_returns_empty_list(self):
         import requests as req
-        with patch("ebayscout.ebay_client.requests.get", side_effect=req.HTTPError("500")):
-            results = ebay_client.find_listings("APP", "keyword", [])
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", side_effect=req.HTTPError("500")):
+            results = ebay_client.find_listings("id", "sec", "keyword", [])
+        assert results == []
+
+    def test_auth_failure_returns_empty_list(self):
+        with patch("ebayscout.ebay_client._get_app_token", side_effect=Exception("bad creds")):
+            results = ebay_client.find_listings("id", "sec", "keyword", [])
         assert results == []
 
 
@@ -132,29 +138,23 @@ class TestFindListings:
 
 class TestFindAllListings:
     def test_deduplicates_across_queries(self):
-        """Same item appearing in two query results should only appear once."""
-        shared_item = _make_item("shared_001")
-        unique_item = _make_item("unique_002")
-
-        responses = [
-            _make_finding_response([shared_item]),
-            _make_finding_response([shared_item, unique_item]),
+        shared = _summary("shared_001")
+        unique = _summary("unique_002")
+        resps = [
+            _mock_get(_browse_response([shared])),
+            _mock_get(_browse_response([shared, unique], total=2)),
         ]
-        mock_resps = [MagicMock(status_code=200) for _ in responses]
-        for mr, data in zip(mock_resps, responses):
-            mr.json.return_value = data
-
-        with patch("ebayscout.ebay_client.requests.get", side_effect=mock_resps):
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", side_effect=resps):
             results = ebay_client.find_all_listings(
-                app_id="APP",
-                queries=["query_a", "query_b"],
-                excluded_sellers=[],
+                client_id="id", client_secret="sec",
+                queries=["query_a", "query_b"], excluded_sellers=[],
             )
 
         ids = [r["item_id"] for r in results]
         assert "shared_001" in ids
         assert "unique_002" in ids
-        assert ids.count("shared_001") == 1   # deduped
+        assert ids.count("shared_001") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -162,42 +162,30 @@ class TestFindAllListings:
 # ---------------------------------------------------------------------------
 
 class TestGetItemPictures:
-    def test_returns_picture_urls(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "Item": {
-                "PictureURL": [
-                    "https://i.ebayimg.com/photo1.jpg",
-                    "https://i.ebayimg.com/photo2.jpg",
-                ]
-            }
-        }
+    def test_returns_primary_and_additional(self):
+        resp = _mock_get({
+            "image": {"imageUrl": "https://i.ebayimg.com/photo1.jpg"},
+            "additionalImages": [
+                {"imageUrl": "https://i.ebayimg.com/photo2.jpg"},
+                {"imageUrl": "https://i.ebayimg.com/photo3.jpg"},
+            ],
+        })
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            urls = ebay_client.get_item_pictures("id", "sec", "v1|123|0")
 
-        with patch("ebayscout.ebay_client.requests.get", return_value=mock_resp):
-            urls = ebay_client.get_item_pictures("APP", "123456")
-
-        assert len(urls) == 2
-        assert urls[0].startswith("https://")
+        assert urls == [
+            "https://i.ebayimg.com/photo1.jpg",
+            "https://i.ebayimg.com/photo2.jpg",
+            "https://i.ebayimg.com/photo3.jpg",
+        ]
 
     def test_returns_empty_on_error(self):
         import requests as req
-        with patch("ebayscout.ebay_client.requests.get", side_effect=req.HTTPError("404")):
-            urls = ebay_client.get_item_pictures("APP", "999")
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", side_effect=req.HTTPError("404")):
+            urls = ebay_client.get_item_pictures("id", "sec", "v1|999|0")
         assert urls == []
-
-    def test_handles_single_string_picture_url(self):
-        """eBay sometimes returns a single string instead of a list."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "Item": {"PictureURL": "https://i.ebayimg.com/only.jpg"}
-        }
-
-        with patch("ebayscout.ebay_client.requests.get", return_value=mock_resp):
-            urls = ebay_client.get_item_pictures("APP", "555")
-
-        assert urls == ["https://i.ebayimg.com/only.jpg"]
 
 
 # ---------------------------------------------------------------------------
@@ -205,48 +193,45 @@ class TestGetItemPictures:
 # ---------------------------------------------------------------------------
 
 class TestKeywordExclusion:
-    def _resp(self, items):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = _make_finding_response(items)
-        return mock_resp
-
     def test_apparel_title_excluded(self):
-        items = [
-            _make_item("1", "Penn State Embroidered Hoodie"),
-            _make_item("2", "PSU Football Button 1987"),
-        ]
-        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
+        resp = _mock_get(_browse_response([
+            _summary("v1|1|0", "Penn State Embroidered Hoodie"),
+            _summary("v1|2|0", "PSU Football Button 1987"),
+        ]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
             results = ebay_client.find_listings(
-                "APP", "Penn State button", [],
+                "id", "sec", "Penn State button", [],
                 excluded_keywords=["hoodie", "embroidered"],
             )
         assert len(results) == 1
-        assert results[0]["item_id"] == "2"
+        assert results[0]["item_id"] == "v1|2|0"
 
     def test_keyword_match_is_case_insensitive(self):
-        items = [_make_item("1", "PSU DRIFIT Polo Shirt")]
-        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
+        resp = _mock_get(_browse_response([_summary("v1|1|0", "PSU DRIFIT Polo Shirt")]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
             results = ebay_client.find_listings(
-                "APP", "PSU polo", [],
+                "id", "sec", "PSU polo", [],
                 excluded_keywords=["polo", "drifit"],
             )
         assert results == []
 
     def test_empty_excluded_keywords_keeps_all(self):
-        items = [_make_item("1", "Penn State Hoodie Pin")]
-        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
+        resp = _mock_get(_browse_response([_summary("v1|1|0", "Penn State Hoodie Pin")]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
             results = ebay_client.find_listings(
-                "APP", "Penn State pin", [],
-                excluded_keywords=[],
+                "id", "sec", "Penn State pin", [], excluded_keywords=[],
             )
         assert len(results) == 1
 
     def test_uses_config_defaults_when_none(self):
-        """When excluded_keywords=None, config.EXCLUDED_KEYWORDS is used."""
         from ebayscout import config
-        items = [_make_item("1", f"PSU {config.EXCLUDED_KEYWORDS[0].title()} Shirt")]
-        with patch("ebayscout.ebay_client.requests.get", return_value=self._resp(items)):
-            results = ebay_client.find_listings("APP", "PSU button", [])
-        # Should be filtered by the config default
+        resp = _mock_get(_browse_response([
+            _summary("v1|1|0", f"PSU {config.EXCLUDED_KEYWORDS[0].title()} Shirt")
+        ]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            results = ebay_client.find_listings("id", "sec", "PSU button", [])
         assert results == []
