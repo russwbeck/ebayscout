@@ -25,12 +25,14 @@ from slack_bolt.adapter.flask import SlackRequestHandler
 from google.cloud import secretmanager
 
 from . import config
-from . import clip_matcher
 from . import sheets_client
-from . import image_proc
 from . import notifier
 from . import etsy_client
 from .utils import parse_price_source, format_manual_result
+
+# clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
+# a missing .so or slow first-import doesn't kill the entire process at startup.
+# They are imported inside startup() and the scan/analysis functions.
 
 # ---------------------------------------------------------------------------
 # Secrets — fetched at module load so the Slack App can be created immediately
@@ -219,7 +221,8 @@ def _run_manual_analysis(
 
     # Detect button crops
     try:
-        crops = image_proc.detect_and_crop(image_bytes)
+        from . import image_proc as _ip   # lazy import
+        crops = _ip.detect_and_crop(image_bytes)
     except Exception as exc:
         print(f"!!! MANUAL: detect_and_crop failed: {exc}", flush=True)
         _reply("❌ Couldn't detect buttons in that image.")
@@ -233,9 +236,10 @@ def _run_manual_analysis(
     matched: dict[tuple, dict] = {}   # (year, slogan) → enriched match
     unmatched_count = 0
 
+    from . import clip_matcher as _cm   # lazy import (already loaded if CLIP ready)
     for crop in crops:
         try:
-            match = clip_matcher.match_crop(crop)
+            match = _cm.match_crop(crop)
         except Exception as exc:
             print(f"!!! MANUAL: match_crop error: {exc}", flush=True)
             unmatched_count += 1
@@ -346,9 +350,11 @@ def run_scan():
 
 @flask_app.route("/health", methods=["GET"])
 def health():
+    # Always return 200 so Cloud Run health probes don't kill the container
+    # during the 30-60s CLIP hydration window.
     if not vectors_loaded:
-        return "hydrating", 503
-    return "OK — ready", 200
+        return "OK - hydrating", 200
+    return "OK - ready", 200
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +431,9 @@ def _run_daily_scan() -> None:
     stat_low_confidence = 0
     stat_rejected       = 0
 
+    from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
+    from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
+
     for listing in new_listings:
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
@@ -445,8 +454,8 @@ def _run_daily_scan() -> None:
 
             for photo_url in picture_urls[: config.MAX_PHOTOS_PER_LISTING]:
                 try:
-                    image_bytes = image_proc.download_image(photo_url)
-                    crops       = image_proc.detect_and_crop(image_bytes)
+                    image_bytes = _ip.download_image(photo_url)
+                    crops       = _ip.detect_and_crop(image_bytes)
                 except Exception as exc:
                     print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
                     continue
@@ -455,7 +464,7 @@ def _run_daily_scan() -> None:
 
                 for crop in crops:
                     try:
-                        match = clip_matcher.match_crop(
+                        match = _cm.match_crop(
                             crop, threshold=config.REJECTION_THRESHOLD
                         )
                     except Exception:
@@ -567,7 +576,8 @@ def startup() -> None:
     def _hydrate():
         global vectors_loaded
         try:
-            clip_matcher.init(config.BUCKET_NAME)
+            from . import clip_matcher as cm   # lazy: torch+clip imported here
+            cm.init(config.BUCKET_NAME)
             vectors_loaded = True
             print(">>> STARTUP: CLIP ready.", flush=True)
         except Exception as exc:
