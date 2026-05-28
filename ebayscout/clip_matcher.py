@@ -62,12 +62,7 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
 
         print(">>> CLIP: Loading ViT-B/32 model...", flush=True)
         _model, _preprocess = clip.load("ViT-B/32", device=_device)
-
-        # Quantize to int8 for faster CPU inference (same as both existing services)
-        _model = torch.quantization.quantize_dynamic(
-            _model, {torch.nn.Linear}, dtype=torch.qint8
-        )
-        print(">>> CLIP: Model loaded and quantized.", flush=True)
+        print(">>> CLIP: Model loaded.", flush=True)
 
         # Download vector files from GCS
         client = storage.Client()
