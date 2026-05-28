@@ -459,46 +459,45 @@ def test_clip():
         except Exception as exc:
             return jsonify({"error": f"CLIP init failed: {exc}"}), 500
 
-    import requests as req
-    from . import image_proc as _ip
-    from . import clip_matcher as _cm
-    from . import ebay_client
+    try:
+        import requests as req
+        from . import image_proc as _ip
+        from . import clip_matcher as _cm
+        from . import ebay_client
 
-    # Resolve eBay item ID → first picture URL
-    if item_id:
-        try:
+        # Resolve eBay item ID → first picture URL
+        if item_id:
             ebay_app_id  = _get_secret("EBAY_APP_ID")
             ebay_cert_id = _get_secret("EBAY_CERT_ID")
             urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
-        except Exception as exc:
-            return jsonify({"error": f"eBay lookup failed: {exc}"}), 500
-        if not urls:
-            return jsonify({"error": "no images found for that item_id"}), 404
-        image_url = urls[0]
+            if not urls:
+                return jsonify({"error": "no images found for that item_id"}), 404
+            image_url = urls[0]
 
-    try:
         resp = req.get(image_url, timeout=20)
         resp.raise_for_status()
         image_bytes = resp.content
+
+        with _keep_cpu_hot():
+            crops = _ip.detect_and_crop(image_bytes)
+            if not crops:
+                return jsonify({"image_url": image_url, "crops": 0, "message": "no crops detected"})
+
+            results = []
+            for i, crop in enumerate(crops):
+                match = _cm.match_crop(crop, threshold=0.0)
+                results.append({"crop": i, "match": match})
+
+        best = max((r["match"]["overall"] for r in results if r["match"]), default=0.0)
+        return jsonify({
+            "image_url": image_url,
+            "crops": len(crops),
+            "best_overall": round(best, 4),
+            "details": results,
+        })
     except Exception as exc:
-        return jsonify({"error": f"image download failed: {exc}"}), 400
-
-    crops = _ip.detect_and_crop(image_bytes)
-    if not crops:
-        return jsonify({"image_url": image_url, "crops": 0, "message": "no crops detected"})
-
-    results = []
-    for i, crop in enumerate(crops):
-        match = _cm.match_crop(crop, threshold=0.0)
-        results.append({"crop": i, "match": match})
-
-    best = max((r["match"]["overall"] for r in results if r["match"]), default=0.0)
-    return jsonify({
-        "image_url": image_url,
-        "crops": len(crops),
-        "best_overall": round(best, 4),
-        "details": results,
-    })
+        traceback.print_exc()
+        return jsonify({"error": str(exc), "type": type(exc).__name__}), 500
 
 
 # ---------------------------------------------------------------------------
