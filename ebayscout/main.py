@@ -654,6 +654,7 @@ def _run_daily_scan() -> None:
     stat_alerted        = 0
     stat_low_confidence = 0
     stat_rejected       = 0
+    _listings_since_save = 0
 
     from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
@@ -786,6 +787,10 @@ def _run_daily_scan() -> None:
             traceback.print_exc()
 
         seen_store.mark_seen(item_id, seen)
+        _listings_since_save += 1
+        if not config.DRY_RUN and _listings_since_save >= 50:
+            seen_store.save_seen(seen)
+            _listings_since_save = 0
 
     if config.DRY_RUN:
         print("[DRY RUN] Skipping save_seen().", flush=True)
