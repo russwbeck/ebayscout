@@ -161,7 +161,9 @@ def handle_file_shared(event, client):
         thread_ts=event_ts,
         text=(
             "Got it! Reply in this thread with the asking price and where it's from:\n"
-            "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`"
+            "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`\n"
+            "For lots with many buttons, add the count:\n"
+            "`$25.00 | Facebook Marketplace | 35`"
         ),
     )
 
@@ -190,8 +192,8 @@ def handle_message(event, client):
 
     scan = pending_scans[user_id]
 
-    # Parse "price | source"
-    asking_price, source = parse_price_source(text)
+    # Parse "price | source" or "price | source | count"
+    asking_price, source, button_count = parse_price_source(text)
 
     if asking_price is None:
         client.chat_postMessage(
@@ -199,7 +201,9 @@ def handle_message(event, client):
             thread_ts=scan["thread_ts"],
             text=(
                 "Couldn't parse that — please reply with:\n"
-                "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`"
+                "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`\n"
+                "If it's a lot with many buttons, add the count:\n"
+                "`$25.00 | Facebook Marketplace | 35`"
             ),
         )
         return
@@ -211,7 +215,7 @@ def handle_message(event, client):
     threading.Thread(
         target=_run_manual_analysis,
         args=(scan["file_url"], scan["channel_id"], scan["thread_ts"],
-              asking_price, source, client),
+              asking_price, source, client, button_count),
         daemon=True,
     ).start()
 
@@ -221,12 +225,13 @@ def handle_message(event, client):
 # ---------------------------------------------------------------------------
 
 def _run_manual_analysis(
-    file_url:    str,
-    channel_id:  str,
-    thread_ts:   str,
+    file_url:     str,
+    channel_id:   str,
+    thread_ts:    str,
     asking_price: float,
-    source:      str,
+    source:       str,
     client,
+    button_count: int | None = None,
 ) -> None:
     """Download the uploaded image, detect buttons, match, and post results."""
 
@@ -254,7 +259,7 @@ def _run_manual_analysis(
         # Detect button crops
         try:
             from . import image_proc as _ip   # lazy import
-            crops = _ip.detect_and_crop(image_bytes)
+            crops = _ip.detect_and_crop(image_bytes, button_count=button_count)
         except Exception as exc:
             print(f"!!! MANUAL: detect_and_crop failed: {exc}", flush=True)
             _reply("❌ Couldn't detect buttons in that image.")

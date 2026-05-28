@@ -32,6 +32,7 @@ def detect_and_crop(
     rows: int = 4,
     cols: int = 3,
     expected: int | None = None,
+    button_count: int | None = None,
 ) -> list[Image.Image]:
     """
     Detect individual buttons in a lot photo and return PIL.Image crops (RGB).
@@ -50,7 +51,13 @@ def detect_and_crop(
     Returns:
         List of PIL.Image.Image crops (RGB).  Empty list if detection fails.
     """
-    if expected is None:
+    if button_count is not None:
+        expected = button_count
+        # Derive rows/cols from count so expected_r scales correctly
+        side = max(1, int(button_count ** 0.5))
+        rows = side
+        cols = max(1, (button_count + side - 1) // side)
+    elif expected is None:
         expected = rows * cols
 
     # Decode
