@@ -147,8 +147,8 @@ def _score_best_match(
     year_image_scores: dict[int, float] = {}
     for i, label in enumerate(_ref_labels):
         try:
-            year = int(label.split()[0])
-        except (ValueError, IndexError):
+            year = int(label) if isinstance(label, (int, float)) else int(str(label).split()[0])
+        except (ValueError, IndexError, AttributeError):
             continue
         score = float(image_sims[i])
         if year not in year_image_scores or score > year_image_scores[year]:
