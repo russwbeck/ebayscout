@@ -235,7 +235,175 @@ apparel.  Filters were added incrementally as noise patterns were identified:
 
 ---
 
-## Startup sequence (reference)
+## 12. CLIP scores were 0.00 for every listing (two root causes)
+
+After the first full scan ran (~600 listings, ~3 hours), every single listing
+scored exactly 0.00.  Real CCB/Mellon/Citizens buttons were being rejected.
+
+**Root cause 1: integer labels in `vectors.pt`**
+
+`_ref_labels` (loaded from `vectors.pt`) contains plain integers (years), not
+`"YEAR SLOGAN"` strings.  `_score_best_match` called `label.split()[0]` on each
+label, which raises `AttributeError` on an int.  The `except` clause only caught
+`ValueError` and `IndexError` — not `AttributeError` — so every label was
+silently skipped, `year_image_scores` was always empty, and every crop scored
+0.00.  Fix: `int(label) if isinstance(label, (int, float)) else int(str(label).split()[0])`.
+
+**Root cause 2: `quantize_dynamic` shifts the output space**
+
+`clip_matcher.init()` called `torch.quantization.quantize_dynamic()` at runtime
+to speed up CPU inference.  The reference vectors in `vectors.pt` were built with
+a **full-precision** model.  Re-quantizing at inference time changes the model's
+output distribution enough that all cosine similarities collapse toward zero.
+Fix: remove `quantize_dynamic` entirely.  Inference is slower but scores are now
+in the expected 0.60–0.80 range for real buttons.
+
+Both bugs existed simultaneously, so fixing either one alone would have left
+scores at 0.00.
+
+---
+
+## 13. Batch CLIP encoding
+
+The original scan loop called `match_crop(crop)` once per crop — one CLIP
+forward pass per button circle detected per photo.  With no `quantize_dynamic`,
+each forward pass on CPU takes ~15–30 seconds.  A listing with 4 crops would
+take 1–2 minutes by itself.
+
+Fix: `match_crops_batch(crops)` stacks all crops for a listing into a single
+tensor and runs one forward pass, then scores each crop from the resulting
+embedding matrix.  Cost is roughly constant regardless of crop count.  Applied
+to both the daily scan and manual analysis.
+
+---
+
+## 14. PSU queries restricted to Sports Memorabilia
+
+`"PSU button"`, `"PSU pin"`, etc. flood results with Power Supply Unit electronics
+(cables, GPU accessories).  Log analysis showed 65+ PSU electronics titles in a
+single scan.
+
+Fix: `PSU_SEARCH_QUERIES` are passed with `category_ids=SPORTS_MEMO_CATEGORY_ID`
+(`"64482"` = Sports Mem, Cards & Fan Shop) so "PSU" matches Penn State University
+memorabilia rather than PC power supplies.
+
+---
+
+## 15. Dedup checkpoint every 50 listings
+
+The original code wrote `seen_items.json` only at the very end of the scan.
+With a 1800-second timeout and ~600 listings taking close to that limit, a timeout
+would cause the next scan to re-process every listing.
+
+Fix: write `seen_items.json` to GCS every 50 listings mid-scan.  The final write
+still happens at the end.  If the container times out, at most 49 listings are
+re-processed on the next run.
+
+---
+
+## 16. Slack Event Subscriptions were not configured
+
+The manual upload flow (user uploads photo → bot analyses lot) depends on two
+Slack event subscriptions:
+
+- `file_shared` — fires when a user uploads a file to the channel
+- `message.channels` — fires when a user sends a message (needed to receive the
+  price/source reply)
+
+Neither was enabled.  Slack Events API was not turned on at all on first deploy.
+The bot was receiving zero Slack events despite the endpoints existing.
+
+Fix: in api.slack.com → App → Event Subscriptions → enable, set Request URL to
+`https://ebay-scout-404960106109.us-east1.run.app/slack/events`, add both
+subscriptions.
+
+---
+
+## 17. Manual upload reply never processed (three bugs)
+
+After enabling event subscriptions the bot saw the file upload but ignored the
+user's price/source reply.  Three bugs stacked:
+
+**Bug 1 — `file_share` subtype triggering `handle_message`.**
+When a user uploads a file, Slack fires both a `file_shared` event AND a
+`message` event with subtype `file_share`.  The message handler ran on the file
+upload message itself (which contains no `$XX | Source` text), produced
+"Couldn't parse that", and consumed no pending scan state.  Fix: early-return
+on `event.get("subtype") == "file_share"`.
+
+**Bug 2 — `event_ts` ≠ `thread_ts`.**
+`handle_file_shared` stored `event_ts` from the `file_shared` event as the
+expected `thread_ts`.  When the user replied, Slack sent the actual message
+`thread_ts` (the parent message's `ts`), which did not match.  Fix: remove the
+`thread_ts` comparison entirely; keying on `user_id` alone is sufficient since
+`pending_scans[user_id]` is deleted immediately after the analysis thread starts.
+
+**Bug 3 — multiple Cloud Run instances.**
+With no instance limit, Cloud Run could spin up a second container for a
+concurrent request.  The first container stored `pending_scans[user_id]`; the
+second had an empty dict and dropped the reply silently.  Fix: `--max-instances=1`
+in `cloudbuild.yaml` so all requests always reach the same container.
+
+---
+
+## 18. Hough circle detection distribution (eBay daily scan)
+
+Analysis of 147 eBay listing photos from the first full scan:
+
+| Circles detected | Listings | % |
+|-----------------|----------|---|
+| 0 (whole-image fallback) | 55 | 37% |
+| 1 | 19 | 13% |
+| 2 | 32 | 22% |
+| 3 | 11 | 8% |
+| 4–12 | 30 | 20% |
+| Max | 12 | — |
+
+This distribution is expected for eBay.  Most sellers photograph one button at a
+time; 0-circle fallback is common for cluttered backgrounds.  Maximum detected
+was 12, meaning no large multi-button lots were surfaced by eBay in this scan.
+
+The **manual upload** case is different: a collector uploading a lot photo may
+have 20–35 buttons.  The default 4×3 grid radius is too large to detect small
+buttons in a dense lot.  Two fixes were added:
+
+1. **Two-pass Hough**: if the first pass finds fewer than 4 circles, a second
+   pass runs at half the expected radius.
+2. **User-supplied count**: the reply format now accepts an optional third field —
+   `$25.00 | Facebook Marketplace | 35` — which sets `expected`, `rows`, and
+   `cols` so the radius scales correctly for the actual lot size.
+
+---
+
+## 19. Noise keyword expansion
+
+Log analysis of 480+ titles from the first scan identified recurring non-button
+listing types.  `EXCLUDED_KEYWORDS` was expanded from 14 to 27 terms:
+
+Added: `shirt`, `jersey`, `vest`, `brooch`, `lanyard`, `strap`, `ornament`,
+`christmas`, `wooden`, `cable`, `badge reel`, `map`, `sticker`, `decal`
+
+`book` was explicitly kept: Penn State football button books are often sold
+bundled with actual buttons and are desirable lots.
+
+`supply`, `monitor`, `parts` were left out — largely handled by the PSU category
+restriction, and risky to exclude broadly.
+
+The terminology "bank button" was replaced with "gameday button" throughout the
+codebase.  The scanner targets Penn State Gameday buttons across all eras (CCB
+1972–1983, Mellon Bank, Citizens Bank), not just Central Counties Bank.
+
+---
+
+## Remaining known issues
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| CLIP accuracy on multi-button photos | Open | 2003 "Gopher Broke" matched 2002/2006 at 0.697 — just below 0.72 threshold. Likely the Hough crop didn't isolate the right button. Needs a clean single-button eBay photo to validate. |
+| kling24toys seller filter | Open | Listed in `EXCLUDED_SELLERS` but need to confirm actual eBay username matches after new scan logs show seller names in brackets. |
+| Manual upload button count UX | Newly deployed | Merged in PR #5, not yet validated in production. |
+| First scan with correct CLIP | Pending | 9am Cloud Scheduler trigger tomorrow will be the first scan with working scores. Need to confirm alerts fire for real buttons. |
+
 
 ```
 gunicorn master starts
