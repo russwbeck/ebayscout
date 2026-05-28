@@ -54,6 +54,7 @@ ETSY_EXCLUDED_SELLERS: list[str] = []
 # Any listing whose title contains one of these words (case-insensitive) is
 # skipped by both the eBay and Etsy clients before CLIP processing.
 EXCLUDED_KEYWORDS: list[str] = [
+    # apparel
     "embroidered",
     "drifit",
     "hoodie",
@@ -67,8 +68,21 @@ EXCLUDED_KEYWORDS: list[str] = [
     "antigua",
     "jacket",
     "pullover",
+    "shirt",
+    "jersey",
+    "vest",
+    # accessories / non-pin items
     "enamel",
     "enameled",
+    "brooch",
+    "lanyard",
+    "strap",
+    "ornament",
+    "christmas",
+    # clearly non-button objects
+    "wooden",
+    "cable",
+    "book",
 ]
 
 # --- eBay category IDs to exclude entirely ---
