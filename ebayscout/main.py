@@ -686,15 +686,21 @@ def _run_daily_scan() -> None:
                     print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
                     continue
 
+                if not crops:
+                    continue
+
                 photos_processed += 1
 
-                for crop in crops:
-                    try:
-                        match = _cm.match_crop(
-                            crop, threshold=config.REJECTION_THRESHOLD
-                        )
-                    except Exception:
-                        continue
+                # Encode all crops in one forward pass instead of one-by-one
+                try:
+                    batch_results = _cm.match_crops_batch(
+                        crops, threshold=config.REJECTION_THRESHOLD
+                    )
+                except Exception as exc:
+                    print(f"!!! SCAN: match_crops_batch failed: {exc}", flush=True)
+                    continue
+
+                for match in batch_results:
                     if match is None:
                         continue
                     best_score_seen = max(best_score_seen, match["overall"])
