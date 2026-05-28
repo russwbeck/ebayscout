@@ -179,11 +179,10 @@ def handle_message(event, client):
       - The message is from a user (not the bot)
     """
     user_id   = event.get("user")
-    thread_ts = event.get("thread_ts")
     text      = (event.get("text") or "").strip()
 
-    # Ignore bot messages
-    if not user_id or event.get("bot_id"):
+    # Ignore bot messages and file-share system events
+    if not user_id or event.get("bot_id") or event.get("subtype") == "file_share":
         return
 
     if user_id not in pending_scans:
