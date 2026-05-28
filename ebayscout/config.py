@@ -82,18 +82,28 @@ EXCLUDED_CATEGORY_IDS: list[str] = ["11450"]
 # "Central Counties Bank" runs standalone (no button-type suffix) because it is a
 # low-frequency, precise term that collides with noise when combined with other words.
 BUTTON_TYPES  = ["button", "pin", "badge", "pinback"]
-PSU_VARIANTS  = ["Penn State", "Nittany Lions"]
 
+# eBay category 64482 = "Sports Mem, Cards & Fan Shop" (top-level sports
+# memorabilia). Restricting PSU queries to this category keeps Penn State
+# University results while dropping the Power Supply Unit electronics noise
+# that floods unrestricted "PSU button/pin/badge/pinback" searches.
+SPORTS_MEMO_CATEGORY_ID = "64482"
+
+# Unrestricted queries — "Penn State" and "Nittany Lions" are unambiguous.
 EBAY_SEARCH_QUERIES: list[str] = (
-    [f"{psu} {btn}" for psu in PSU_VARIANTS for btn in BUTTON_TYPES]
+    [f"Penn State {btn}" for btn in BUTTON_TYPES]
+    + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
     + ["Central Counties Bank"]
 )
 # Produces 9 queries:
-#   "Penn State button", "Penn State pin", "Penn State badge", "Penn State pinback",
-#   "Nittany Lions button", "Nittany Lions pin", "Nittany Lions badge", "Nittany Lions pinback",
+#   "Penn State button/pin/badge/pinback"
+#   "Nittany Lions button/pin/badge/pinback"
 #   "Central Counties Bank"
-# "PSU" was removed — it means "Power Supply Unit" to electronics sellers and
-# returned hundreds of ATX PSU / monitor board listings per scan.
+
+# PSU queries run with category_ids=SPORTS_MEMO_CATEGORY_ID so "PSU" matches
+# Penn State University buttons rather than Power Supply Units.
+PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
+# Produces 4 queries: "PSU button", "PSU pin", "PSU badge", "PSU pinback"
 
 # --- Dry-run mode (set True for smoke testing) ---
 # When True: the scan runs end-to-end but posts no Slack messages and does

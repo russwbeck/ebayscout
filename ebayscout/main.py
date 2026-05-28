@@ -614,7 +614,18 @@ def _run_daily_scan() -> None:
                 max_results=config.EBAY_MAX_RESULTS,
             )
             all_listings.extend(ebay_listings)
-            print(f">>> SCAN: eBay returned {len(ebay_listings)} listings.", flush=True)
+            # PSU queries restricted to Sports Memorabilia to avoid electronics
+            psu_listings = ebay_client.find_all_listings(
+                client_id=ebay_app_id,
+                client_secret=ebay_cert_id,
+                queries=config.PSU_SEARCH_QUERIES,
+                excluded_sellers=config.EXCLUDED_SELLERS,
+                max_results=config.EBAY_MAX_RESULTS,
+                category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+            )
+            all_listings.extend(psu_listings)
+            print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
+                  f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
         except Exception as exc:
             print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
     else:

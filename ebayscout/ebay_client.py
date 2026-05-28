@@ -62,6 +62,7 @@ def find_listings(
     excluded_sellers: list[str],
     excluded_keywords: list[str] | None = None,
     max_results: int = 100,
+    category_ids: str | None = None,
 ) -> list[dict]:
     """
     Search the Browse API item_summary/search for one keyword string.
@@ -97,6 +98,8 @@ def find_listings(
         "limit": str(min(200, max_results)),
         "sort":  "newlyListed",
     }
+    if category_ids:
+        params["category_ids"] = category_ids
     try:
         resp = _get_with_retry(config.EBAY_BROWSE_SEARCH_URL, params, headers)
     except Exception as exc:
@@ -158,10 +161,11 @@ def find_all_listings(
     excluded_sellers: list[str] | None = None,
     excluded_keywords: list[str] | None = None,
     max_results: int = 100,
+    category_ids: str | None = None,
 ) -> list[dict]:
     """
-    Run find_listings() for each query in EBAY_SEARCH_QUERIES,
-    deduplicate by item_id, return combined unique list.
+    Run find_listings() for each query, deduplicate by item_id, return combined
+    unique list. Pass category_ids to restrict all queries to a specific category.
     """
     if queries is None:
         queries = config.EBAY_SEARCH_QUERIES
@@ -177,6 +181,7 @@ def find_all_listings(
         batch = find_listings(
             client_id, client_secret, query,
             excluded_sellers, excluded_keywords, max_results,
+            category_ids=category_ids,
         )
         for listing in batch:
             iid = listing["item_id"]
