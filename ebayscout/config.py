@@ -82,7 +82,6 @@ EXCLUDED_KEYWORDS: list[str] = [
     # clearly non-button objects
     "wooden",
     "cable",
-    "book",
 ]
 
 # --- eBay category IDs to exclude entirely ---
