@@ -434,6 +434,60 @@ def health():
     return "OK - ready", 200
 
 
+@flask_app.route("/test-clip", methods=["GET"])
+def test_clip():
+    """
+    Debug endpoint: load CLIP if needed, download one image, run detect+match,
+    and return raw per-crop scores (not filtered by threshold).
+
+    Usage:
+      curl "https://<service>/test-clip?url=<image_url>"
+
+    Returns JSON with the top match score for each crop so you can see what
+    CLIP is actually producing without running a full scan.
+    """
+    image_url = request.args.get("url")
+    if not image_url:
+        return jsonify({"error": "missing ?url= parameter"}), 400
+
+    # Ensure CLIP is loaded
+    global vectors_loaded
+    if not vectors_loaded:
+        try:
+            from . import clip_matcher as cm
+            cm.init(config.BUCKET_NAME)
+            vectors_loaded = True
+        except Exception as exc:
+            return jsonify({"error": f"CLIP init failed: {exc}"}), 500
+
+    import requests as req
+    from . import image_proc as _ip
+    from . import clip_matcher as _cm
+
+    try:
+        resp = req.get(image_url, timeout=20)
+        resp.raise_for_status()
+        image_bytes = resp.content
+    except Exception as exc:
+        return jsonify({"error": f"image download failed: {exc}"}), 400
+
+    crops = _ip.detect_and_crop(image_bytes)
+    if not crops:
+        return jsonify({"crops": 0, "message": "no crops detected"})
+
+    results = []
+    for i, crop in enumerate(crops):
+        # Pass threshold=0.0 so match_crop returns a result for every crop
+        match = _cm.match_crop(crop, threshold=0.0)
+        results.append({
+            "crop": i,
+            "match": match,
+        })
+
+    best = max((r["match"]["overall"] for r in results if r["match"]), default=0.0)
+    return jsonify({"crops": len(crops), "best_overall": best, "details": results})
+
+
 # ---------------------------------------------------------------------------
 # eBay Marketplace Account Deletion endpoint (required for production API)
 # ---------------------------------------------------------------------------
