@@ -269,14 +269,13 @@ def _run_manual_analysis(
         unmatched_count = 0
 
         from . import clip_matcher as _cm   # lazy import (already loaded if CLIP ready)
-        for crop in crops:
-            try:
-                match = _cm.match_crop(crop)
-            except Exception as exc:
-                print(f"!!! MANUAL: match_crop error: {exc}", flush=True)
-                unmatched_count += 1
-                continue
+        try:
+            batch_results = _cm.match_crops_batch(crops)
+        except Exception as exc:
+            print(f"!!! MANUAL: match_crops_batch error: {exc}", flush=True)
+            batch_results = [None] * len(crops)
 
+        for match in batch_results:
             if match is None:
                 unmatched_count += 1
             else:

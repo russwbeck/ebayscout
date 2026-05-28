@@ -117,17 +117,31 @@ def detect_and_crop(
     gray = cv2.GaussianBlur(mask, (9, 9), 2)
 
     # --- Hough circle detection ---
-    expected_r = int(min(h / rows, w / cols) * 0.35)
-    min_r      = int(expected_r * 0.7)
-    max_r      = int(expected_r * 1.3)
+    # Run two passes: one sized for the expected grid, one at half scale for
+    # dense lots where buttons are smaller than the grid assumption implies.
+    def _hough(exp_r: int):
+        return cv2.HoughCircles(
+            gray, cv2.HOUGH_GRADIENT, dp=1.3,
+            minDist=int(exp_r * 1.7),
+            param1=120, param2=24,
+            minRadius=int(exp_r * 0.7),
+            maxRadius=int(exp_r * 1.3),
+        )
 
-    circles = cv2.HoughCircles(
-        gray, cv2.HOUGH_GRADIENT, dp=1.3,
-        minDist=int(expected_r * 1.7),
-        param1=120, param2=24,
-        minRadius=min_r,
-        maxRadius=max_r,
-    )
+    expected_r = int(min(h / rows, w / cols) * 0.35)
+    circles = _hough(expected_r)
+
+    # If the first pass finds fewer than 4 circles, try a denser pass at
+    # half the expected radius (handles 20-30+ button lot photos).
+    if circles is None or len(circles[0]) < 4:
+        small_r = max(10, expected_r // 2)
+        circles_small = _hough(small_r)
+        if circles_small is not None and (
+            circles is None or len(circles_small[0]) > len(circles[0])
+        ):
+            circles  = circles_small
+            expected_r = small_r
+
     if circles is not None:
         circles = np.around(circles[0]).astype(int)
 
