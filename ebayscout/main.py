@@ -349,16 +349,36 @@ def run_scan():
 
     Runs the scan synchronously and returns 200 only when it finishes. This
     is deliberate: Cloud Run throttles CPU to ~0% outside request handling, so
-    a background thread would crawl. Running inline keeps the full CPU
-    allocated for the whole scan. A non-blocking lock makes a duplicate
-    trigger a no-op (409) rather than a second concurrent scan.
+    running inline keeps the full CPU allocated for the whole scan. A
+    non-blocking lock makes a duplicate trigger a no-op (409).
 
-    Cloud Run request timeout and the Scheduler attempt deadline must be long
-    enough to cover a full scan (see DEPLOY.md).
+    On a cold start the background hydration thread may have been CPU-throttled
+    before it could finish. We load CLIP (and reload buy_rules if needed)
+    synchronously here — the incoming request itself provides the CPU.
     """
+    global vectors_loaded, buy_rules
+
     if not vectors_loaded:
-        print(">>> SCAN: Trigger received but CLIP not ready — returning 503.", flush=True)
-        return jsonify({"status": "hydrating"}), 503
+        print(">>> SCAN: CLIP not ready — loading synchronously within request...", flush=True)
+        try:
+            from . import clip_matcher as cm
+            cm.init(config.BUCKET_NAME)
+            vectors_loaded = True
+            print(">>> SCAN: CLIP loaded.", flush=True)
+        except Exception as exc:
+            print(f"!!! SCAN: CLIP init failed: {exc}", flush=True)
+            traceback.print_exc()
+            return jsonify({"status": "clip init failed", "error": str(exc)}), 500
+
+    if not buy_rules:
+        print(">>> SCAN: buy_rules empty — reloading...", flush=True)
+        try:
+            sheets_json    = _get_secret("GOOGLE_SHEETS_JSON")
+            spreadsheet_id = _get_secret("SPREADSHEET_ID")
+            buy_rules      = sheets_client.load_buy_rules(sheets_json, spreadsheet_id)
+        except Exception as exc:
+            print(f"!!! SCAN: buy_rules reload failed (scan continues without them): {exc}",
+                  flush=True)
 
     if not _scan_lock.acquire(blocking=False):
         print(">>> SCAN: Already running — ignoring duplicate trigger.", flush=True)
