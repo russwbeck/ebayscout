@@ -182,18 +182,14 @@ def handle_message(event, client):
     thread_ts = event.get("thread_ts")
     text      = (event.get("text") or "").strip()
 
-    # Ignore bot messages and non-replies
-    if not user_id or event.get("bot_id") or not thread_ts:
+    # Ignore bot messages
+    if not user_id or event.get("bot_id"):
         return
 
     if user_id not in pending_scans:
         return
 
     scan = pending_scans[user_id]
-
-    # Only process replies to our specific thread
-    if thread_ts != scan["thread_ts"]:
-        return
 
     # Parse "price | source"
     asking_price, source = parse_price_source(text)
