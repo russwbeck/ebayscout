@@ -437,18 +437,17 @@ def health():
 @flask_app.route("/test-clip", methods=["GET"])
 def test_clip():
     """
-    Debug endpoint: load CLIP if needed, download one image, run detect+match,
-    and return raw per-crop scores (not filtered by threshold).
+    Debug endpoint: download one image, run detect+match, return raw per-crop
+    scores (threshold=0.0 so every crop reports its actual score).
 
-    Usage:
+    Usage — pass either an eBay item ID or a direct image URL:
+      curl "https://<service>/test-clip?item_id=v1|318369928679|0"
       curl "https://<service>/test-clip?url=<image_url>"
-
-    Returns JSON with the top match score for each crop so you can see what
-    CLIP is actually producing without running a full scan.
     """
+    item_id   = request.args.get("item_id")
     image_url = request.args.get("url")
-    if not image_url:
-        return jsonify({"error": "missing ?url= parameter"}), 400
+    if not item_id and not image_url:
+        return jsonify({"error": "pass ?item_id=<ebay_id> or ?url=<image_url>"}), 400
 
     # Ensure CLIP is loaded
     global vectors_loaded
@@ -463,6 +462,19 @@ def test_clip():
     import requests as req
     from . import image_proc as _ip
     from . import clip_matcher as _cm
+    from . import ebay_client
+
+    # Resolve eBay item ID → first picture URL
+    if item_id:
+        try:
+            ebay_app_id  = _get_secret("EBAY_APP_ID")
+            ebay_cert_id = _get_secret("EBAY_CERT_ID")
+            urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
+        except Exception as exc:
+            return jsonify({"error": f"eBay lookup failed: {exc}"}), 500
+        if not urls:
+            return jsonify({"error": "no images found for that item_id"}), 404
+        image_url = urls[0]
 
     try:
         resp = req.get(image_url, timeout=20)
@@ -473,19 +485,20 @@ def test_clip():
 
     crops = _ip.detect_and_crop(image_bytes)
     if not crops:
-        return jsonify({"crops": 0, "message": "no crops detected"})
+        return jsonify({"image_url": image_url, "crops": 0, "message": "no crops detected"})
 
     results = []
     for i, crop in enumerate(crops):
-        # Pass threshold=0.0 so match_crop returns a result for every crop
         match = _cm.match_crop(crop, threshold=0.0)
-        results.append({
-            "crop": i,
-            "match": match,
-        })
+        results.append({"crop": i, "match": match})
 
     best = max((r["match"]["overall"] for r in results if r["match"]), default=0.0)
-    return jsonify({"crops": len(crops), "best_overall": best, "details": results})
+    return jsonify({
+        "image_url": image_url,
+        "crops": len(crops),
+        "best_overall": round(best, 4),
+        "details": results,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +662,7 @@ def _run_daily_scan() -> None:
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
         title   = listing.get("title", "?")
+        seller  = listing.get("seller", "")
 
         try:
             if item_id.startswith("etsy_"):
@@ -694,20 +708,20 @@ def _run_daily_scan() -> None:
                 # Greppable title log for tuning EXCLUDED_KEYWORDS over time:
                 # apparel/non-buttons that slipped past the keyword filter land
                 # here. Filter Cloud Logging for "TITLE: [rejected".
-                print(f">>> TITLE: [rejected {best_score_seen:.2f}] {title}", flush=True)
+                print(f">>> TITLE: [rejected {best_score_seen:.2f}] [{seller}] {title}", flush=True)
                 seen_store.mark_seen(item_id, seen)
                 continue
 
             if not matched:
                 stat_low_confidence += 1
-                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] {title}", flush=True)
+                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] [{seller}] {title}", flush=True)
                 seen_store.mark_seen(item_id, seen)
                 continue
 
             best_match = max(matched.values(), key=lambda m: m["overall"])
             print(
                 f">>> TITLE: [match {best_match['overall']:.2f} "
-                f"{best_match['year']} {best_match['slogan']}] {title}",
+                f"{best_match['year']} {best_match['slogan']}] [{seller}] {title}",
                 flush=True,
             )
 
