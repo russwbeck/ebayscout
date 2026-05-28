@@ -54,6 +54,7 @@ ETSY_EXCLUDED_SELLERS: list[str] = []
 # Any listing whose title contains one of these words (case-insensitive) is
 # skipped by both the eBay and Etsy clients before CLIP processing.
 EXCLUDED_KEYWORDS: list[str] = [
+    # apparel
     "embroidered",
     "drifit",
     "hoodie",
@@ -67,8 +68,24 @@ EXCLUDED_KEYWORDS: list[str] = [
     "antigua",
     "jacket",
     "pullover",
+    "shirt",
+    "jersey",
+    "vest",
+    # accessories / non-pin items
     "enamel",
     "enameled",
+    "brooch",
+    "lanyard",
+    "strap",
+    "ornament",
+    "christmas",
+    # clearly non-button objects
+    "wooden",
+    "cable",
+    "badge reel",
+    "map",
+    "sticker",
+    "decal",
 ]
 
 # --- eBay category IDs to exclude entirely ---
@@ -82,17 +99,28 @@ EXCLUDED_CATEGORY_IDS: list[str] = ["11450"]
 # "Central Counties Bank" runs standalone (no button-type suffix) because it is a
 # low-frequency, precise term that collides with noise when combined with other words.
 BUTTON_TYPES  = ["button", "pin", "badge", "pinback"]
-PSU_VARIANTS  = ["Penn State", "PSU", "Nittany Lions"]
 
+# eBay category 64482 = "Sports Mem, Cards & Fan Shop" (top-level sports
+# memorabilia). Restricting PSU queries to this category keeps Penn State
+# University results while dropping the Power Supply Unit electronics noise
+# that floods unrestricted "PSU button/pin/badge/pinback" searches.
+SPORTS_MEMO_CATEGORY_ID = "64482"
+
+# Unrestricted queries — "Penn State" and "Nittany Lions" are unambiguous.
 EBAY_SEARCH_QUERIES: list[str] = (
-    [f"{psu} {btn}" for psu in PSU_VARIANTS for btn in BUTTON_TYPES]
+    [f"Penn State {btn}" for btn in BUTTON_TYPES]
+    + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
     + ["Central Counties Bank"]
 )
-# Produces 13 queries:
-#   "Penn State button", "Penn State pin", "Penn State badge", "Penn State pinback",
-#   "PSU button", "PSU pin", "PSU badge", "PSU pinback",
-#   "Nittany Lions button", "Nittany Lions pin", "Nittany Lions badge", "Nittany Lions pinback",
+# Produces 9 queries:
+#   "Penn State button/pin/badge/pinback"
+#   "Nittany Lions button/pin/badge/pinback"
 #   "Central Counties Bank"
+
+# PSU queries run with category_ids=SPORTS_MEMO_CATEGORY_ID so "PSU" matches
+# Penn State University buttons rather than Power Supply Units.
+PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
+# Produces 4 queries: "PSU button", "PSU pin", "PSU badge", "PSU pinback"
 
 # --- Dry-run mode (set True for smoke testing) ---
 # When True: the scan runs end-to-end but posts no Slack messages and does

@@ -434,6 +434,73 @@ def health():
     return "OK - ready", 200
 
 
+@flask_app.route("/test-clip", methods=["GET"])
+def test_clip():
+    """
+    Debug endpoint: download one image, run detect+match, return raw per-crop
+    scores (threshold=0.0 so every crop reports its actual score).
+
+    Usage — pass either an eBay item ID or a direct image URL:
+      curl "https://<service>/test-clip?item_id=v1|318369928679|0"
+      curl "https://<service>/test-clip?url=<image_url>"
+    """
+    item_id   = request.args.get("item_id")
+    image_url = request.args.get("url")
+    if not item_id and not image_url:
+        return jsonify({"error": "pass ?item_id=<ebay_id> or ?url=<image_url>"}), 400
+
+    # Ensure CLIP is loaded
+    global vectors_loaded
+    if not vectors_loaded:
+        try:
+            from . import clip_matcher as cm
+            cm.init(config.BUCKET_NAME)
+            vectors_loaded = True
+        except Exception as exc:
+            return jsonify({"error": f"CLIP init failed: {exc}"}), 500
+
+    import requests as req
+    from . import image_proc as _ip
+    from . import clip_matcher as _cm
+    from . import ebay_client
+
+    # Resolve eBay item ID → first picture URL
+    if item_id:
+        try:
+            ebay_app_id  = _get_secret("EBAY_APP_ID")
+            ebay_cert_id = _get_secret("EBAY_CERT_ID")
+            urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
+        except Exception as exc:
+            return jsonify({"error": f"eBay lookup failed: {exc}"}), 500
+        if not urls:
+            return jsonify({"error": "no images found for that item_id"}), 404
+        image_url = urls[0]
+
+    try:
+        resp = req.get(image_url, timeout=20)
+        resp.raise_for_status()
+        image_bytes = resp.content
+    except Exception as exc:
+        return jsonify({"error": f"image download failed: {exc}"}), 400
+
+    crops = _ip.detect_and_crop(image_bytes)
+    if not crops:
+        return jsonify({"image_url": image_url, "crops": 0, "message": "no crops detected"})
+
+    results = []
+    for i, crop in enumerate(crops):
+        match = _cm.match_crop(crop, threshold=0.0)
+        results.append({"crop": i, "match": match})
+
+    best = max((r["match"]["overall"] for r in results if r["match"]), default=0.0)
+    return jsonify({
+        "image_url": image_url,
+        "crops": len(crops),
+        "best_overall": round(best, 4),
+        "details": results,
+    })
+
+
 # ---------------------------------------------------------------------------
 # eBay Marketplace Account Deletion endpoint (required for production API)
 # ---------------------------------------------------------------------------
@@ -547,7 +614,18 @@ def _run_daily_scan() -> None:
                 max_results=config.EBAY_MAX_RESULTS,
             )
             all_listings.extend(ebay_listings)
-            print(f">>> SCAN: eBay returned {len(ebay_listings)} listings.", flush=True)
+            # PSU queries restricted to Sports Memorabilia to avoid electronics
+            psu_listings = ebay_client.find_all_listings(
+                client_id=ebay_app_id,
+                client_secret=ebay_cert_id,
+                queries=config.PSU_SEARCH_QUERIES,
+                excluded_sellers=config.EXCLUDED_SELLERS,
+                max_results=config.EBAY_MAX_RESULTS,
+                category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+            )
+            all_listings.extend(psu_listings)
+            print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
+                  f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
         except Exception as exc:
             print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
     else:
@@ -587,6 +665,7 @@ def _run_daily_scan() -> None:
     stat_alerted        = 0
     stat_low_confidence = 0
     stat_rejected       = 0
+    _listings_since_save = 0
 
     from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
@@ -595,6 +674,7 @@ def _run_daily_scan() -> None:
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
         title   = listing.get("title", "?")
+        seller  = listing.get("seller", "")
 
         try:
             if item_id.startswith("etsy_"):
@@ -618,15 +698,21 @@ def _run_daily_scan() -> None:
                     print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
                     continue
 
+                if not crops:
+                    continue
+
                 photos_processed += 1
 
-                for crop in crops:
-                    try:
-                        match = _cm.match_crop(
-                            crop, threshold=config.REJECTION_THRESHOLD
-                        )
-                    except Exception:
-                        continue
+                # Encode all crops in one forward pass instead of one-by-one
+                try:
+                    batch_results = _cm.match_crops_batch(
+                        crops, threshold=config.REJECTION_THRESHOLD
+                    )
+                except Exception as exc:
+                    print(f"!!! SCAN: match_crops_batch failed: {exc}", flush=True)
+                    continue
+
+                for match in batch_results:
                     if match is None:
                         continue
                     best_score_seen = max(best_score_seen, match["overall"])
@@ -640,20 +726,20 @@ def _run_daily_scan() -> None:
                 # Greppable title log for tuning EXCLUDED_KEYWORDS over time:
                 # apparel/non-buttons that slipped past the keyword filter land
                 # here. Filter Cloud Logging for "TITLE: [rejected".
-                print(f">>> TITLE: [rejected {best_score_seen:.2f}] {title}", flush=True)
+                print(f">>> TITLE: [rejected {best_score_seen:.2f}] [{seller}] {title}", flush=True)
                 seen_store.mark_seen(item_id, seen)
                 continue
 
             if not matched:
                 stat_low_confidence += 1
-                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] {title}", flush=True)
+                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] [{seller}] {title}", flush=True)
                 seen_store.mark_seen(item_id, seen)
                 continue
 
             best_match = max(matched.values(), key=lambda m: m["overall"])
             print(
                 f">>> TITLE: [match {best_match['overall']:.2f} "
-                f"{best_match['year']} {best_match['slogan']}] {title}",
+                f"{best_match['year']} {best_match['slogan']}] [{seller}] {title}",
                 flush=True,
             )
 
@@ -712,6 +798,10 @@ def _run_daily_scan() -> None:
             traceback.print_exc()
 
         seen_store.mark_seen(item_id, seen)
+        _listings_since_save += 1
+        if not config.DRY_RUN and _listings_since_save >= 50:
+            seen_store.save_seen(seen)
+            _listings_since_save = 0
 
     if config.DRY_RUN:
         print("[DRY RUN] Skipping save_seen().", flush=True)

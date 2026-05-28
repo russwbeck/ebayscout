@@ -98,42 +98,55 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
         print(">>> CLIP: Initialization complete.", flush=True)
 
 
-def match_crop(
-    pil_image: Image.Image,
+def match_crops_batch(
+    pil_images: list[Image.Image],
     threshold: float | None = None,
-) -> dict | None:
+) -> list[dict | None]:
     """
-    Match a single PIL.Image (RGB) crop against the button database.
+    Match a list of PIL.Image crops in a single model forward pass.
 
-    Returns a dict on a match above *threshold*:
-        {year: str, slogan: str, overall: float,
-         image_score: float, slogan_score: float}
-
-    Returns None if best overall score < threshold.
-
-    threshold defaults to config.CONFIDENCE_THRESHOLD (0.72).  Pass
-    config.REJECTION_THRESHOLD (0.45) to also surface low-confidence
-    matches for scan-summary categorisation without triggering alerts.
-
-    Year candidate selection uses a combined image+slogan score so that strong
-    text evidence can promote the correct year even when image similarity alone
-    is ambiguous between nearby years.
+    Returns one result per input image (None where score < threshold).
+    Dramatically faster than calling match_crop() in a loop — a batch of
+    N crops costs roughly the same as a batch of 1 on CPU.
     """
     if threshold is None:
         threshold = config.CONFIDENCE_THRESHOLD
     if not _initialized:
-        raise RuntimeError("clip_matcher.init() must be called before match_crop().")
+        raise RuntimeError("clip_matcher.init() must be called before match_crops_batch().")
+    if not pil_images:
+        return []
 
-    # Encode the crop
-    tensor = _preprocess(pil_image).unsqueeze(0).to(_device)
+    # Stack all crops into one tensor → single forward pass
+    tensors = torch.stack([_preprocess(img) for img in pil_images]).to(_device)  # [N, C, H, W]
     with torch.inference_mode():
-        vec = _model.encode_image(tensor).float()
-    vec = vec / vec.norm(dim=-1, keepdim=True)  # [1, D]
+        vecs = _model.encode_image(tensors).float()                               # [N, D]
+    vecs = vecs / vecs.norm(dim=-1, keepdim=True)
 
-    # Image similarities against reference vectors
-    image_sims = (vec @ _ref_vectors.T).cpu().numpy()[0]   # [N]
-    # Text similarities against all text embeddings
-    text_sims  = (vec @ _text_features.T).cpu().numpy()[0] # [M]
+    results = []
+    for vec in vecs:
+        vec = vec.unsqueeze(0)  # [1, D] — reuse single-crop scoring logic
+        image_sims = (vec @ _ref_vectors.T).cpu().numpy()[0]
+        text_sims  = (vec @ _text_features.T).cpu().numpy()[0]
+        result = _score_best_match(image_sims, text_sims, threshold)
+        results.append(result)
+    return results
+
+
+def match_crop(
+    pil_image: Image.Image,
+    threshold: float | None = None,
+) -> dict | None:
+    """Match a single crop. Prefer match_crops_batch() when processing a list."""
+    results = match_crops_batch([pil_image], threshold)
+    return results[0] if results else None
+
+
+def _score_best_match(
+    image_sims: np.ndarray,
+    text_sims:  np.ndarray,
+    threshold:  float,
+) -> dict | None:
+    """Score one encoded crop (already similarity arrays) and return best match or None."""
 
     # Build year → best image score map from reference vectors
     year_image_scores: dict[int, float] = {}
