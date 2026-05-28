@@ -67,7 +67,16 @@ EXCLUDED_KEYWORDS: list[str] = [
     "antigua",
     "jacket",
     "pullover",
+    "enamel",
+    "enameled",
 ]
+
+# --- eBay category IDs to exclude entirely ---
+# itemSummary.categories includes the full ancestry (top-level → leaf), so a
+# listing anywhere under one of these top-level categories is dropped before
+# CLIP processing. 11450 = "Clothing, Shoes & Accessories" (≈20% of the noise
+# in Penn State button searches).
+EXCLUDED_CATEGORY_IDS: list[str] = ["11450"]
 
 # --- Multi-query search strategy ---
 # "Central Counties Bank" runs standalone (no button-type suffix) because it is a

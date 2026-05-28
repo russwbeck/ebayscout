@@ -108,6 +108,22 @@ class TestFindListings:
         assert len(results) == 1
         assert results[0]["seller"] == "goodseller"
 
+    def test_excludes_clothing_category(self):
+        clothing = _summary("v1|1|0", "Penn State Hat")
+        clothing["categories"] = [
+            {"categoryId": "11450", "categoryName": "Clothing, Shoes & Accessories"},
+            {"categoryId": "163526", "categoryName": "Hats"},
+        ]
+        button = _summary("v1|2|0", "Penn State Button 1987")
+        button["categories"] = [{"categoryId": "891", "categoryName": "Pinbacks"}]
+        resp = _mock_get(_browse_response([clothing, button]))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            results = ebay_client.find_listings("id", "sec", "Penn State", [])
+
+        assert len(results) == 1
+        assert results[0]["item_id"] == "v1|2|0"
+
     def test_falls_back_to_thumbnail_image(self):
         item = _summary("v1|1|0")
         del item["image"]

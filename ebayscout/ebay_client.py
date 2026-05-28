@@ -69,12 +69,14 @@ def find_listings(
     Returns a list of dicts:
         {item_id, title, current_price, currency, listing_url, gallery_url, seller}
 
-    Excluded sellers and apparel keywords are filtered client-side (the Browse
-    API has no server-side ExcludeSeller equivalent). Paginates via offset.
+    Excluded sellers, excluded categories (e.g. Clothing/Shoes/Accessories),
+    and apparel keywords are filtered client-side (the Browse API has no
+    server-side exclude equivalent).
     """
     if excluded_keywords is None:
         excluded_keywords = config.EXCLUDED_KEYWORDS
     excluded_lower = {s.lower() for s in excluded_sellers}
+    excluded_cats  = {str(c) for c in config.EXCLUDED_CATEGORY_IDS}
 
     try:
         token = _get_app_token(client_id, client_secret)
@@ -116,6 +118,9 @@ def find_listings(
         title  = item.get("title") or ""
         seller = (item.get("seller") or {}).get("username", "") or ""
         if seller.lower() in excluded_lower:
+            continue
+        if any(str((c or {}).get("categoryId")) in excluded_cats
+               for c in (item.get("categories") or [])):
             continue
         if title_has_excluded_keyword(title, excluded_keywords):
             continue
