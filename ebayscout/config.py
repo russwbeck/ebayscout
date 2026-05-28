@@ -82,17 +82,18 @@ EXCLUDED_CATEGORY_IDS: list[str] = ["11450"]
 # "Central Counties Bank" runs standalone (no button-type suffix) because it is a
 # low-frequency, precise term that collides with noise when combined with other words.
 BUTTON_TYPES  = ["button", "pin", "badge", "pinback"]
-PSU_VARIANTS  = ["Penn State", "PSU", "Nittany Lions"]
+PSU_VARIANTS  = ["Penn State", "Nittany Lions"]
 
 EBAY_SEARCH_QUERIES: list[str] = (
     [f"{psu} {btn}" for psu in PSU_VARIANTS for btn in BUTTON_TYPES]
     + ["Central Counties Bank"]
 )
-# Produces 13 queries:
+# Produces 9 queries:
 #   "Penn State button", "Penn State pin", "Penn State badge", "Penn State pinback",
-#   "PSU button", "PSU pin", "PSU badge", "PSU pinback",
 #   "Nittany Lions button", "Nittany Lions pin", "Nittany Lions badge", "Nittany Lions pinback",
 #   "Central Counties Bank"
+# "PSU" was removed — it means "Power Supply Unit" to electronics sellers and
+# returned hundreds of ATX PSU / monitor board listings per scan.
 
 # --- Dry-run mode (set True for smoke testing) ---
 # When True: the scan runs end-to-end but posts no Slack messages and does
