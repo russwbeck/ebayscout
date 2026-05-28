@@ -20,7 +20,7 @@ EBAY_DELETION_ENDPOINT = (
 
 # --- CLIP scoring (match buttonmatcher's constants) ---
 CONFIDENCE_THRESHOLD      = 0.72   # above → confident match, eligible for alerts
-REJECTION_THRESHOLD       = 0.45   # below → clearly not a bank button
+REJECTION_THRESHOLD       = 0.45   # below → clearly not a gameday button
 ALPHA                     = 0.7   # image weight  (matches match_buttons.py)
 BETA                      = 0.3   # text weight   (matches match_buttons.py)
 SLOGAN_PENALTY_THRESHOLD  = 0.3   # below this slogan_score → penalise overall

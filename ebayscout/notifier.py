@@ -166,12 +166,12 @@ def send_scan_summary(
 
     if low_confidence:
         lines.append(
-            f"🟡 {low_confidence} possible bank button{'s' if low_confidence != 1 else ''}"
+            f"🟡 {low_confidence} possible gameday button{'s' if low_confidence != 1 else ''}"
             f"  (45–72% confidence — no alert)"
         )
 
     if rejected:
-        lines.append(f"🗑️ {rejected} not bank buttons  (<45% confidence)")
+        lines.append(f"🗑️ {rejected} not gameday buttons  (<45% confidence)")
 
     _post_message(slack_token, channel, "\n".join(lines))
 
