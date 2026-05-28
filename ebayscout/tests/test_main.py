@@ -13,42 +13,58 @@ from ebayscout.utils import parse_price_source, format_manual_result, title_has_
 
 class TestParsePriceSource:
     def test_dollar_sign_with_source(self):
-        price, source = parse_price_source("$25.00 | Facebook Marketplace")
+        price, source, count = parse_price_source("$25.00 | Facebook Marketplace")
         assert price == 25.0
         assert source == "Facebook Marketplace"
+        assert count is None
 
     def test_no_dollar_sign(self):
-        price, source = parse_price_source("12 | Mercari")
+        price, source, count = parse_price_source("12 | Mercari")
         assert price == 12.0
         assert source == "Mercari"
+        assert count is None
 
     def test_cents(self):
-        price, source = parse_price_source("$8.50 | Etsy")
+        price, source, count = parse_price_source("$8.50 | Etsy")
         assert price == 8.5
         assert source == "Etsy"
 
     def test_no_pipe_returns_none(self):
-        price, source = parse_price_source("$25.00")
+        price, source, count = parse_price_source("$25.00")
         assert price is None
         assert source == ""
+        assert count is None
 
     def test_bad_price_returns_none(self):
-        price, source = parse_price_source("free | Craigslist")
+        price, source, count = parse_price_source("free | Craigslist")
         assert price is None
 
     def test_source_with_spaces(self):
-        price, source = parse_price_source("$45 | Facebook Marketplace Group")
+        price, source, count = parse_price_source("$45 | Facebook Marketplace Group")
         assert price == 45.0
         assert source == "Facebook Marketplace Group"
 
     def test_comma_in_price(self):
-        price, source = parse_price_source("$1,200.00 | eBay")
+        price, source, count = parse_price_source("$1,200.00 | eBay")
         assert price == 1200.0
 
     def test_extra_whitespace(self):
-        price, source = parse_price_source("  $30   |   Mercari  ")
+        price, source, count = parse_price_source("  $30   |   Mercari  ")
         assert price == 30.0
         assert source == "Mercari"
+
+    def test_button_count_parsed(self):
+        price, source, count = parse_price_source("$25.00 | Facebook Marketplace | 35")
+        assert price == 25.0
+        assert source == "Facebook Marketplace"
+        assert count == 35
+
+    def test_invalid_count_is_none(self):
+        # A non-integer count is silently ignored (utils.parse_price_source).
+        price, source, count = parse_price_source("$25.00 | Facebook | many")
+        assert price == 25.0
+        assert source == "Facebook"
+        assert count is None
 
 
 class TestFormatManualResult:

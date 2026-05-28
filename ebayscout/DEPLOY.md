@@ -39,6 +39,28 @@ Estimated cost: **~$1/month** (Cloud Run + Cloud Scheduler).
 4. **Install to Workspace** → copy the **Bot User OAuth Token** (`xoxb-...`)
 5. Invite the bot to your `#ebay-scout` channel: `/invite @eBay Scout`
 
+The manual-upload flow (upload a photo → get a lot valuation) also needs the
+Events API and a slash command pointed at the same `/slack/events` endpoint
+(Slack Bolt routes both events and slash commands through it):
+
+6. **Event Subscriptions → Enable Events**
+   - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`
+   - **Subscribe to bot events:** add `file_shared` and `message.channels`
+     (the file upload event and the price/source reply).
+7. **Slash Commands → Create New Command**
+   - Command: `/scout`
+   - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`
+   - Short description: `Wake eBay Scout for manual photo analysis`
+8. **Reinstall to Workspace** (Slack requires a reinstall whenever event
+   subscriptions or slash commands change).
+
+> **Why `/scout` exists.** CLIP (~30-60s to load) hydrates in a background
+> thread, but Cloud Run throttles CPU to ~0% between requests, so on a cold/idle
+> container that thread can stall and uploads would otherwise sit on "waking
+> up". Running `/scout` forces a synchronous load *inside* a request (where CPU
+> is guaranteed). Uploading a photo also auto-triggers the same wake, so `/scout`
+> is a convenience, not a hard requirement.
+
 ### 3. GCP Secrets (add to existing Secret Manager)
 ```bash
 # New secrets — EBAY_BOT_TOKEN, SIGNING_SECRET_ES, CHANNEL_ID_EBAY
@@ -129,6 +151,19 @@ gcloud run deploy ebay-scout \
 
 > Subsequent deploys are handled automatically by the Cloud Build trigger
 > (see below) — you only run this manually for the first deploy.
+
+> **Optional — eliminate the cold-start wait (higher cost).** By default the
+> service scales to zero, so the first upload after idle (or right after a
+> deploy) costs a ~60s CLIP wake (handled by `/scout` and the self-healing
+> upload flow). To make it instant instead, add these two flags to the
+> `gcloud run deploy` args here **and** in `cloudbuild.yaml`:
+> ```
+>   --min-instances=1        # keep one container warm (no scale-to-zero)
+>   --no-cpu-throttling      # let the background CLIP loader finish between requests
+> ```
+> Trade-off: `--min-instances=1` bills for one always-on 4Gi/2-vCPU instance
+> (well above the ~$1/month idle cost). Keep `--max-instances=1` either way —
+> manual `pending_scans` state lives in a single container's memory.
 
 ---
 

@@ -36,7 +36,13 @@ steps:
       - --memory=4Gi
       - --cpu=2
       - --timeout=1800
-      - --max-instances=1
+      - --max-instances=1   # keep at 1 — manual pending_scans state is per-container
+      # Default: scale-to-zero (cheapest). First upload after idle/deploy costs a
+      # ~60s CLIP wake, handled by the /scout slash command + self-healing upload.
+      # To make uploads instant instead (higher cost — one always-on instance),
+      # uncomment both flags below. See DEPLOY.md "eliminate the cold-start wait".
+      # - --min-instances=1
+      # - --no-cpu-throttling
 
 images:
   - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout

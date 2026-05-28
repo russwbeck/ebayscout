@@ -395,13 +395,62 @@ codebase.  The scanner targets Penn State Gameday buttons across all eras (CCB
 
 ---
 
+## 20. Manual mode looped "still loading" forever — `/scout` wake + self-heal
+
+The biggest user-facing bug: you'd upload a photo and the bot just kept saying
+*"⏳ Still loading — try again in about 30 seconds"* on every attempt.
+
+Root cause: CLIP hydrates in a **background daemon thread** at startup (#5, #6).
+Cloud Run throttles CPU to ~0% between requests, so on a cold/idle container
+that thread is starved and `vectors_loaded` never flips to `True`. The old
+`handle_file_shared` branch saw `not vectors_loaded`, posted "still loading",
+**deleted the pending scan, and gave up.** Nothing forced a load except the
+once-a-day `/run-scan`, so manual uploads were dead until the daily scan
+happened to warm the container.
+
+Fix (two prongs, both reusing the synchronous-load-within-request idea from #6):
+
+1. **`/scout` slash command.** Bolt's command handler `ack()`s within Slack's
+   3-second window with "waking up ~60s", then loads CLIP in a background thread
+   wrapped in `_keep_cpu_hot()` (#5) and posts "✅ awake". This force-loads CLIP
+   on demand so manual mode works without waiting for the daily scan.
+
+2. **`handle_file_shared` self-heals.** Instead of deleting the pending scan, it
+   now **keeps** it and kicks off the same background wake, telling the user to
+   reply with the price. `_run_manual_analysis` calls `_ensure_clip_loaded()` as
+   a backstop before matching, closing the race where the price reply arrives
+   before hydration finishes.
+
+The shared load path is now a single `_ensure_clip_loaded()` helper used by
+`/run-scan`, `/test-clip`, `/scout`, the upload flow, and the startup hydration
+thread — one place that calls the lock-guarded, idempotent `clip_matcher.init()`
+and flips `vectors_loaded`. A `_wake_lock` / `_wake_in_flight` flag coalesces
+concurrent wakes so the channel doesn't get duplicate "ready" posts.
+
+Infra note: we deliberately stayed **scale-to-zero** (cheapest) rather than
+pinning a warm instance. The `/scout` command + self-healing upload absorb the
+cold-start cost. `cloudbuild.yaml` / `DEPLOY.md` document the optional
+`--min-instances=1 --no-cpu-throttling` upgrade for instant uploads at higher
+cost. `--max-instances=1` must stay (#17 Bug 3).
+
+Setup requirement: the `/scout` command must be registered in the Slack app
+config (Slash Commands → Request URL `…/slack/events`) and the app reinstalled —
+see DEPLOY.md.
+
+Also cleaned up here: a dead duplicate `_format_manual_result` in `main.py` was
+removed (the active path uses `format_manual_result` from `utils.py`), and the
+`tests/test_main.py` `TestParsePriceSource` cases were updated to the 3-tuple
+`(price, source, count)` return that `parse_price_source` adopted in #18.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
 | CLIP accuracy on multi-button photos | Open | 2003 "Gopher Broke" matched 2002/2006 at 0.697 — just below 0.72 threshold. Likely the Hough crop didn't isolate the right button. Needs a clean single-button eBay photo to validate. |
 | kling24toys seller filter | Open | Listed in `EXCLUDED_SELLERS` but need to confirm actual eBay username matches after new scan logs show seller names in brackets. |
-| Manual upload button count UX | Newly deployed | Merged in PR #5, not yet validated in production. |
+| Manual upload "still loading" loop | Fixed (#20) | `/scout` slash command + self-healing `handle_file_shared`. Needs the `/scout` command registered in Slack and validated in production. |
 | First scan with correct CLIP | Pending | 9am Cloud Scheduler trigger tomorrow will be the first scan with working scores. Need to confirm alerts fire for real buttons. |
 
 

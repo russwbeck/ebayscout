@@ -76,6 +76,13 @@ pending_scans: dict = {}
 # a second concurrent run.
 _scan_lock = threading.Lock()
 
+# Guards a wake-up (synchronous CLIP load) so concurrent slash-command /
+# file-upload triggers don't each spawn a loader thread. clip_matcher.init()
+# is itself lock-guarded and idempotent, but this avoids N redundant threads
+# (and N "waking up" log lines) while a load is already in flight.
+_wake_lock      = threading.Lock()
+_wake_in_flight = False
+
 
 @contextlib.contextmanager
 def _keep_cpu_hot():
@@ -105,6 +112,84 @@ def _keep_cpu_hot():
     finally:
         _stop.set()
         _t.join(timeout=1)
+
+
+# ---------------------------------------------------------------------------
+# CLIP wake-up helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_clip_loaded() -> bool:
+    """
+    Synchronously load CLIP if it isn't loaded yet.  Returns True on success.
+
+    Safe to call from any thread: clip_matcher.init() is lock-guarded and a
+    no-op once initialized.  Wrapped in _keep_cpu_hot() so it survives Cloud
+    Run's CPU throttling when called from a post-ack/post-response background
+    thread.  This is the single load path shared by /run-scan, /test-clip, the
+    /scout slash command, and the manual upload flow.
+    """
+    global vectors_loaded
+    if vectors_loaded:
+        return True
+    with _keep_cpu_hot():
+        try:
+            from . import clip_matcher as cm   # lazy: torch+clip imported here
+            cm.init(config.BUCKET_NAME)
+            vectors_loaded = True
+            print(">>> WAKE: CLIP loaded.", flush=True)
+            return True
+        except Exception as exc:
+            print(f"!!! WAKE: CLIP init failed: {exc}", flush=True)
+            traceback.print_exc()
+            return False
+
+
+def _wake_and_notify(
+    client,
+    channel_id: str,
+    thread_ts:  str | None,
+    on_ready_text: str,
+) -> None:
+    """
+    Load CLIP in this (background) thread, deduplicating concurrent wakes, then
+    post a confirmation.  Intended as the target of threading.Thread(...).start().
+
+    Only the first concurrent caller actually loads; a second simultaneous wake
+    returns quietly (the in-flight load owns the confirmation message) so the
+    channel doesn't get duplicate "ready" posts.
+    """
+    global _wake_in_flight
+
+    if vectors_loaded:
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_ts,
+            text="✅ eBay Scout is already awake and ready.",
+        )
+        return
+
+    with _wake_lock:
+        already = _wake_in_flight
+        if not already:
+            _wake_in_flight = True
+
+    if already:
+        print(">>> WAKE: load already in flight — skipping duplicate.", flush=True)
+        return
+
+    try:
+        ok = _ensure_clip_loaded()
+    finally:
+        with _wake_lock:
+            _wake_in_flight = False
+
+    if ok:
+        client.chat_postMessage(channel=channel_id, thread_ts=thread_ts,
+                                text=on_ready_text)
+    else:
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_ts,
+            text="❌ eBay Scout failed to wake up — check the logs and try again.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +233,30 @@ def handle_file_shared(event, client):
     }
 
     if not vectors_loaded:
+        # Self-heal: keep the pending scan and kick off a background wake.  The
+        # user's price reply lands in handle_message and runs the analysis once
+        # CLIP is ready (_run_manual_analysis force-loads as a backstop).  This
+        # replaces the old dead-end that deleted the scan and looped "still
+        # loading" forever on a cold, CPU-throttled container.
         client.chat_postMessage(
             channel=channel_id,
             thread_ts=event_ts,
-            text="⏳ Still loading — try again in about 30 seconds.",
+            text=(
+                "⏳ Waking up eBay Scout (~60s). I've saved your photo — reply "
+                "in this thread with the asking price and source and I'll "
+                "analyze it as soon as I'm ready:\n"
+                "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`\n"
+                "For lots with many buttons, add the count:\n"
+                "`$25.00 | Facebook Marketplace | 35`"
+            ),
         )
-        del pending_scans[user_id]
+        threading.Thread(
+            target=_wake_and_notify,
+            args=(client, channel_id, event_ts,
+                  "✅ eBay Scout is awake — reply with the price/source now "
+                  "if you haven't already."),
+            daemon=True,
+        ).start()
         return
 
     client.chat_postMessage(
@@ -221,6 +324,38 @@ def handle_message(event, client):
 
 
 # ---------------------------------------------------------------------------
+# Slash command: /scout — wake the bot for manual mode
+# ---------------------------------------------------------------------------
+
+@bolt_app.command("/scout")
+def handle_scout_wake(ack, command, client):
+    """
+    Force a synchronous CLIP load so manual uploads work on a cold (CPU-
+    throttled) Cloud Run container.
+
+    Slack requires the command to be acknowledged within 3 s, but CLIP load
+    takes 30-60 s.  So: ack immediately with a "waking up" message, then load
+    in a background thread (wrapped in _keep_cpu_hot via _wake_and_notify) and
+    post a "ready" confirmation when done.
+    """
+    channel_id = command.get("channel_id")
+
+    if vectors_loaded:
+        ack("✅ eBay Scout is already awake — upload a photo any time.")
+        return
+
+    ack("⏳ Waking up eBay Scout… this takes about 60 seconds. "
+        "I'll post here when it's ready.")
+
+    threading.Thread(
+        target=_wake_and_notify,
+        args=(client, channel_id, None,
+              "✅ eBay Scout is awake. Upload your photo now."),
+        daemon=True,
+    ).start()
+
+
+# ---------------------------------------------------------------------------
 # Manual analysis pipeline
 # ---------------------------------------------------------------------------
 
@@ -241,6 +376,13 @@ def _run_manual_analysis(
         )
 
     with _keep_cpu_hot():
+        # Backstop: if the user replied before the background wake finished,
+        # force-load CLIP here (idempotent) so match_crops_batch never runs
+        # against an uninitialized model.
+        if not _ensure_clip_loaded():
+            _reply("❌ eBay Scout is still waking up — try replying again in ~30s.")
+            return
+
         try:
             # Download image with Slack auth header
             import requests as req
@@ -316,52 +458,6 @@ def _run_manual_analysis(
         ))
 
 
-def _format_manual_result(
-    source:        str,
-    asking_price:  float,
-    matches:       list[dict],
-    lot_value:     float,
-    margin:        float,
-    needed:        list[dict],
-    unmatched_count: int,
-) -> str:
-    lines = [f"📸 *Lot Analysis — {source}*", f"Asking: *${asking_price:.2f}*", ""]
-
-    if matches:
-        lines.append("Matched buttons:")
-        for m in matches:
-            year   = m.get("year", "?")
-            slogan = m.get("slogan", "?")
-            price  = m.get("max_price_single", "")
-            n      = m.get("amount_needed", 0)
-            star   = f"  ⭐ need {n}" if n > 0 else ""
-            lines.append(f"  • {year} — \"{slogan}\"    max: {price}{star}")
-    else:
-        lines.append("_No buttons identified with confidence._")
-
-    if unmatched_count > 0:
-        lines.append(f"_{unmatched_count} button(s) not identified with confidence._")
-
-    lines.append("")
-
-    if lot_value > 0:
-        if margin > 0:
-            verdict = f"✅ Good deal — *+${margin:.2f}* below calculated value"
-        else:
-            verdict = f"⚠️ You'd overpay by *${abs(margin):.2f}*"
-        lines.append(
-            f"Calculated value: *${lot_value:.2f}*  |  {verdict}"
-        )
-    else:
-        lines.append("_Calculated value: $0.00 (no matched buttons have price rules)_")
-
-    if needed:
-        need_list = ", ".join(f"{m['year']} {m['slogan']}" for m in needed)
-        lines.append(f"\n⭐ *Needed buttons in this lot:* {need_list}")
-
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
@@ -388,19 +484,12 @@ def run_scan():
     before it could finish. We load CLIP (and reload buy_rules if needed)
     synchronously here — the incoming request itself provides the CPU.
     """
-    global vectors_loaded, buy_rules
+    global buy_rules
 
     if not vectors_loaded:
         print(">>> SCAN: CLIP not ready — loading synchronously within request...", flush=True)
-        try:
-            from . import clip_matcher as cm
-            cm.init(config.BUCKET_NAME)
-            vectors_loaded = True
-            print(">>> SCAN: CLIP loaded.", flush=True)
-        except Exception as exc:
-            print(f"!!! SCAN: CLIP init failed: {exc}", flush=True)
-            traceback.print_exc()
-            return jsonify({"status": "clip init failed", "error": str(exc)}), 500
+        if not _ensure_clip_loaded():
+            return jsonify({"status": "clip init failed"}), 500
 
     if not buy_rules:
         print(">>> SCAN: buy_rules empty — reloading...", flush=True)
@@ -449,14 +538,8 @@ def test_clip():
         return jsonify({"error": "pass ?item_id=<ebay_id> or ?url=<image_url>"}), 400
 
     # Ensure CLIP is loaded
-    global vectors_loaded
-    if not vectors_loaded:
-        try:
-            from . import clip_matcher as cm
-            cm.init(config.BUCKET_NAME)
-            vectors_loaded = True
-        except Exception as exc:
-            return jsonify({"error": f"CLIP init failed: {exc}"}), 500
+    if not _ensure_clip_loaded():
+        return jsonify({"error": "CLIP init failed"}), 500
 
     try:
         import requests as req
@@ -836,7 +919,7 @@ def _run_daily_scan() -> None:
 
 def startup() -> None:
     """Load Google Sheets and CLIP model in the background."""
-    global buy_rules, vectors_loaded
+    global buy_rules
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -846,18 +929,9 @@ def startup() -> None:
     except Exception as exc:
         print(f"!!! STARTUP: Sheets error: {exc}", flush=True)
 
-    def _hydrate():
-        global vectors_loaded
-        with _keep_cpu_hot():
-            try:
-                from . import clip_matcher as cm   # lazy: torch+clip imported here
-                cm.init(config.BUCKET_NAME)
-                vectors_loaded = True
-                print(">>> STARTUP: CLIP ready.", flush=True)
-            except Exception as exc:
-                print(f"!!! STARTUP: CLIP init failed: {exc}", flush=True)
-                traceback.print_exc()
-
-    threading.Thread(target=_hydrate, daemon=True).start()
+    # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
+    # may not finish until an HTTP request (a scan, /scout, or an upload)
+    # provides CPU — those paths all call _ensure_clip_loaded() to force it.
+    threading.Thread(target=_ensure_clip_loaded, daemon=True).start()
 
 
