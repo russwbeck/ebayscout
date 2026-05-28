@@ -15,6 +15,7 @@ Call init(bucket_name) once per job run before calling match_crop().
 
 import os
 import tempfile
+import threading
 from typing import Any
 
 import numpy as np
@@ -41,57 +42,60 @@ _text_years:    list[int]            = []     # years (int)
 _text_types:    list[str]            = []     # sport types
 
 _initialized = False
+_init_lock   = threading.Lock()
 
 
 def init(bucket_name: str = config.BUCKET_NAME) -> None:
     """
     Load CLIP model and GCS vector files into module-level state.
-    Must be called once before match_crop().
+    Must be called once before match_crop(). Thread-safe: concurrent callers
+    block until the first completes, then return immediately.
     """
     global _model, _preprocess, _device
     global _ref_vectors, _ref_labels
     global _text_features, _text_phrases, _text_years, _text_types
     global _initialized
 
-    if _initialized:
-        return
+    with _init_lock:
+        if _initialized:
+            return
 
-    print(">>> CLIP: Loading ViT-B/32 model...", flush=True)
-    _model, _preprocess = clip.load("ViT-B/32", device=_device)
+        print(">>> CLIP: Loading ViT-B/32 model...", flush=True)
+        _model, _preprocess = clip.load("ViT-B/32", device=_device)
 
-    # Quantize to int8 for faster CPU inference (same as both existing services)
-    _model = torch.quantization.quantize_dynamic(
-        _model, {torch.nn.Linear}, dtype=torch.qint8
-    )
-    print(">>> CLIP: Model loaded and quantized.", flush=True)
+        # Quantize to int8 for faster CPU inference (same as both existing services)
+        _model = torch.quantization.quantize_dynamic(
+            _model, {torch.nn.Linear}, dtype=torch.qint8
+        )
+        print(">>> CLIP: Model loaded and quantized.", flush=True)
 
-    # Download vector files from GCS
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
+        # Download vector files from GCS
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # --- text_features.pt ---
-        text_path = os.path.join(tmpdir, "text_features.pt")
-        print(">>> CLIP: Downloading text_features.pt...", flush=True)
-        bucket.blob("text_features.pt").download_to_filename(text_path)
-        cached = torch.load(text_path, weights_only=False, map_location="cpu")
-        _text_features = cached["features"]
-        _text_phrases  = list(cached["phrases"])
-        _text_years    = [int(y) for y in cached["years"]]
-        _text_types    = list(cached.get("types", ["Football"] * len(_text_years)))
-        print(f">>> CLIP: Text embeddings loaded — {_text_features.shape[0]} entries.", flush=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # --- text_features.pt ---
+            text_path = os.path.join(tmpdir, "text_features.pt")
+            print(">>> CLIP: Downloading text_features.pt...", flush=True)
+            bucket.blob("text_features.pt").download_to_filename(text_path)
+            cached = torch.load(text_path, weights_only=False, map_location="cpu")
+            _text_features = cached["features"]
+            _text_phrases  = list(cached["phrases"])
+            _text_years    = [int(y) for y in cached["years"]]
+            _text_types    = list(cached.get("types", ["Football"] * len(_text_years)))
+            print(f">>> CLIP: Text embeddings loaded — {_text_features.shape[0]} entries.", flush=True)
 
-        # --- vectors.pt ---
-        vec_path = os.path.join(tmpdir, "vectors.pt")
-        print(">>> CLIP: Downloading vectors.pt...", flush=True)
-        bucket.blob("vectors.pt").download_to_filename(vec_path)
-        cached_vecs = torch.load(vec_path, weights_only=False, map_location="cpu")
-        _ref_vectors = cached_vecs["vectors"]
-        _ref_labels  = list(cached_vecs["labels"])
-        print(f">>> CLIP: Image reference vectors loaded — {len(_ref_labels)} entries.", flush=True)
+            # --- vectors.pt ---
+            vec_path = os.path.join(tmpdir, "vectors.pt")
+            print(">>> CLIP: Downloading vectors.pt...", flush=True)
+            bucket.blob("vectors.pt").download_to_filename(vec_path)
+            cached_vecs = torch.load(vec_path, weights_only=False, map_location="cpu")
+            _ref_vectors = cached_vecs["vectors"]
+            _ref_labels  = list(cached_vecs["labels"])
+            print(f">>> CLIP: Image reference vectors loaded — {len(_ref_labels)} entries.", flush=True)
 
-    _initialized = True
-    print(">>> CLIP: Initialization complete.", flush=True)
+        _initialized = True
+        print(">>> CLIP: Initialization complete.", flush=True)
 
 
 def match_crop(

@@ -14,6 +14,7 @@ Two interaction flows:
                              → user replies → bot posts lot analysis in-thread
 """
 
+import contextlib
 import os
 import re
 import threading
@@ -74,6 +75,37 @@ pending_scans: dict = {}
 # Held for the duration of a daily scan so an overlapping trigger can't start
 # a second concurrent run.
 _scan_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def _keep_cpu_hot():
+    """
+    Spin one lightweight thread so Cloud Run's CPU scheduler sees continuous
+    activity and does not throttle the vCPU allocation.
+
+    Why this is needed: background threads (CLIP hydration, manual image
+    analysis) run after Flask has already returned an HTTP response.  Cloud
+    Run considers the request done and is free to throttle the container's
+    CPUs to near zero.  One spinning core signals "busy" while leaving the
+    remaining CPU available to PyTorch.  The arithmetic loop uses < 2% of
+    one core and produces no allocations or I/O.
+    """
+    _stop = threading.Event()
+
+    def _spin():
+        _x = 1.0
+        while not _stop.is_set():
+            for _ in range(10_000):
+                _x = (_x * 1.0000001 + 0.0000001) % 1.0
+
+    _t = threading.Thread(target=_spin, daemon=True)
+    _t.start()
+    try:
+        yield
+    finally:
+        _stop.set()
+        _t.join(timeout=1)
+
 
 # ---------------------------------------------------------------------------
 # Slack event: file uploaded to the scout channel
@@ -208,80 +240,81 @@ def _run_manual_analysis(
             channel=channel_id, thread_ts=thread_ts, text=text, mrkdwn=True
         )
 
-    try:
-        # Download image with Slack auth header
-        import requests as req
-        resp = req.get(
-            file_url,
-            headers={"Authorization": f"Bearer {_slack_token}"},
-            timeout=20,
-        )
-        resp.raise_for_status()
-        image_bytes = resp.content
-    except Exception as exc:
-        print(f"!!! MANUAL: Failed to download uploaded image: {exc}", flush=True)
-        _reply("❌ Couldn't download the image — please try uploading again.")
-        return
-
-    # Detect button crops
-    try:
-        from . import image_proc as _ip   # lazy import
-        crops = _ip.detect_and_crop(image_bytes)
-    except Exception as exc:
-        print(f"!!! MANUAL: detect_and_crop failed: {exc}", flush=True)
-        _reply("❌ Couldn't detect buttons in that image.")
-        return
-
-    if not crops:
-        _reply("No buttons detected in the image. Try a clearer or closer shot.")
-        return
-
-    # Match each crop
-    matched: dict[tuple, dict] = {}   # (year, slogan) → enriched match
-    unmatched_count = 0
-
-    from . import clip_matcher as _cm   # lazy import (already loaded if CLIP ready)
-    for crop in crops:
+    with _keep_cpu_hot():
         try:
-            match = _cm.match_crop(crop)
+            # Download image with Slack auth header
+            import requests as req
+            resp = req.get(
+                file_url,
+                headers={"Authorization": f"Bearer {_slack_token}"},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            image_bytes = resp.content
         except Exception as exc:
-            print(f"!!! MANUAL: match_crop error: {exc}", flush=True)
-            unmatched_count += 1
-            continue
+            print(f"!!! MANUAL: Failed to download uploaded image: {exc}", flush=True)
+            _reply("❌ Couldn't download the image — please try uploading again.")
+            return
 
-        if match is None:
-            unmatched_count += 1
-        else:
-            key = (match["year"], match["slogan"])
-            if key not in matched or match["overall"] > matched[key]["overall"]:
-                matched[key] = match
+        # Detect button crops
+        try:
+            from . import image_proc as _ip   # lazy import
+            crops = _ip.detect_and_crop(image_bytes)
+        except Exception as exc:
+            print(f"!!! MANUAL: detect_and_crop failed: {exc}", flush=True)
+            _reply("❌ Couldn't detect buttons in that image.")
+            return
 
-    # Enrich with price data
-    enriched_matches = []
-    for (year, slogan), match in matched.items():
-        price_single, price_year, notes, amount_needed = sheets_client.get_buy_decision(
-            year, slogan, buy_rules
-        )
-        enriched = dict(match)
-        enriched["max_price_single"] = price_single
-        enriched["amount_needed"]    = amount_needed
-        enriched_matches.append(enriched)
+        if not crops:
+            _reply("No buttons detected in the image. Try a clearer or closer shot.")
+            return
 
-    # Calculate totals
-    lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_matches)
-    margin    = lot_value - asking_price
-    needed    = [m for m in enriched_matches if m["amount_needed"] > 0]
+        # Match each crop
+        matched: dict[tuple, dict] = {}   # (year, slogan) → enriched match
+        unmatched_count = 0
 
-    # Format and post result
-    _reply(format_manual_result(
-        source=source,
-        asking_price=asking_price,
-        matches=enriched_matches,
-        lot_value=lot_value,
-        margin=margin,
-        needed=needed,
-        unmatched_count=unmatched_count,
-    ))
+        from . import clip_matcher as _cm   # lazy import (already loaded if CLIP ready)
+        for crop in crops:
+            try:
+                match = _cm.match_crop(crop)
+            except Exception as exc:
+                print(f"!!! MANUAL: match_crop error: {exc}", flush=True)
+                unmatched_count += 1
+                continue
+
+            if match is None:
+                unmatched_count += 1
+            else:
+                key = (match["year"], match["slogan"])
+                if key not in matched or match["overall"] > matched[key]["overall"]:
+                    matched[key] = match
+
+        # Enrich with price data
+        enriched_matches = []
+        for (year, slogan), match in matched.items():
+            price_single, price_year, notes, amount_needed = sheets_client.get_buy_decision(
+                year, slogan, buy_rules
+            )
+            enriched = dict(match)
+            enriched["max_price_single"] = price_single
+            enriched["amount_needed"]    = amount_needed
+            enriched_matches.append(enriched)
+
+        # Calculate totals
+        lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_matches)
+        margin    = lot_value - asking_price
+        needed    = [m for m in enriched_matches if m["amount_needed"] > 0]
+
+        # Format and post result
+        _reply(format_manual_result(
+            source=source,
+            asking_price=asking_price,
+            matches=enriched_matches,
+            lot_value=lot_value,
+            margin=margin,
+            needed=needed,
+            unmatched_count=unmatched_count,
+        ))
 
 
 def _format_manual_result(
@@ -727,14 +760,15 @@ def startup() -> None:
 
     def _hydrate():
         global vectors_loaded
-        try:
-            from . import clip_matcher as cm   # lazy: torch+clip imported here
-            cm.init(config.BUCKET_NAME)
-            vectors_loaded = True
-            print(">>> STARTUP: CLIP ready.", flush=True)
-        except Exception as exc:
-            print(f"!!! STARTUP: CLIP init failed: {exc}", flush=True)
-            traceback.print_exc()
+        with _keep_cpu_hot():
+            try:
+                from . import clip_matcher as cm   # lazy: torch+clip imported here
+                cm.init(config.BUCKET_NAME)
+                vectors_loaded = True
+                print(">>> STARTUP: CLIP ready.", flush=True)
+            except Exception as exc:
+                print(f"!!! STARTUP: CLIP init failed: {exc}", flush=True)
+                traceback.print_exc()
 
     threading.Thread(target=_hydrate, daemon=True).start()
 
