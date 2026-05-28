@@ -36,6 +36,7 @@ steps:
       - --memory=4Gi
       - --cpu=2
       - --timeout=1800
+      - --max-instances=1
 
 images:
   - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout

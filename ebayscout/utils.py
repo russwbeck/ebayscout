@@ -7,26 +7,34 @@ module-level secret fetching in main.py.
 """
 
 
-def parse_price_source(text: str) -> tuple[float | None, str]:
+def parse_price_source(text: str) -> tuple[float | None, str, int | None]:
     """
-    Parse a user reply in the form "$25.00 | Facebook Marketplace".
+    Parse a user reply in the form "$25.00 | Facebook Marketplace" or
+    "$25.00 | Facebook Marketplace | 35" (with optional button count).
 
-    Returns (price_float, source_string) or (None, "") on parse failure.
-    Accepts formats: "$25", "25", "$25.00", "25.50"
-    Pipe separator is required.
+    Returns (price_float, source_string, count_or_None).
+    Returns (None, "", None) on parse failure.
+    Pipe separator is required between price and source.
     """
     if "|" not in text:
-        return None, ""
+        return None, "", None
 
-    parts     = text.split("|", 1)
+    parts     = text.split("|")
     price_raw = parts[0].strip().lstrip("$").strip()
     source    = parts[1].strip() if len(parts) > 1 else "Unknown"
 
+    count = None
+    if len(parts) >= 3:
+        try:
+            count = int(parts[2].strip())
+        except ValueError:
+            pass
+
     try:
         price = float(price_raw.replace(",", ""))
-        return price, source
+        return price, source, count
     except ValueError:
-        return None, ""
+        return None, "", None
 
 
 def title_has_excluded_keyword(title: str, excluded_keywords: list[str]) -> bool:
