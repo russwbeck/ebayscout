@@ -113,6 +113,46 @@ class TestSendNeededAlert:
         assert "#test-channel" == captured.get("channel")
 
 
+class TestSendBackfillDigest:
+    _RECORDS = [
+        {"title": "Penn State 1977 button lot", "listing_url": "https://ebay.com/itm/1",
+         "asking": 20.0, "needed_hit": True,
+         "best_needed": {"year": "1977", "slogan": "We Are Number One", "overall": 0.71}},
+        {"title": "PSU 2003 pin", "listing_url": "https://ebay.com/itm/2",
+         "asking": 25.0, "needed_hit": False,
+         "best_needed": {"year": "2003", "slogan": "Gopher Broke", "overall": 0.58}},
+        {"title": "random hoodie", "listing_url": "", "asking": 5.0,
+         "needed_hit": False, "best_needed": None},
+    ]
+
+    def _capture(self):
+        captured = {}
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.side_effect = lambda **kw: captured.update(kw) or MagicMock()
+        return captured, mock_client
+
+    def test_single_message_with_scores_and_counts(self):
+        captured, mock_client = self._capture()
+        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+            notifier.send_backfill_digest("xoxb-fake", "#scout", self._RECORDS, threshold=0.60)
+        mock_client.chat_postMessage.assert_called_once()
+        text = captured.get("text", "")
+        assert "DRY RUN" in text
+        assert "0.71" in text and "0.58" in text     # both candidate scores shown
+        assert "✅" in text and "▫️" in text          # above + below threshold marks
+        assert "would alert on *1*" in text          # exactly one needed_hit
+        # the non-needed (best_needed=None) listing is excluded from the score list
+        assert "hoodie" not in text
+
+    def test_handles_no_needed_candidates(self):
+        captured, mock_client = self._capture()
+        none_records = [{"title": "x", "best_needed": None, "needed_hit": False, "asking": 1.0}]
+        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+            notifier.send_backfill_digest("xoxb-fake", "#scout", none_records, threshold=0.60)
+        text = captured.get("text", "")
+        assert "No needed-button candidates" in text
+
+
 class TestSendWarning:
     def test_posts_warning_message(self):
         mock_client = MagicMock()

@@ -484,8 +484,22 @@ def run_scan():
     On a cold start the background hydration thread may have been CPU-throttled
     before it could finish. We load CLIP (and reload buy_rules if needed)
     synchronously here — the incoming request itself provides the CPU.
+
+    One-shot backfill params (manual curl only — Cloud Scheduler sends neither):
+      ?ignore_seen=1  process every fetched listing regardless of seen_items
+                      (re-evaluate currently-visible inventory under new logic);
+                      still checkpoints seen so it's resumable + forward-only after.
+      ?dry_run=1      override config.DRY_RUN for this run only (post nothing,
+                      write nothing) — pair with ignore_seen to preview volume
+                      and tune NEEDED_MATCH_THRESHOLD before going live.
     """
     global buy_rules
+
+    def _truthy(v: str | None) -> bool:
+        return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+    ignore_seen   = _truthy(request.args.get("ignore_seen"))
+    dry_run_param = True if _truthy(request.args.get("dry_run")) else None  # None → use config
 
     if not vectors_loaded:
         print(">>> SCAN: CLIP not ready — loading synchronously within request...", flush=True)
@@ -507,11 +521,15 @@ def run_scan():
         return jsonify({"status": "already running"}), 409
 
     try:
-        _run_daily_scan()
+        _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param)
     finally:
         _scan_lock.release()
 
-    return jsonify({"status": "scan complete"}), 200
+    return jsonify({
+        "status":      "scan complete",
+        "ignore_seen": ignore_seen,
+        "dry_run":     config.DRY_RUN if dry_run_param is None else dry_run_param,
+    }), 200
 
 
 @flask_app.route("/health", methods=["GET"])
@@ -671,12 +689,14 @@ def _scan_log_record(
     top_matches:      list[dict],
     needed_hit:       bool,
     alerted:          bool,
+    best_needed:      dict | None = None,
 ) -> dict:
     """Build one JSONL scan-log record for a processed listing."""
     return {
         "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "item_id":       listing.get("item_id", ""),
         "title":         listing.get("title", ""),
+        "listing_url":   listing.get("listing_url", ""),
         "seller":        listing.get("seller", ""),
         "asking":        listing.get("current_price", 0.0),
         "photos_scored": photos_processed,
@@ -685,19 +705,36 @@ def _scan_log_record(
             {"year": m["year"], "slogan": m["slogan"], "overall": round(m["overall"], 4)}
             for m in sorted(top_matches, key=lambda x: x["overall"], reverse=True)[:5]
         ],
+        "best_needed":   (
+            {"year": best_needed["year"], "slogan": best_needed["slogan"],
+             "overall": round(best_needed["overall"], 4)}
+            if best_needed else None
+        ),
         "needed_hit":    needed_hit,
         "alerted":       alerted,
     }
 
 
-def _run_daily_scan() -> None:
+def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> None:
     """
     Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
     buy_rules and clip_matcher state rather than re-initialising.
+
+    ignore_seen: when True, process every fetched listing regardless of the
+                 seen_items dedup store (one-shot backfill). seen is still
+                 checkpointed so the run is resumable and later runs stay
+                 forward-only.
+    dry_run:     None → use config.DRY_RUN; True/False overrides it for this run.
     """
     from . import ebay_client, seen_items as seen_store
 
-    print(">>> SCAN: Daily scan starting (eBay + Etsy)...", flush=True)
+    dry_run = config.DRY_RUN if dry_run is None else dry_run
+
+    print(
+        f">>> SCAN: Daily scan starting (eBay + Etsy) "
+        f"[dry_run={dry_run}, ignore_seen={ignore_seen}]...",
+        flush=True,
+    )
 
     # eBay credentials — Browse API needs both the App ID (client id) and
     # the Cert ID (client secret) for the client-credentials OAuth grant.
@@ -765,10 +802,17 @@ def _run_daily_scan() -> None:
         print(">>> SCAN: No listings retrieved from any source — exiting.", flush=True)
         return
 
-    new_listings = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
+    if ignore_seen:
+        new_listings = all_listings   # one-shot backfill: re-evaluate everything visible
+    else:
+        new_listings = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
     ebay_new     = sum(1 for l in new_listings if not l["item_id"].startswith("etsy_"))
     etsy_new     = sum(1 for l in new_listings if     l["item_id"].startswith("etsy_"))
-    print(f">>> SCAN: {len(new_listings)} new listings to process.", flush=True)
+    print(
+        f">>> SCAN: {len(new_listings)} listings to process"
+        f"{' (ignore_seen backfill)' if ignore_seen else ' new'}.",
+        flush=True,
+    )
 
     stat_alerted        = 0
     stat_low_confidence = 0
@@ -806,6 +850,8 @@ def _run_daily_scan() -> None:
             needed_hits:    dict[tuple, dict] = {}  # (year, slogan) → enriched needed match
             strong_matched: dict[tuple, dict] = {}  # (year, slogan) → match >= CONFIDENCE
             log_top_matches: list[dict] = []
+            best_needed: dict | None = None         # top needed-mapped candidate,
+                                                    # even below bar (for tuning)
 
             for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
                 if photo_idx == 1:  # decided after photo 1 is scored
@@ -861,6 +907,12 @@ def _run_daily_scan() -> None:
                         )
                         if amount_needed <= 0:
                             continue
+                        # Track the best needed-mapped candidate regardless of
+                        # whether it clears the bar — this is the distribution
+                        # used to tune NEEDED_MATCH_THRESHOLD.
+                        if best_needed is None or overall > best_needed["overall"]:
+                            best_needed = {"year": m["year"], "slogan": m["slogan"],
+                                           "overall": overall}
                         try:
                             title_corroborated = int(m["year"]) in title_years
                         except (ValueError, TypeError):
@@ -882,7 +934,7 @@ def _run_daily_scan() -> None:
                 print(f">>> TITLE: [rejected {best_score_seen:.2f}] [{seller}] {title}", flush=True)
                 scan_log_records.append(_scan_log_record(
                     listing, photos_processed, best_score_seen, log_top_matches,
-                    needed_hit=False, alerted=False,
+                    needed_hit=False, alerted=False, best_needed=best_needed,
                 ))
                 seen_store.mark_seen(item_id, seen)
                 continue
@@ -899,7 +951,7 @@ def _run_daily_scan() -> None:
                     f"{needed_buttons[0]['year']} {needed_buttons[0]['slogan']}] [{seller}] {title}",
                     flush=True,
                 )
-                if config.DRY_RUN:
+                if dry_run:
                     print(f"    [DRY RUN] Would post needed-buttons alert for {item_id}", flush=True)
                 else:
                     notifier.send_needed_alert(
@@ -927,7 +979,7 @@ def _run_daily_scan() -> None:
                 lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_strong)
                 margin    = lot_value - asking
                 if margin > 0:
-                    if config.DRY_RUN:
+                    if dry_run:
                         print(f"    [DRY RUN] Would post undervalued alert for {item_id}", flush=True)
                     else:
                         notifier.send_undervalued_alert(
@@ -951,6 +1003,7 @@ def _run_daily_scan() -> None:
             scan_log_records.append(_scan_log_record(
                 listing, photos_processed, best_score_seen, log_top_matches,
                 needed_hit=bool(needed_buttons), alerted=listing_alerted,
+                best_needed=best_needed,
             ))
 
         except Exception as exc:
@@ -959,23 +1012,34 @@ def _run_daily_scan() -> None:
 
         seen_store.mark_seen(item_id, seen)
         _listings_since_save += 1
-        if not config.DRY_RUN and _listings_since_save >= 50:
+        if not dry_run and _listings_since_save >= 50:
             seen_store.save_seen(seen)
             _listings_since_save = 0
 
-    if config.DRY_RUN:
+    if dry_run:
         print("[DRY RUN] Skipping save_seen().", flush=True)
     elif not seen_store.save_seen(seen):
         notifier.send_warning(_slack_token, _channel_id,
                               "Failed to save seen_items.json — next scan may re-alert.")
 
-    # Append the per-listing scan log (groundwork for a future automated valuer).
-    if config.DRY_RUN:
-        print(f"[DRY RUN] {len(scan_log_records)} scan-log records (not written).", flush=True)
+    # Per-listing scan log. Live: append JSONL to GCS (groundwork for a future
+    # automated valuer). Dry run: write nothing to GCS, but post a single Slack
+    # digest so the preview's candidate scores are readable for threshold tuning.
+    if dry_run:
+        print(f"[DRY RUN] {len(scan_log_records)} scan-log records (not written to GCS).", flush=True)
+        try:
+            notifier.send_backfill_digest(
+                slack_token=_slack_token,
+                channel=_channel_id,
+                records=scan_log_records,
+                threshold=config.NEEDED_MATCH_THRESHOLD,
+            )
+        except Exception as exc:
+            print(f"!!! SCAN: Failed to post backfill digest: {exc}", flush=True)
     elif scan_log_records and not seen_store.append_scan_log(scan_log_records):
         print("!!! SCAN: Failed to append scan log to GCS.", flush=True)
 
-    if config.DRY_RUN:
+    if dry_run:
         print(
             f"[DRY RUN] Summary: alerted={stat_alerted}, "
             f"low_conf={stat_low_confidence}, rejected={stat_rejected}",

@@ -179,6 +179,61 @@ def send_scan_summary(
     _post_message(slack_token, channel, "\n".join(lines))
 
 
+def send_backfill_digest(
+    slack_token: str,
+    channel: str,
+    records: list[dict],
+    threshold: float,
+) -> None:
+    """
+    Post a single dry-run preview digest to Slack instead of N alerts.
+
+    Used by a `?dry_run=1` backfill so the run's needed-button candidate
+    scores land somewhere readable (Slack) for tuning NEEDED_MATCH_THRESHOLD,
+    without writing anything to GCS or firing real alerts.
+
+    `records` are the _scan_log_record dicts; each may carry a `best_needed`
+    {year, slogan, overall} — the top needed-mapped candidate for that listing,
+    *even if it fell below the bar* — which is exactly the distribution to tune.
+    """
+    needed = [r for r in records if r.get("best_needed")]
+    needed.sort(key=lambda r: r["best_needed"]["overall"], reverse=True)
+
+    would_alert = sum(1 for r in records if r.get("needed_hit"))
+    n_total     = len(records)
+
+    lines = [
+        "🧪 *Backfill preview (DRY RUN)* — no alerts posted, nothing written.",
+        f"Processed *{n_total}* listings · would alert on *{would_alert}* "
+        f"needed candidate(s) at threshold *{threshold:.2f}*.",
+    ]
+
+    if needed:
+        lines.append("")
+        lines.append("*Needed-button candidates by score* (✅ = above threshold):")
+        for r in needed[:25]:
+            bn    = r["best_needed"]
+            mark  = "✅" if bn["overall"] >= threshold else "▫️"
+            title = _truncate(r.get("title", ""), 60)
+            url   = r.get("listing_url", "")
+            link  = f"<{url}|{title}>" if url else title
+            lines.append(
+                f"  {mark} `{bn['overall']:.2f}`  {bn['year']} \"{bn['slogan']}\"  "
+                f"· ${r.get('asking', 0):.0f} · {link}"
+            )
+        if len(needed) > 25:
+            lines.append(f"  …and {len(needed) - 25} more.")
+        lines.append("")
+        lines.append(
+            "_Set `NEEDED_MATCH_THRESHOLD` just below the lowest score you'd "
+            "still want pinged, then run the live backfill (`?ignore_seen=1`)._"
+        )
+    else:
+        lines.append("_No needed-button candidates surfaced in this preview._")
+
+    _post_message(slack_token, channel, "\n".join(lines))
+
+
 def send_warning(slack_token: str, channel: str, message: str) -> None:
     """Post a plain-text operational warning to the scout channel."""
     _post_message(slack_token, channel, f"⚠️ *ebayscout warning*: {message}")

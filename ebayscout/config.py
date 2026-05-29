@@ -147,6 +147,9 @@ PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
 # Produces 4 queries: "PSU button", "PSU pin", "PSU badge", "PSU pinback"
 
 # --- Dry-run mode (set True for smoke testing) ---
-# When True: the scan runs end-to-end but posts no Slack messages and does
-# not write seen_items.json — it logs "[DRY RUN]" lines instead.
+# When True: the scan runs end-to-end but fires no real alerts and writes
+# nothing to GCS (no seen_items.json, no scan_log.jsonl) — it logs "[DRY RUN]"
+# lines and posts a single preview digest of needed-button candidate scores to
+# the scout Slack channel (for tuning NEEDED_MATCH_THRESHOLD). Can also be
+# overridden per-request with /run-scan?dry_run=1.
 DRY_RUN = False
