@@ -7,6 +7,8 @@ Edit EXCLUDED_SELLERS and SLACK_SCOUT_CHANNEL before first deploy.
 
 import os
 
+from .utils import build_era_queries
+
 # --- GCP ---
 BUCKET_NAME    = "60d488c5-9c8e-4acc-aac-button-data"
 PROJECT_NUMBER = "404960106109"
@@ -151,16 +153,33 @@ BUTTON_TYPES  = ["button", "pin", "badge", "pinback"]
 # that floods unrestricted "PSU button/pin/badge/pinback" searches.
 SPORTS_MEMO_CATEGORY_ID = "64482"
 
-# Unrestricted queries — "Penn State" and "Nittany Lions" are unambiguous.
+# Unrestricted ("very broad") queries — "Penn State" and "Nittany Lions" are
+# unambiguous. Central Counties moved to CCB_ERA_QUERIES so its results are
+# matched era-restricted (1972-1983) rather than against the full slogan set.
 EBAY_SEARCH_QUERIES: list[str] = (
     [f"Penn State {btn}" for btn in BUTTON_TYPES]
     + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
-    + ["Central Counties Bank"]
 )
-# Produces 9 queries:
-#   "Penn State button/pin/badge/pinback"
-#   "Nittany Lions button/pin/badge/pinback"
-#   "Central Counties Bank"
+# Produces 8 queries: "Penn State|Nittany Lions" × "button|pin|badge|pinback"
+
+# --- Era-named searches (bake the bank era into the query → restrict matching) ---
+# Each (query, era_label) result is tagged search_era and matched restricted to
+# that era's year range (see BUTTON_ERAS). Prefixes include Nittany Lions per the
+# era-search design.
+ERA_SEARCH_PREFIXES = ["Penn State", "PSU", "Nittany Lions"]
+
+# Central Counties runs in the DAILY scan (small, finite priority era).
+CCB_ERA_QUERIES: list[tuple[str, str]] = (
+    build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Central Counties", "Central Counties")
+    + [("Central Counties Bank", "Central Counties")]   # precise standalone term
+)
+
+# Mellon + Citizens run ON-DEMAND via /run-scan?era_crawl=1 (broader, multi-year
+# within an era; the tight year crawl runs first and marks listings seen).
+MELLON_CITIZENS_ERA_QUERIES: list[tuple[str, str]] = (
+    build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Mellon", "Mellon")
+    + build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Citizens", "Citizens")
+)
 
 # PSU queries run with category_ids=SPORTS_MEMO_CATEGORY_ID so "PSU" matches
 # Penn State University buttons rather than Power Supply Units.

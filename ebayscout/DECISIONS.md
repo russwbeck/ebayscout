@@ -624,6 +624,38 @@ with the Request URL set to `/slack/events` (Bolt routes actions through it).
 
 ---
 
+## 25. Era-tagged searches (tight → broad crawl)
+
+Extends year-aware matching (#22) to the **bank era**: bake the era into the
+*search query* so each result self-tags which era to match against. A query like
+`Penn State Mellon button` both surfaces era-relevant listings and carries
+`search_era="Mellon"`, which the scan turns into `restrict_years` (the era's year
+range) — cutting cross-era misses, especially on multi-year lots.
+
+Crawl strategy, tight → broad (run in this order; each marks `seen` so the next
+skips what it caught):
+
+1. **Year crawl** (`?year_crawl=1`, #22) — exact year, tightest.
+2. **Era crawl** (`?era_crawl=1`, NEW) — Mellon + Citizens bank queries, matched
+   restricted to the era's year range. Broader (a bank-era lot spans many years).
+3. **Daily scan** — very broad general queries (`Penn State`/`Nittany Lions` ×
+   button types), **plus Central Counties promoted into the daily scan**
+   era-restricted. CCB is the small, finite priority era, so it runs every day;
+   `"Central Counties Bank"` was moved out of the unrestricted general queries so
+   its results are matched only against CCB-era reference (1972–1983).
+
+Mechanics mirror the year crawl exactly: `find_listings(search_era=…)` stamps the
+tag; `find_era_augmented_listings` runs `(query, era)` pairs;
+`utils.build_era_queries` generates `{Penn State, PSU, Nittany Lions} × {button,
+pin, badge, pinback} × {bank word}` (PSU-prefixed ones stay category-restricted
+to Sports Mem). Per-listing restriction priority: `search_year` (exact) →
+`search_era` (range) → single title-year → none. Config:
+`ERA_SEARCH_PREFIXES`, `CCB_ERA_QUERIES`, `MELLON_CITIZENS_ERA_QUERIES`.
+`?era_crawl=1` composes with `?dry_run=1` / `?ignore_seen=1`; Cloud Scheduler
+never sends it, so the daily 9am job is unaffected beyond the CCB pass.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |

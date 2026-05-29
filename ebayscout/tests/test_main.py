@@ -15,11 +15,29 @@ from ebayscout.utils import (
     extract_years,
     needed_years,
     build_year_queries,
+    build_era_queries,
     era_year_set,
     parse_era,
     parse_confirmation,
     other_era,
 )
+
+
+class TestBuildEraQueries:
+    def test_prefix_button_product_tagged_with_era(self):
+        out = build_era_queries(["Penn State", "PSU"], ["button", "pin"], "Mellon", "Mellon")
+        assert ("Penn State Mellon button", "Mellon") in out
+        assert ("PSU Mellon pin", "Mellon") in out
+        assert len(out) == 4
+        assert all(era == "Mellon" for _q, era in out)
+
+    def test_central_counties_word(self):
+        out = build_era_queries(["Nittany Lions"], ["badge"], "Central Counties", "Central Counties")
+        assert out == [("Nittany Lions Central Counties badge", "Central Counties")]
+
+    def test_empty_inputs(self):
+        assert build_era_queries([], ["button"], "Mellon", "Mellon") == []
+        assert build_era_queries(["PSU"], [], "Mellon", "Mellon") == []
 
 _ERAS = {
     "Central Counties": (1972, 1983),

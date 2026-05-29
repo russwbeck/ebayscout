@@ -121,6 +121,26 @@ def parse_confirmation(text: str) -> tuple[int | None, str | None]:
     return count, parse_era(text)
 
 
+def build_era_queries(
+    prefixes: list[str],
+    button_types: list[str],
+    era_word: str,
+    era_label: str,
+) -> list[tuple[str, str]]:
+    """
+    Build era-named search queries: one (query, era_label) pair per
+    prefix × button_type, e.g. ("Penn State Mellon button", "Mellon").
+
+    The bank word in the query both surfaces era-tagged listings and tells the
+    matcher which era to restrict to (search_era → restrict_years).
+    """
+    return [
+        (f"{prefix} {era_word} {btn}", era_label)
+        for prefix in prefixes
+        for btn in button_types
+    ]
+
+
 def build_year_queries(base_terms: list[str], years) -> list[tuple[str, int]]:
     """
     Build year-augmented search queries: one (query, year) pair per

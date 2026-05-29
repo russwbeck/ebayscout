@@ -304,6 +304,28 @@ Volume scales with (needed years × ~12 base terms), so it's an on-demand /
 periodic job, not part of the daily scan. Cloud Scheduler never sends
 `year_crawl`, so the 9am run stays on the light general queries.
 
+### Bank-era crawl (`?era_crawl=1`)
+
+Sources listings from the **Mellon + Citizens** bank searches, each matched
+restricted to that era's year range. Broader than the year crawl (catches
+multi-year lots within an era). Central Counties is **not** here — it runs in
+the daily scan, era-restricted.
+
+```bash
+curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1&dry_run=1" -H "$TOKEN"   # preview
+curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1" -H "$TOKEN"             # live
+```
+
+**Recommended backlog order — tight → broad** (each marks `seen`, so the next
+skips what it already caught; don't add `ignore_seen` unless you want a full
+re-scan):
+
+```bash
+curl -X POST "${SERVICE_URL}/run-scan?year_crawl=1" -H "$TOKEN"   # 1. exact years (tightest)
+curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1"  -H "$TOKEN"   # 2. Mellon + Citizens (broad)
+# 3. the daily 9am general scan covers everything else + Central Counties
+```
+
 ---
 
 ## Updating the Excluded Sellers List

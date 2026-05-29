@@ -64,17 +64,18 @@ def find_listings(
     max_results: int = 100,
     category_ids: str | None = None,
     search_year: int | None = None,
+    search_era: str | None = None,
 ) -> list[dict]:
     """
     Search the Browse API item_summary/search for one keyword string.
 
     Returns a list of dicts:
         {item_id, title, current_price, currency, listing_url, gallery_url,
-         seller, search_year}
+         seller, search_year, search_era}
 
-    search_year: stamped onto every returned listing (None for general queries).
-    When set, the caller knows these results came from a year-specific query and
-    can restrict CLIP matching to that year.
+    search_year / search_era: stamped onto every returned listing (None for
+    general queries). When set, the caller knows these results came from a
+    year- or era-specific query and can restrict CLIP matching accordingly.
 
     Excluded sellers, excluded categories (e.g. Clothing/Shoes/Accessories),
     and apparel keywords are filtered client-side (the Browse API has no
@@ -155,6 +156,7 @@ def find_listings(
             "gallery_url":   image,
             "seller":        seller,
             "search_year":   search_year,
+            "search_era":    search_era,
         }
 
     print(f">>> EBAY FIND: '{keywords}' → {len(results)} unique listings", flush=True)
@@ -239,6 +241,49 @@ def find_year_augmented_listings(
                 all_listings.append(listing)
 
     print(f">>> EBAY YEAR-CRAWL: {len(year_queries)} queries → "
+          f"{len(all_listings)} unique listings.", flush=True)
+    return all_listings
+
+
+def find_era_augmented_listings(
+    client_id: str,
+    client_secret: str,
+    era_queries: list[tuple[str, str]],
+    excluded_sellers: list[str] | None = None,
+    excluded_keywords: list[str] | None = None,
+    max_results: int = 100,
+    category_ids: str | None = None,
+) -> list[dict]:
+    """
+    Run a list of (query, era_label) pairs (from utils.build_era_queries),
+    tagging every returned listing with its search_era, and deduplicate by
+    item_id (first occurrence wins its search_era).
+
+    Used by the daily CCB pass and the on-demand era crawl: the bank word in the
+    query surfaces era-tagged listings and tells the matcher which era to
+    restrict to. PSU-prefixed queries are passed with category_ids by the caller.
+    """
+    if excluded_sellers is None:
+        excluded_sellers = config.EXCLUDED_SELLERS
+    if excluded_keywords is None:
+        excluded_keywords = config.EXCLUDED_KEYWORDS
+
+    seen_ids: set[str] = set()
+    all_listings: list[dict] = []
+
+    for query, era in era_queries:
+        batch = find_listings(
+            client_id, client_secret, query,
+            excluded_sellers, excluded_keywords, max_results,
+            category_ids=category_ids, search_era=era,
+        )
+        for listing in batch:
+            iid = listing["item_id"]
+            if iid not in seen_ids:
+                seen_ids.add(iid)
+                all_listings.append(listing)
+
+    print(f">>> EBAY ERA-CRAWL: {len(era_queries)} queries → "
           f"{len(all_listings)} unique listings.", flush=True)
     return all_listings
 

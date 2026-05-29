@@ -870,6 +870,10 @@ def run_scan():
                       years (amount_needed > 0) instead of the general queries,
                       matching each result restricted to its search year. Reaches
                       deep inventory the general newest-100 windows miss.
+      ?era_crawl=1    source listings from the Mellon + Citizens bank searches,
+                      matching each restricted to its era's year range. Broader
+                      than the year crawl (multi-year lots); run it after the
+                      year crawl so seen-dedup skips what that already caught.
     """
     global buy_rules
 
@@ -878,6 +882,7 @@ def run_scan():
 
     ignore_seen   = _truthy(request.args.get("ignore_seen"))
     year_crawl    = _truthy(request.args.get("year_crawl"))
+    era_crawl     = _truthy(request.args.get("era_crawl"))
     dry_run_param = True if _truthy(request.args.get("dry_run")) else None  # None → use config
 
     if not vectors_loaded:
@@ -900,7 +905,8 @@ def run_scan():
         return jsonify({"status": "already running"}), 409
 
     try:
-        _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param, year_crawl=year_crawl)
+        _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
+                        year_crawl=year_crawl, era_crawl=era_crawl)
     finally:
         _scan_lock.release()
 
@@ -908,6 +914,7 @@ def run_scan():
         "status":      "scan complete",
         "ignore_seen": ignore_seen,
         "year_crawl":  year_crawl,
+        "era_crawl":   era_crawl,
         "dry_run":     config.DRY_RUN if dry_run_param is None else dry_run_param,
     }), 200
 
@@ -1095,10 +1102,36 @@ def _scan_log_record(
     }
 
 
+def _run_era_queries(ebay_client, ebay_app_id, ebay_cert_id, era_queries: list) -> list:
+    """
+    Run era-named (query, era) pairs, splitting PSU-prefixed queries into a
+    Sports-Mem category-restricted call (same noise guard as the general PSU
+    queries). Returns the combined, search_era-tagged listings.
+    """
+    non_psu = [(q, e) for (q, e) in era_queries if not q.startswith("PSU ")]
+    psu     = [(q, e) for (q, e) in era_queries if q.startswith("PSU ")]
+    out: list = []
+    if non_psu:
+        out.extend(ebay_client.find_era_augmented_listings(
+            client_id=ebay_app_id, client_secret=ebay_cert_id,
+            era_queries=non_psu, excluded_sellers=config.EXCLUDED_SELLERS,
+            max_results=config.EBAY_MAX_RESULTS,
+        ))
+    if psu:
+        out.extend(ebay_client.find_era_augmented_listings(
+            client_id=ebay_app_id, client_secret=ebay_cert_id,
+            era_queries=psu, excluded_sellers=config.EXCLUDED_SELLERS,
+            max_results=config.EBAY_MAX_RESULTS,
+            category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+        ))
+    return out
+
+
 def _run_daily_scan(
     ignore_seen: bool = False,
     dry_run: bool | None = None,
     year_crawl: bool = False,
+    era_crawl: bool = False,
 ) -> None:
     """
     Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
@@ -1112,6 +1145,10 @@ def _run_daily_scan(
     year_crawl:  when True, source listings from year-augmented searches for
                  needed years (eBay only) instead of the general queries; each
                  result is matched restricted to its search year.
+    era_crawl:   when True, source listings from the Mellon + Citizens bank
+                 searches (eBay only); each result is matched restricted to its
+                 era's year range. Run after the year crawl (seen-dedup skips
+                 what it caught).
     """
     from . import ebay_client, seen_items as seen_store
 
@@ -1119,7 +1156,8 @@ def _run_daily_scan(
 
     print(
         f">>> SCAN: Daily scan starting "
-        f"[dry_run={dry_run}, ignore_seen={ignore_seen}, year_crawl={year_crawl}]...",
+        f"[dry_run={dry_run}, ignore_seen={ignore_seen}, year_crawl={year_crawl}, "
+        f"era_crawl={era_crawl}]...",
         flush=True,
     )
 
@@ -1167,6 +1205,18 @@ def _run_daily_scan(
             ))
         except Exception as exc:
             print(f"!!! SCAN: year crawl query failed: {exc}", flush=True)
+    elif era_crawl:
+        # --- On-demand Mellon + Citizens bank crawl (eBay only) ---
+        if not (ebay_app_id and ebay_cert_id):
+            print(">>> SCAN: era_crawl needs eBay credentials — exiting.", flush=True)
+            return
+        print(f">>> SCAN: Era crawl over {len(config.MELLON_CITIZENS_ERA_QUERIES)} "
+              f"bank queries (Mellon + Citizens).", flush=True)
+        try:
+            all_listings.extend(_run_era_queries(
+                ebay_client, ebay_app_id, ebay_cert_id, config.MELLON_CITIZENS_ERA_QUERIES))
+        except Exception as exc:
+            print(f"!!! SCAN: era crawl query failed: {exc}", flush=True)
     else:
         if ebay_app_id and ebay_cert_id:
             try:
@@ -1188,8 +1238,14 @@ def _run_daily_scan(
                     category_ids=config.SPORTS_MEMO_CATEGORY_ID,
                 )
                 all_listings.extend(psu_listings)
-                print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
-                      f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
+                # Central Counties (era-restricted) runs in the daily scan.
+                ccb_listings = _run_era_queries(
+                    ebay_client, ebay_app_id, ebay_cert_id, config.CCB_ERA_QUERIES)
+                all_listings.extend(ccb_listings)
+                print(f">>> SCAN: eBay returned "
+                      f"{len(ebay_listings) + len(psu_listings) + len(ccb_listings)} listings "
+                      f"({len(ebay_listings)} main + {len(psu_listings)} PSU + "
+                      f"{len(ccb_listings)} CCB).", flush=True)
             except Exception as exc:
                 print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
         else:
@@ -1250,14 +1306,18 @@ def _run_daily_scan(
         title   = listing.get("title", "?")
         seller  = listing.get("seller", "")
 
-        # Decide which years matching may consider for this listing:
-        #   - year-crawl result → the search year it came from
+        # Decide which years matching may consider for this listing (tight→broad):
+        #   - year-crawl result → the exact search year it came from
+        #   - era-tagged result (CCB daily / era crawl) → that era's year range
         #   - general result whose title names exactly one known year → that year
         #   - otherwise → unrestricted (full matcher)
         title_years_all = extract_years(title)
         search_year     = listing.get("search_year")
+        search_era      = listing.get("search_era")
         if search_year:
             restrict_years: set[int] | None = {int(search_year)}
+        elif search_era:
+            restrict_years = era_year_set(search_era, config.BUTTON_ERAS) or None
         elif len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
             restrict_years = {next(iter(title_years_all))}
         else:
