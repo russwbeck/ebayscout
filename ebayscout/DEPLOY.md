@@ -308,8 +308,9 @@ periodic job, not part of the daily scan. Cloud Scheduler never sends
 
 Sources listings from the **Mellon + Citizens** bank searches, each matched
 restricted to that era's year range. Broader than the year crawl (catches
-multi-year lots within an era). Central Counties is **not** here — it runs in
-the daily scan, era-restricted.
+multi-year lots within an era). Central Counties is **not** here — the
+`"Central Counties Bank"` query stays in the always-on daily general scan,
+unrestricted (CCB buttons are the rarest, so we keep maximum broad coverage).
 
 ```bash
 curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1&dry_run=1" -H "$TOKEN"   # preview

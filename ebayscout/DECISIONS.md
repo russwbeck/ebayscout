@@ -636,23 +636,26 @@ Crawl strategy, tight → broad (run in this order; each marks `seen` so the nex
 skips what it caught):
 
 1. **Year crawl** (`?year_crawl=1`, #22) — exact year, tightest.
-2. **Era crawl** (`?era_crawl=1`, NEW) — Mellon + Citizens bank queries, matched
-   restricted to the era's year range. Broader (a bank-era lot spans many years).
+2. **Era crawl** (`?era_crawl=1`, NEW) — **Mellon + Citizens** bank queries,
+   matched restricted to the era's year range. Broader (a bank-era lot spans many
+   years).
 3. **Daily scan** — very broad general queries (`Penn State`/`Nittany Lions` ×
-   button types), **plus Central Counties promoted into the daily scan**
-   era-restricted. CCB is the small, finite priority era, so it runs every day;
-   `"Central Counties Bank"` was moved out of the unrestricted general queries so
-   its results are matched only against CCB-era reference (1972–1983).
+   button types) **plus the standalone `"Central Counties Bank"` query, kept in
+   the general set unrestricted**. CCB buttons are the **rarest**, so that query
+   runs every day with maximum broad coverage and is matched against the **full**
+   slogan/reference set — deliberately **not** era-narrowed. (Earlier draft wrongly
+   moved CCB into an era-restricted pass; reverted.)
 
 Mechanics mirror the year crawl exactly: `find_listings(search_era=…)` stamps the
 tag; `find_era_augmented_listings` runs `(query, era)` pairs;
 `utils.build_era_queries` generates `{Penn State, PSU, Nittany Lions} × {button,
-pin, badge, pinback} × {bank word}` (PSU-prefixed ones stay category-restricted
-to Sports Mem). Per-listing restriction priority: `search_year` (exact) →
-`search_era` (range) → single title-year → none. Config:
-`ERA_SEARCH_PREFIXES`, `CCB_ERA_QUERIES`, `MELLON_CITIZENS_ERA_QUERIES`.
-`?era_crawl=1` composes with `?dry_run=1` / `?ignore_seen=1`; Cloud Scheduler
-never sends it, so the daily 9am job is unaffected beyond the CCB pass.
+pin, badge, pinback} × {bank word}` for **Mellon and Citizens** (PSU-prefixed ones
+stay category-restricted to Sports Mem). Per-listing restriction priority:
+`search_year` (exact) → `search_era` (range) → single title-year → none — so the
+unrestricted CCB results (no `search_era`) fall through to the full matcher.
+Config: `ERA_SEARCH_PREFIXES`, `MELLON_CITIZENS_ERA_QUERIES`. `?era_crawl=1`
+composes with `?dry_run=1` / `?ignore_seen=1`; Cloud Scheduler never sends it, so
+the daily 9am job is unchanged.
 
 ---
 

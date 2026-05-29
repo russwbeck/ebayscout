@@ -1238,14 +1238,8 @@ def _run_daily_scan(
                     category_ids=config.SPORTS_MEMO_CATEGORY_ID,
                 )
                 all_listings.extend(psu_listings)
-                # Central Counties (era-restricted) runs in the daily scan.
-                ccb_listings = _run_era_queries(
-                    ebay_client, ebay_app_id, ebay_cert_id, config.CCB_ERA_QUERIES)
-                all_listings.extend(ccb_listings)
-                print(f">>> SCAN: eBay returned "
-                      f"{len(ebay_listings) + len(psu_listings) + len(ccb_listings)} listings "
-                      f"({len(ebay_listings)} main + {len(psu_listings)} PSU + "
-                      f"{len(ccb_listings)} CCB).", flush=True)
+                print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
+                      f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
             except Exception as exc:
                 print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
         else:

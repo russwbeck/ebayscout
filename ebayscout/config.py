@@ -154,28 +154,24 @@ BUTTON_TYPES  = ["button", "pin", "badge", "pinback"]
 SPORTS_MEMO_CATEGORY_ID = "64482"
 
 # Unrestricted ("very broad") queries — "Penn State" and "Nittany Lions" are
-# unambiguous. Central Counties moved to CCB_ERA_QUERIES so its results are
-# matched era-restricted (1972-1983) rather than against the full slogan set.
+# unambiguous. "Central Counties Bank" STAYS here, unrestricted, and runs every
+# day: CCB buttons are the rarest, so we want maximum broad coverage on them
+# (matched against the full slogan/reference set, not era-narrowed).
 EBAY_SEARCH_QUERIES: list[str] = (
     [f"Penn State {btn}" for btn in BUTTON_TYPES]
     + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
+    + ["Central Counties Bank"]
 )
-# Produces 8 queries: "Penn State|Nittany Lions" × "button|pin|badge|pinback"
+# Produces 9 queries.
 
 # --- Era-named searches (bake the bank era into the query → restrict matching) ---
-# Each (query, era_label) result is tagged search_era and matched restricted to
-# that era's year range (see BUTTON_ERAS). Prefixes include Nittany Lions per the
-# era-search design.
+# Mellon + Citizens only. Each (query, era_label) result is tagged search_era and
+# matched restricted to that era's year range (see BUTTON_ERAS). Run ON-DEMAND via
+# /run-scan?era_crawl=1 (broader, multi-year within an era; the tight year crawl
+# runs first and marks listings seen). Central Counties is deliberately NOT here —
+# it stays in the always-on general queries above. Prefixes include Nittany Lions.
 ERA_SEARCH_PREFIXES = ["Penn State", "PSU", "Nittany Lions"]
 
-# Central Counties runs in the DAILY scan (small, finite priority era).
-CCB_ERA_QUERIES: list[tuple[str, str]] = (
-    build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Central Counties", "Central Counties")
-    + [("Central Counties Bank", "Central Counties")]   # precise standalone term
-)
-
-# Mellon + Citizens run ON-DEMAND via /run-scan?era_crawl=1 (broader, multi-year
-# within an era; the tight year crawl runs first and marks listings seen).
 MELLON_CITIZENS_ERA_QUERIES: list[tuple[str, str]] = (
     build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Mellon", "Mellon")
     + build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Citizens", "Citizens")
