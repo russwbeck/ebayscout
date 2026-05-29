@@ -20,6 +20,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import traceback
 
 from flask import Flask, request, jsonify
@@ -333,7 +334,8 @@ def handle_message(event, client):
 
     # Dispatch the analysis to run inside a fresh in-flight HTTP request (see
     # _dispatch_manual_analysis). Fire-and-forget in a thread so this Slack
-    # event handler still returns within Slack's 3s ack window.
+    # event handler still returns within Slack's 3s ack window. daemon=False so
+    # the dispatch outlives this webhook handler (per CLOUD_RUN_CPU_THROTTLE_FIX).
     threading.Thread(
         target=_dispatch_manual_analysis,
         kwargs={
@@ -344,7 +346,7 @@ def handle_message(event, client):
             "source":       source,
             "button_count": button_count,
         },
-        daemon=True,
+        daemon=False,
     ).start()
 
 
@@ -359,14 +361,21 @@ def _dispatch_manual_analysis(
     """
     POST the analysis payload to this service's own /internal/manual-analysis
     endpoint so the heavy CLIP work runs inside an in-flight HTTP request (full
-    CPU on Cloud Run) rather than a throttled background thread.
+    CPU on Cloud Run) rather than a throttled background thread. Must use the
+    external HTTPS URL — a localhost call bypasses the load balancer and does
+    NOT prevent throttling (see CLOUD_RUN_CPU_THROTTLE_FIX.md).
 
-    This call blocks until the analysis finishes, but it runs in a daemon thread
-    spawned off the Slack event handler, so Slack is already acked. If the
-    self-request fails (bad URL / auth), fall back to running inline so the user
-    still gets a result — degraded (throttled) but not dropped.
+    Inline fallback runs ONLY when the work definitely did not start (couldn't
+    reach the server, or a non-200 rejection). On a read timeout the server-side
+    analysis is still running, so we must NOT re-run it — that would double-post.
     """
     import requests as req
+
+    def _run_inline(reason: str) -> None:
+        print(f"!!! MANUAL: {reason} — running inline (throttled) as fallback.", flush=True)
+        _run_manual_analysis(file_url, channel_id, thread_ts,
+                             asking_price, source, button_count)
+
     payload = {
         "file_url":     file_url,
         "channel_id":   channel_id,
@@ -375,23 +384,33 @@ def _dispatch_manual_analysis(
         "source":       source,
         "button_count": button_count,
     }
+
+    # Brief pause so the Slack-ack request releases its gunicorn worker before
+    # we claim another via the internal request.
+    time.sleep(0.3)
+
     try:
         resp = req.post(
             f"{config.SERVICE_BASE_URL}/internal/manual-analysis",
             json=payload,
             headers={"X-Internal-Token": _INTERNAL_TOKEN},
-            timeout=1800,
+            timeout=1790,   # < Cloud Run --timeout=1800, ~10s headroom
         )
-        if resp.status_code == 200:
-            return
-        print(f"!!! MANUAL: internal dispatch returned {resp.status_code} — "
-              f"running inline (throttled) as fallback.", flush=True)
+    except (req.exceptions.ConnectionError, req.exceptions.ConnectTimeout) as exc:
+        # Never reached the server → the analysis did not start → safe to run once.
+        _run_inline(f"could not reach internal endpoint ({exc})")
+        return
     except Exception as exc:
-        print(f"!!! MANUAL: internal dispatch failed ({exc}) — "
-              f"running inline (throttled) as fallback.", flush=True)
+        # Connected but the read ended early (e.g. ReadTimeout): the server-side
+        # analysis is STILL RUNNING. Do not retry — it would double-post.
+        print(f"!!! MANUAL: internal dispatch read ended early ({exc}); "
+              f"server-side analysis is still running — not retrying.", flush=True)
+        return
 
-    _run_manual_analysis(file_url, channel_id, thread_ts,
-                         asking_price, source, button_count)
+    if resp.status_code != 200:
+        # Server reached and rejected (e.g. 403 token / 404 URL) → work did not
+        # run → safe to run inline.
+        _run_inline(f"internal dispatch returned {resp.status_code}")
 
 
 # ---------------------------------------------------------------------------

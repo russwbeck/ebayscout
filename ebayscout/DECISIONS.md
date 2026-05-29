@@ -560,16 +560,25 @@ Details:
   (`_INTERNAL_TOKEN`); since `workers=1` + `--max-instances=1`, caller and
   handler share the process so the token always matches, and it's unguessable to
   outsiders (the route is publicly reachable, like `/slack/events`).
-- `config.SERVICE_BASE_URL` (env-overridable) is the self-call target — must
-  match the deployed service URL.
-- If the self-call fails (bad URL/auth), `_dispatch_manual_analysis` falls back
-  to running inline (throttled, but the user still gets a result) and logs it.
+- `config.SERVICE_BASE_URL` (env-overridable) is the self-call target — must be
+  the **external HTTPS URL**. A `localhost` call bypasses the load balancer and
+  does **not** prevent throttling (per `CLOUD_RUN_CPU_THROTTLE_FIX.md`).
+- Inline fallback is **conditional, never a blind retry**: run inline only when
+  the work definitely didn't start — a connection error (never reached the
+  server) or a non-200 rejection. On a **read timeout the server-side analysis
+  is still running**, so `_dispatch_manual_analysis` does NOT re-run it (that
+  would double-post). Dispatch thread is `daemon=False` so it outlives the
+  webhook handler; a 0.3s pause lets the ack request release its worker first;
+  POST timeout is 1790s (< Cloud Run's 1800).
 - **Not** fixed with `--no-cpu-throttling` — that's off budget (CLAUDE.md). The
   in-request pattern keeps us scale-to-zero.
 
 Separately, ebayscout's CLIP is full-precision eager PyTorch (no ONNX, and
 `quantize_dynamic` was removed in #12), so it is inherently slower per-encode
-than the worker — but that's minutes-at-worst, not the 19 we saw.
+than the worker — but that's minutes-at-worst, not the 19 we saw. We do pin the
+PyTorch thread budget (`torch.set_num_threads`/`set_num_interop_threads`,
+`OMP_NUM_THREADS=2` to match `--cpu=2`) to avoid over-subscription thrash
+(`CLOUD_RUN_CPU_THROTTLE_FIX.md` Part 5).
 
 ---
 

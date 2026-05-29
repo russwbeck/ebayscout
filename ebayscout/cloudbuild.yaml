@@ -37,6 +37,7 @@ steps:
       - --cpu=2
       - --timeout=1800
       - --max-instances=1   # keep at 1 — manual pending_scans state is per-container
+      - --update-env-vars=OMP_NUM_THREADS=2   # pin PyTorch CPU threads to --cpu
       # Scale-to-zero, cheapest. Do NOT add --no-cpu-throttling or
       # --min-instances=1 — both are off budget (see CLAUDE.md). Keep CPU for
       # heavy work by running it inside an in-flight HTTP request, not via flags.
