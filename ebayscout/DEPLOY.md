@@ -259,10 +259,11 @@ SERVICE_URL=$(gcloud run services describe ebay-scout \
   --region=us-east1 --format='value(status.url)')
 TOKEN="Authorization: Bearer $(gcloud auth print-identity-token)"
 
-# 1. PREVIEW — re-evaluate everything visible, post nothing, write nothing.
-#    Check logs for ">>> TITLE: [needed/low-conf/rejected <score>]" lines and
-#    "[DRY RUN] Would post needed-buttons alert" to gauge volume, then tune
-#    config.NEEDED_MATCH_THRESHOLD if there are too many/few candidates.
+# 1. PREVIEW — re-evaluate everything visible, fire no real alerts, write
+#    nothing to GCS. Posts ONE digest to the scout Slack channel listing the
+#    needed-button candidates by score (✅ above / ▫️ below the threshold), so
+#    you can set config.NEEDED_MATCH_THRESHOLD before going live. Per-listing
+#    scores also appear in the logs (">>> TITLE: [needed/low-conf/rejected]").
 curl -X POST "${SERVICE_URL}/run-scan?ignore_seen=1&dry_run=1" -H "$TOKEN"
 
 # 2. LIVE backfill — once the threshold feels right. Posts real alerts and

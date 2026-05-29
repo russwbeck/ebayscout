@@ -689,12 +689,14 @@ def _scan_log_record(
     top_matches:      list[dict],
     needed_hit:       bool,
     alerted:          bool,
+    best_needed:      dict | None = None,
 ) -> dict:
     """Build one JSONL scan-log record for a processed listing."""
     return {
         "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "item_id":       listing.get("item_id", ""),
         "title":         listing.get("title", ""),
+        "listing_url":   listing.get("listing_url", ""),
         "seller":        listing.get("seller", ""),
         "asking":        listing.get("current_price", 0.0),
         "photos_scored": photos_processed,
@@ -703,6 +705,11 @@ def _scan_log_record(
             {"year": m["year"], "slogan": m["slogan"], "overall": round(m["overall"], 4)}
             for m in sorted(top_matches, key=lambda x: x["overall"], reverse=True)[:5]
         ],
+        "best_needed":   (
+            {"year": best_needed["year"], "slogan": best_needed["slogan"],
+             "overall": round(best_needed["overall"], 4)}
+            if best_needed else None
+        ),
         "needed_hit":    needed_hit,
         "alerted":       alerted,
     }
@@ -843,6 +850,8 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
             needed_hits:    dict[tuple, dict] = {}  # (year, slogan) → enriched needed match
             strong_matched: dict[tuple, dict] = {}  # (year, slogan) → match >= CONFIDENCE
             log_top_matches: list[dict] = []
+            best_needed: dict | None = None         # top needed-mapped candidate,
+                                                    # even below bar (for tuning)
 
             for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
                 if photo_idx == 1:  # decided after photo 1 is scored
@@ -898,6 +907,12 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
                         )
                         if amount_needed <= 0:
                             continue
+                        # Track the best needed-mapped candidate regardless of
+                        # whether it clears the bar — this is the distribution
+                        # used to tune NEEDED_MATCH_THRESHOLD.
+                        if best_needed is None or overall > best_needed["overall"]:
+                            best_needed = {"year": m["year"], "slogan": m["slogan"],
+                                           "overall": overall}
                         try:
                             title_corroborated = int(m["year"]) in title_years
                         except (ValueError, TypeError):
@@ -919,7 +934,7 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
                 print(f">>> TITLE: [rejected {best_score_seen:.2f}] [{seller}] {title}", flush=True)
                 scan_log_records.append(_scan_log_record(
                     listing, photos_processed, best_score_seen, log_top_matches,
-                    needed_hit=False, alerted=False,
+                    needed_hit=False, alerted=False, best_needed=best_needed,
                 ))
                 seen_store.mark_seen(item_id, seen)
                 continue
@@ -988,6 +1003,7 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
             scan_log_records.append(_scan_log_record(
                 listing, photos_processed, best_score_seen, log_top_matches,
                 needed_hit=bool(needed_buttons), alerted=listing_alerted,
+                best_needed=best_needed,
             ))
 
         except Exception as exc:
@@ -1006,9 +1022,20 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
         notifier.send_warning(_slack_token, _channel_id,
                               "Failed to save seen_items.json — next scan may re-alert.")
 
-    # Append the per-listing scan log (groundwork for a future automated valuer).
+    # Per-listing scan log. Live: append JSONL to GCS (groundwork for a future
+    # automated valuer). Dry run: write nothing to GCS, but post a single Slack
+    # digest so the preview's candidate scores are readable for threshold tuning.
     if dry_run:
-        print(f"[DRY RUN] {len(scan_log_records)} scan-log records (not written).", flush=True)
+        print(f"[DRY RUN] {len(scan_log_records)} scan-log records (not written to GCS).", flush=True)
+        try:
+            notifier.send_backfill_digest(
+                slack_token=_slack_token,
+                channel=_channel_id,
+                records=scan_log_records,
+                threshold=config.NEEDED_MATCH_THRESHOLD,
+            )
+        except Exception as exc:
+            print(f"!!! SCAN: Failed to post backfill digest: {exc}", flush=True)
     elif scan_log_records and not seen_store.append_scan_log(scan_log_records):
         print("!!! SCAN: Failed to append scan log to GCS.", flush=True)
 
