@@ -18,12 +18,14 @@ import contextlib
 import datetime
 import os
 import re
+import secrets
 import threading
 import traceback
 
 from flask import Flask, request, jsonify
 from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
+from slack_sdk import WebClient
 from google.cloud import secretmanager
 
 from . import config
@@ -89,6 +91,14 @@ _scan_lock = threading.Lock()
 # (and N "waking up" log lines) while a load is already in flight.
 _wake_lock      = threading.Lock()
 _wake_in_flight = False
+
+# Per-instance secret guarding the internal manual-analysis endpoint. The Slack
+# event handler fires a self-HTTP-POST to /internal/manual-analysis so the heavy
+# CLIP work runs inside an in-flight request (Cloud Run keeps CPU allocated for
+# the request's duration) instead of a background thread (throttled to ~0%).
+# Caller and handler share this process (workers=1, --max-instances=1), so the
+# token always matches for legit self-calls and is unguessable to outsiders.
+_INTERNAL_TOKEN = secrets.token_urlsafe(32)
 
 
 @contextlib.contextmanager
@@ -318,16 +328,70 @@ def handle_message(event, client):
         )
         return
 
-    # Clear pending state before spawning thread (prevent double-processing)
+    # Clear pending state before dispatch (prevent double-processing)
     del pending_scans[user_id]
 
-    # Run analysis in a background thread so Slack doesn't time out
+    # Dispatch the analysis to run inside a fresh in-flight HTTP request (see
+    # _dispatch_manual_analysis). Fire-and-forget in a thread so this Slack
+    # event handler still returns within Slack's 3s ack window.
     threading.Thread(
-        target=_run_manual_analysis,
-        args=(scan["file_url"], scan["channel_id"], scan["thread_ts"],
-              asking_price, source, client, button_count),
+        target=_dispatch_manual_analysis,
+        kwargs={
+            "file_url":     scan["file_url"],
+            "channel_id":   scan["channel_id"],
+            "thread_ts":    scan["thread_ts"],
+            "asking_price": asking_price,
+            "source":       source,
+            "button_count": button_count,
+        },
         daemon=True,
     ).start()
+
+
+def _dispatch_manual_analysis(
+    file_url:     str,
+    channel_id:   str,
+    thread_ts:    str,
+    asking_price: float,
+    source:       str,
+    button_count: int | None,
+) -> None:
+    """
+    POST the analysis payload to this service's own /internal/manual-analysis
+    endpoint so the heavy CLIP work runs inside an in-flight HTTP request (full
+    CPU on Cloud Run) rather than a throttled background thread.
+
+    This call blocks until the analysis finishes, but it runs in a daemon thread
+    spawned off the Slack event handler, so Slack is already acked. If the
+    self-request fails (bad URL / auth), fall back to running inline so the user
+    still gets a result — degraded (throttled) but not dropped.
+    """
+    import requests as req
+    payload = {
+        "file_url":     file_url,
+        "channel_id":   channel_id,
+        "thread_ts":    thread_ts,
+        "asking_price": asking_price,
+        "source":       source,
+        "button_count": button_count,
+    }
+    try:
+        resp = req.post(
+            f"{config.SERVICE_BASE_URL}/internal/manual-analysis",
+            json=payload,
+            headers={"X-Internal-Token": _INTERNAL_TOKEN},
+            timeout=1800,
+        )
+        if resp.status_code == 200:
+            return
+        print(f"!!! MANUAL: internal dispatch returned {resp.status_code} — "
+              f"running inline (throttled) as fallback.", flush=True)
+    except Exception as exc:
+        print(f"!!! MANUAL: internal dispatch failed ({exc}) — "
+              f"running inline (throttled) as fallback.", flush=True)
+
+    _run_manual_analysis(file_url, channel_id, thread_ts,
+                         asking_price, source, button_count)
 
 
 # ---------------------------------------------------------------------------
@@ -372,10 +436,17 @@ def _run_manual_analysis(
     thread_ts:    str,
     asking_price: float,
     source:       str,
-    client,
     button_count: int | None = None,
 ) -> None:
-    """Download the uploaded image, detect buttons, match, and post results."""
+    """
+    Download the uploaded image, detect buttons, match, and post results.
+
+    Intended to run inside the /internal/manual-analysis HTTP request (not a
+    background thread) so Cloud Run keeps full CPU allocated for the CLIP encode
+    — a background thread is throttled to ~0% (see CLAUDE.md / DECISIONS.md #5).
+    Builds its own Slack client so it doesn't depend on a Bolt handler context.
+    """
+    client = WebClient(token=_slack_token)
 
     def _reply(text: str) -> None:
         client.chat_postMessage(
@@ -475,6 +546,37 @@ flask_app = Flask(__name__)
 @flask_app.route("/slack/events", methods=["POST"])
 def slack_events():
     return handler.handle(request)
+
+
+@flask_app.route("/internal/manual-analysis", methods=["POST"])
+def internal_manual_analysis():
+    """
+    Run a manual lot analysis synchronously, inside this request, so Cloud Run
+    keeps CPU allocated for the full CLIP encode (the fix for the ~minutes-long
+    throttled analyses we saw from the old background-thread approach).
+
+    Called only by this service itself (_dispatch_manual_analysis) and guarded
+    by a per-instance token so the publicly-reachable route can't be abused.
+    """
+    if request.headers.get("X-Internal-Token") != _INTERNAL_TOKEN:
+        return "forbidden", 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        _run_manual_analysis(
+            file_url=data["file_url"],
+            channel_id=data["channel_id"],
+            thread_ts=data["thread_ts"],
+            asking_price=float(data["asking_price"]),
+            source=data.get("source", "Unknown"),
+            button_count=data.get("button_count"),
+        )
+    except Exception as exc:
+        print(f"!!! MANUAL: internal analysis failed: {exc}", flush=True)
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    return jsonify({"status": "ok"}), 200
 
 
 @flask_app.route("/run-scan", methods=["POST"])

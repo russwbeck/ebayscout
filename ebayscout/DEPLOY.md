@@ -144,10 +144,17 @@ gcloud run deploy ebay-scout \
   --service-account=${SA}
 ```
 
-> **`--timeout=1800` matters.** `/run-scan` runs the scan **synchronously** and
-> returns 200 only when it finishes — this is what keeps Cloud Run's CPU
-> allocated for the whole scan (a background thread gets throttled to ~0%).
-> The request timeout (max 3600s) must comfortably exceed a full scan.
+> **`--timeout=1800` matters.** `/run-scan` **and** `/internal/manual-analysis`
+> run their work **synchronously** inside the request and return 200 only when
+> finished — this is what keeps Cloud Run's CPU allocated for the whole encode
+> (a background thread gets throttled to ~0%). The request timeout (max 3600s)
+> must comfortably exceed the work.
+
+> **`SERVICE_BASE_URL`** (`config.py`, env-overridable) must match this service's
+> own URL — the manual-upload flow self-POSTs to `<SERVICE_BASE_URL>/internal/
+> manual-analysis` to run the analysis in an in-flight request. The default is
+> the current URL; if you rename/relocate the service, set the `SERVICE_BASE_URL`
+> env var on the deploy.
 
 > Subsequent deploys are handled automatically by the Cloud Build trigger
 > (see below) — you only run this manually for the first deploy.

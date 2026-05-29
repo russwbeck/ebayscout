@@ -532,6 +532,47 @@ don't collect is wasted quota.
 
 ---
 
+## 23. Manual analysis was CPU-throttled (~19 min); moved into an in-flight request
+
+A real test of `/scout` + upload (54-button lot) took **~19 minutes** to return.
+CLIP was already warm ("Got it!" posts only when `vectors_loaded`), so the delay
+was throttled inference, not model loading.
+
+Root cause: `handle_message` acked the Slack event and ran `_run_manual_analysis`
+in a **daemon thread**. The moment the event handler returns, no HTTP request is
+in flight, so Cloud Run throttles the container's CPU to ~0%. The `_keep_cpu_hot`
+spinner (#5) keeps one core *nominally* ticking but does **not** restore full
+CPU — only an active inbound request does. So the encode crawled.
+
+This is exactly the pattern the `buttonmatcher` worker avoids: it runs the encode
+**synchronously inside an HTTP request** (`/internal/match`), keeping the request
+open so Cloud Run guarantees CPU.
+
+Fix (ported here): `handle_message` now fires a self-HTTP-POST to a new
+`/internal/manual-analysis` route (`_dispatch_manual_analysis`) and the analysis
+runs **synchronously inside that request** — same trick that already makes
+`/run-scan` reliable. The Slack event handler returns immediately (3s ack
+preserved); the dispatch runs in a daemon thread that only waits on the POST,
+while the *work* runs in the in-flight internal request with full CPU.
+
+Details:
+- The internal route is guarded by a per-instance random token
+  (`_INTERNAL_TOKEN`); since `workers=1` + `--max-instances=1`, caller and
+  handler share the process so the token always matches, and it's unguessable to
+  outsiders (the route is publicly reachable, like `/slack/events`).
+- `config.SERVICE_BASE_URL` (env-overridable) is the self-call target — must
+  match the deployed service URL.
+- If the self-call fails (bad URL/auth), `_dispatch_manual_analysis` falls back
+  to running inline (throttled, but the user still gets a result) and logs it.
+- **Not** fixed with `--no-cpu-throttling` — that's off budget (CLAUDE.md). The
+  in-request pattern keeps us scale-to-zero.
+
+Separately, ebayscout's CLIP is full-precision eager PyTorch (no ONNX, and
+`quantize_dynamic` was removed in #12), so it is inherently slower per-encode
+than the worker — but that's minutes-at-worst, not the 19 we saw.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |
