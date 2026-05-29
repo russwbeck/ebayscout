@@ -8,47 +8,98 @@ module-level GCP secret fetching in main.py.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from ebayscout.utils import parse_price_source, format_manual_result, title_has_excluded_keyword
+from ebayscout.utils import (
+    parse_price_source,
+    format_manual_result,
+    title_has_excluded_keyword,
+    extract_years,
+)
+
+
+class TestExtractYears:
+    def test_single_year(self):
+        assert extract_years("Penn State 1982 Fiesta Bowl button") == {1982}
+
+    def test_multiple_years(self):
+        assert extract_years("PSU buttons lot 1977 1980 1982") == {1977, 1980, 1982}
+
+    def test_no_year(self):
+        assert extract_years("Penn State Nittany Lions pinback button") == set()
+
+    def test_empty_title(self):
+        assert extract_years("") == set()
+
+    def test_ignores_too_long_digit_run(self):
+        # A year embedded in a longer digit run (e.g. a SKU) is not a year.
+        assert extract_years("item 219820 lot") == set()
+
+    def test_ignores_out_of_range(self):
+        # 1899 / 2100 are outside the 1900-2099 button-era window.
+        assert extract_years("vintage 1899 reproduction") == set()
+        assert extract_years("future 2100 design") == set()
+
+    def test_price_like_number_with_comma_not_matched(self):
+        # "$1,982" has a comma, so no bare 4-digit run — not a year.
+        assert extract_years("rare lot value $1,982 obo") == set()
+
+    def test_year_adjacent_to_punctuation(self):
+        assert extract_years("Penn State (1986) Orange Bowl") == {1986}
 
 
 class TestParsePriceSource:
     def test_dollar_sign_with_source(self):
-        price, source = parse_price_source("$25.00 | Facebook Marketplace")
+        price, source, count = parse_price_source("$25.00 | Facebook Marketplace")
         assert price == 25.0
         assert source == "Facebook Marketplace"
+        assert count is None
 
     def test_no_dollar_sign(self):
-        price, source = parse_price_source("12 | Mercari")
+        price, source, count = parse_price_source("12 | Mercari")
         assert price == 12.0
         assert source == "Mercari"
+        assert count is None
 
     def test_cents(self):
-        price, source = parse_price_source("$8.50 | Etsy")
+        price, source, count = parse_price_source("$8.50 | Etsy")
         assert price == 8.5
         assert source == "Etsy"
 
     def test_no_pipe_returns_none(self):
-        price, source = parse_price_source("$25.00")
+        price, source, count = parse_price_source("$25.00")
         assert price is None
         assert source == ""
+        assert count is None
 
     def test_bad_price_returns_none(self):
-        price, source = parse_price_source("free | Craigslist")
+        price, source, count = parse_price_source("free | Craigslist")
         assert price is None
 
     def test_source_with_spaces(self):
-        price, source = parse_price_source("$45 | Facebook Marketplace Group")
+        price, source, count = parse_price_source("$45 | Facebook Marketplace Group")
         assert price == 45.0
         assert source == "Facebook Marketplace Group"
 
     def test_comma_in_price(self):
-        price, source = parse_price_source("$1,200.00 | eBay")
+        price, source, count = parse_price_source("$1,200.00 | eBay")
         assert price == 1200.0
 
     def test_extra_whitespace(self):
-        price, source = parse_price_source("  $30   |   Mercari  ")
+        price, source, count = parse_price_source("  $30   |   Mercari  ")
         assert price == 30.0
         assert source == "Mercari"
+
+    def test_button_count_parsed(self):
+        price, source, count = parse_price_source("$25.00 | Facebook Marketplace | 35")
+        assert price == 25.0
+        assert source == "Facebook Marketplace"
+        assert count == 35
+
+    def test_invalid_count_is_none(self):
+        # A non-integer count is silently ignored (utils.parse_price_source).
+        price, source, count = parse_price_source("$25.00 | Facebook | many")
+        assert price == 25.0
+        assert source == "Facebook"
+        assert count is None
 
 
 class TestFormatManualResult:

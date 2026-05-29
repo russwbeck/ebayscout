@@ -38,7 +38,31 @@ EBAY_OAUTH_SCOPE       = "https://api.ebay.com/oauth/api_scope"
 EBAY_BROWSE_SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 EBAY_BROWSE_ITEM_URL   = "https://api.ebay.com/buy/browse/v1/item"
 EBAY_MAX_RESULTS  = 100          # per query; Browse page size limit is 200
-MAX_PHOTOS_PER_LISTING = 1       # only process the first photo per listing
+MAX_PHOTOS_PER_LISTING = 4       # photos scored per listing (was 1); presence
+                                 # detection benefits from per-button photos
+
+# --- Needed-button detection (recall-biased) ---
+# The daily scan's job is to flag listings that *plausibly* contain a button
+# still needed (amount_needed > 0 in the sheet) so the human can value it with
+# the /scout slash command. This threshold is intentionally below
+# CONFIDENCE_THRESHOLD (0.72) to favour recall — false pings are cheap because
+# the human reviews each one; a missed needed button is the costly outcome.
+NEEDED_MATCH_THRESHOLD = 0.60
+# Number of candidate matches inspected per crop (the matcher computes top-3
+# internally). A needed button is often the 2nd/3rd guess on a blended photo.
+NEEDED_MATCH_TOP_K     = 3
+
+# --- Undervalued-lot alerts (deferred / opt-in) ---
+# Precise auto-valuation of a whole lot is unreliable without per-button
+# segmentation, so the undervalued/margin alert is OFF by default. The
+# needed-button path above is the headline. Flip to True once the scan-log data
+# (SCAN_LOG_BLOB) shows valuation is trustworthy.
+ENABLE_UNDERVALUED_ALERTS = False
+
+# --- Scan log (groundwork for a future automated valuer) ---
+# One JSON line per processed listing, appended to this GCS blob: title, asking
+# price, photos scored, top matches + scores, needed-hit / alerted flags.
+SCAN_LOG_BLOB = "ebay_scout/scan_log.jsonl"
 
 # --- eBay sellers to exclude (exact username, case-insensitive) ---
 EXCLUDED_SELLERS: list[str] = [

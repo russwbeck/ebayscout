@@ -395,14 +395,108 @@ codebase.  The scanner targets Penn State Gameday buttons across all eras (CCB
 
 ---
 
+## 20. Manual mode looped "still loading" forever — `/scout` wake + self-heal
+
+The biggest user-facing bug: you'd upload a photo and the bot just kept saying
+*"⏳ Still loading — try again in about 30 seconds"* on every attempt.
+
+Root cause: CLIP hydrates in a **background daemon thread** at startup (#5, #6).
+Cloud Run throttles CPU to ~0% between requests, so on a cold/idle container
+that thread is starved and `vectors_loaded` never flips to `True`. The old
+`handle_file_shared` branch saw `not vectors_loaded`, posted "still loading",
+**deleted the pending scan, and gave up.** Nothing forced a load except the
+once-a-day `/run-scan`, so manual uploads were dead until the daily scan
+happened to warm the container.
+
+Fix (two prongs, both reusing the synchronous-load-within-request idea from #6):
+
+1. **`/scout` slash command.** Bolt's command handler `ack()`s within Slack's
+   3-second window with "waking up ~60s", then loads CLIP in a background thread
+   wrapped in `_keep_cpu_hot()` (#5) and posts "✅ awake". This force-loads CLIP
+   on demand so manual mode works without waiting for the daily scan.
+
+2. **`handle_file_shared` self-heals.** Instead of deleting the pending scan, it
+   now **keeps** it and kicks off the same background wake, telling the user to
+   reply with the price. `_run_manual_analysis` calls `_ensure_clip_loaded()` as
+   a backstop before matching, closing the race where the price reply arrives
+   before hydration finishes.
+
+The shared load path is now a single `_ensure_clip_loaded()` helper used by
+`/run-scan`, `/test-clip`, `/scout`, the upload flow, and the startup hydration
+thread — one place that calls the lock-guarded, idempotent `clip_matcher.init()`
+and flips `vectors_loaded`. A `_wake_lock` / `_wake_in_flight` flag coalesces
+concurrent wakes so the channel doesn't get duplicate "ready" posts.
+
+Infra note: we deliberately stayed **scale-to-zero** (cheapest) rather than
+pinning a warm instance. The `/scout` command + self-healing upload absorb the
+cold-start cost. `cloudbuild.yaml` / `DEPLOY.md` document the optional
+`--min-instances=1 --no-cpu-throttling` upgrade for instant uploads at higher
+cost. `--max-instances=1` must stay (#17 Bug 3).
+
+Setup requirement: the `/scout` command must be registered in the Slack app
+config (Slash Commands → Request URL `…/slack/events`) and the app reinstalled —
+see DEPLOY.md.
+
+Also cleaned up here: a dead duplicate `_format_manual_result` in `main.py` was
+removed (the active path uses `format_manual_result` from `utils.py`), and the
+`tests/test_main.py` `TestParsePriceSource` cases were updated to the 3-tuple
+`(price, source, count)` return that `parse_price_source` adopted in #18.
+
+---
+
+## 21. The scan is a "needed-button detector", not a lot valuer
+
+The automated scan originally tried to **value whole lots** and alert on
+computed margin. That depends on segmenting individual buttons out of a photo —
+and the segmentation step (`image_proc.detect_and_crop`, Hough circles) was only
+reliable when the **human supplied a button count** that calibrated the expected
+radius (`expected_r`). The manual `/scout` flow still passes that count; the
+automated scan can't. On unpredictable eBay photos, count-free segmentation does
+poorly. This is a genuinely hard CV problem, not a parameter-tuning miss.
+
+Rather than fight it, the scan's job was **reframed**: *does this listing
+plausibly contain a button I still need (`amount_needed > 0`)? If so, post a
+candidate alert and let the human value it with `/scout`.* This is a
+presence/retrieval problem, which is far more tractable than precise
+segmentation. Changes:
+
+- **Score all photos, not just the first.** `get_item_pictures` already returns
+  every image; `MAX_PHOTOS_PER_LISTING` raised 1 → 4. A two-stage gate scores
+  photo 1 first and only pulls the rest when the listing looks promising (title
+  names a year, or photo 1 shows button-like signal) so junk listings stay cheap.
+- **Recall over precision.** A new `match_crops_batch(..., top_k=K)` exposes the
+  matcher's existing top-3 candidates per crop. A needed button is flagged when
+  any candidate's `(year, slogan)` maps (via the fuzzy sheet lookup) to
+  `amount_needed > 0` and clears `NEEDED_MATCH_THRESHOLD` (0.60, below the strict
+  0.72) — catching the 2nd/3rd guess on a blended photo and the 0.697 near-miss
+  from the table below.
+- **Title-year corroboration.** `utils.extract_years()` pulls years from the
+  title; if a needed button's year is in the title, the bar drops to
+  `REJECTION_THRESHOLD`.
+- **Undervalued/margin alerts are now opt-in** (`ENABLE_UNDERVALUED_ALERTS`,
+  default False) and only fire on strict 0.72 matches. Auto-valuation is
+  deferred until we trust it.
+- **Scan log groundwork.** Every processed listing is appended as a JSON line to
+  `SCAN_LOG_BLOB` (title, asking, photos scored, top matches + scores, needed/
+  alerted flags). This is the dataset to later judge whether automated
+  undervalued-lot detection is achievable.
+
+Next lever if recall proves insufficient: replace Hough with a learned,
+count-free region proposer (e.g. Segment Anything) + CLIP filtering. Deliberately
+**not** done yet — it's a hundreds-of-MB model with real CPU/latency cost on
+scale-to-zero Cloud Run, and presence detection across multiple photos may not
+need it.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| CLIP accuracy on multi-button photos | Open | 2003 "Gopher Broke" matched 2002/2006 at 0.697 — just below 0.72 threshold. Likely the Hough crop didn't isolate the right button. Needs a clean single-button eBay photo to validate. |
+| CLIP accuracy on multi-button photos | Mitigated (#21) | Scan no longer needs precise segmentation — it flags *needed-button candidates* (recall-biased, multi-photo) for human `/scout` review rather than auto-valuing. Tune `NEEDED_MATCH_THRESHOLD` from `SCAN_LOG_BLOB` data. |
 | kling24toys seller filter | Open | Listed in `EXCLUDED_SELLERS` but need to confirm actual eBay username matches after new scan logs show seller names in brackets. |
-| Manual upload button count UX | Newly deployed | Merged in PR #5, not yet validated in production. |
-| First scan with correct CLIP | Pending | 9am Cloud Scheduler trigger tomorrow will be the first scan with working scores. Need to confirm alerts fire for real buttons. |
+| Manual upload "still loading" loop | Fixed (#20) | `/scout` slash command + self-healing `handle_file_shared`. Needs the `/scout` command registered in Slack and validated in production. |
+| Automated undervalued-lot valuation | Deferred (#21) | `ENABLE_UNDERVALUED_ALERTS=False`. Revisit once `scan_log.jsonl` shows whether per-lot valuation from photos is trustworthy. |
 
 
 ```

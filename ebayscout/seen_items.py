@@ -61,6 +61,37 @@ def save_seen(seen: dict[str, str], bucket_name: str = config.BUCKET_NAME) -> bo
         return False
 
 
+def append_scan_log(
+    records: list[dict],
+    bucket_name: str = config.BUCKET_NAME,
+) -> bool:
+    """
+    Append per-listing scan records (one JSON object per line) to the scan-log
+    blob in GCS. GCS has no native append, so we read the existing blob and
+    re-upload it with the new lines added. Called once at the end of a scan.
+
+    This is groundwork data for a future automated undervalued-lot valuer;
+    a failure here is non-fatal to the scan. Returns True on success.
+    """
+    if not records:
+        return True
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob   = bucket.blob(config.SCAN_LOG_BLOB)
+
+        existing = blob.download_as_text() if blob.exists() else ""
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        new_lines = "".join(json.dumps(r) + "\n" for r in records)
+        blob.upload_from_string(existing + new_lines, content_type="application/x-ndjson")
+        print(f">>> SCAN LOG: Appended {len(records)} records to {config.SCAN_LOG_BLOB}.", flush=True)
+        return True
+    except Exception as exc:
+        print(f"!!! SCAN LOG: Failed to append {len(records)} records: {exc}", flush=True)
+        return False
+
+
 def is_new(item_id: str, seen: dict[str, str]) -> bool:
     """Return True if item_id has not been processed before."""
     return item_id not in seen

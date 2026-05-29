@@ -15,6 +15,7 @@ Two interaction flows:
 """
 
 import contextlib
+import datetime
 import os
 import re
 import threading
@@ -29,7 +30,7 @@ from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
-from .utils import parse_price_source, format_manual_result
+from .utils import parse_price_source, format_manual_result, extract_years
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
 # a missing .so or slow first-import doesn't kill the entire process at startup.
@@ -76,6 +77,13 @@ pending_scans: dict = {}
 # a second concurrent run.
 _scan_lock = threading.Lock()
 
+# Guards a wake-up (synchronous CLIP load) so concurrent slash-command /
+# file-upload triggers don't each spawn a loader thread. clip_matcher.init()
+# is itself lock-guarded and idempotent, but this avoids N redundant threads
+# (and N "waking up" log lines) while a load is already in flight.
+_wake_lock      = threading.Lock()
+_wake_in_flight = False
+
 
 @contextlib.contextmanager
 def _keep_cpu_hot():
@@ -105,6 +113,84 @@ def _keep_cpu_hot():
     finally:
         _stop.set()
         _t.join(timeout=1)
+
+
+# ---------------------------------------------------------------------------
+# CLIP wake-up helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_clip_loaded() -> bool:
+    """
+    Synchronously load CLIP if it isn't loaded yet.  Returns True on success.
+
+    Safe to call from any thread: clip_matcher.init() is lock-guarded and a
+    no-op once initialized.  Wrapped in _keep_cpu_hot() so it survives Cloud
+    Run's CPU throttling when called from a post-ack/post-response background
+    thread.  This is the single load path shared by /run-scan, /test-clip, the
+    /scout slash command, and the manual upload flow.
+    """
+    global vectors_loaded
+    if vectors_loaded:
+        return True
+    with _keep_cpu_hot():
+        try:
+            from . import clip_matcher as cm   # lazy: torch+clip imported here
+            cm.init(config.BUCKET_NAME)
+            vectors_loaded = True
+            print(">>> WAKE: CLIP loaded.", flush=True)
+            return True
+        except Exception as exc:
+            print(f"!!! WAKE: CLIP init failed: {exc}", flush=True)
+            traceback.print_exc()
+            return False
+
+
+def _wake_and_notify(
+    client,
+    channel_id: str,
+    thread_ts:  str | None,
+    on_ready_text: str,
+) -> None:
+    """
+    Load CLIP in this (background) thread, deduplicating concurrent wakes, then
+    post a confirmation.  Intended as the target of threading.Thread(...).start().
+
+    Only the first concurrent caller actually loads; a second simultaneous wake
+    returns quietly (the in-flight load owns the confirmation message) so the
+    channel doesn't get duplicate "ready" posts.
+    """
+    global _wake_in_flight
+
+    if vectors_loaded:
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_ts,
+            text="✅ eBay Scout is already awake and ready.",
+        )
+        return
+
+    with _wake_lock:
+        already = _wake_in_flight
+        if not already:
+            _wake_in_flight = True
+
+    if already:
+        print(">>> WAKE: load already in flight — skipping duplicate.", flush=True)
+        return
+
+    try:
+        ok = _ensure_clip_loaded()
+    finally:
+        with _wake_lock:
+            _wake_in_flight = False
+
+    if ok:
+        client.chat_postMessage(channel=channel_id, thread_ts=thread_ts,
+                                text=on_ready_text)
+    else:
+        client.chat_postMessage(
+            channel=channel_id, thread_ts=thread_ts,
+            text="❌ eBay Scout failed to wake up — check the logs and try again.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +234,30 @@ def handle_file_shared(event, client):
     }
 
     if not vectors_loaded:
+        # Self-heal: keep the pending scan and kick off a background wake.  The
+        # user's price reply lands in handle_message and runs the analysis once
+        # CLIP is ready (_run_manual_analysis force-loads as a backstop).  This
+        # replaces the old dead-end that deleted the scan and looped "still
+        # loading" forever on a cold, CPU-throttled container.
         client.chat_postMessage(
             channel=channel_id,
             thread_ts=event_ts,
-            text="⏳ Still loading — try again in about 30 seconds.",
+            text=(
+                "⏳ Waking up eBay Scout (~60s). I've saved your photo — reply "
+                "in this thread with the asking price and source and I'll "
+                "analyze it as soon as I'm ready:\n"
+                "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`\n"
+                "For lots with many buttons, add the count:\n"
+                "`$25.00 | Facebook Marketplace | 35`"
+            ),
         )
-        del pending_scans[user_id]
+        threading.Thread(
+            target=_wake_and_notify,
+            args=(client, channel_id, event_ts,
+                  "✅ eBay Scout is awake — reply with the price/source now "
+                  "if you haven't already."),
+            daemon=True,
+        ).start()
         return
 
     client.chat_postMessage(
@@ -221,6 +325,38 @@ def handle_message(event, client):
 
 
 # ---------------------------------------------------------------------------
+# Slash command: /scout — wake the bot for manual mode
+# ---------------------------------------------------------------------------
+
+@bolt_app.command("/scout")
+def handle_scout_wake(ack, command, client):
+    """
+    Force a synchronous CLIP load so manual uploads work on a cold (CPU-
+    throttled) Cloud Run container.
+
+    Slack requires the command to be acknowledged within 3 s, but CLIP load
+    takes 30-60 s.  So: ack immediately with a "waking up" message, then load
+    in a background thread (wrapped in _keep_cpu_hot via _wake_and_notify) and
+    post a "ready" confirmation when done.
+    """
+    channel_id = command.get("channel_id")
+
+    if vectors_loaded:
+        ack("✅ eBay Scout is already awake — upload a photo any time.")
+        return
+
+    ack("⏳ Waking up eBay Scout… this takes about 60 seconds. "
+        "I'll post here when it's ready.")
+
+    threading.Thread(
+        target=_wake_and_notify,
+        args=(client, channel_id, None,
+              "✅ eBay Scout is awake. Upload your photo now."),
+        daemon=True,
+    ).start()
+
+
+# ---------------------------------------------------------------------------
 # Manual analysis pipeline
 # ---------------------------------------------------------------------------
 
@@ -241,6 +377,13 @@ def _run_manual_analysis(
         )
 
     with _keep_cpu_hot():
+        # Backstop: if the user replied before the background wake finished,
+        # force-load CLIP here (idempotent) so match_crops_batch never runs
+        # against an uninitialized model.
+        if not _ensure_clip_loaded():
+            _reply("❌ eBay Scout is still waking up — try replying again in ~30s.")
+            return
+
         try:
             # Download image with Slack auth header
             import requests as req
@@ -316,52 +459,6 @@ def _run_manual_analysis(
         ))
 
 
-def _format_manual_result(
-    source:        str,
-    asking_price:  float,
-    matches:       list[dict],
-    lot_value:     float,
-    margin:        float,
-    needed:        list[dict],
-    unmatched_count: int,
-) -> str:
-    lines = [f"📸 *Lot Analysis — {source}*", f"Asking: *${asking_price:.2f}*", ""]
-
-    if matches:
-        lines.append("Matched buttons:")
-        for m in matches:
-            year   = m.get("year", "?")
-            slogan = m.get("slogan", "?")
-            price  = m.get("max_price_single", "")
-            n      = m.get("amount_needed", 0)
-            star   = f"  ⭐ need {n}" if n > 0 else ""
-            lines.append(f"  • {year} — \"{slogan}\"    max: {price}{star}")
-    else:
-        lines.append("_No buttons identified with confidence._")
-
-    if unmatched_count > 0:
-        lines.append(f"_{unmatched_count} button(s) not identified with confidence._")
-
-    lines.append("")
-
-    if lot_value > 0:
-        if margin > 0:
-            verdict = f"✅ Good deal — *+${margin:.2f}* below calculated value"
-        else:
-            verdict = f"⚠️ You'd overpay by *${abs(margin):.2f}*"
-        lines.append(
-            f"Calculated value: *${lot_value:.2f}*  |  {verdict}"
-        )
-    else:
-        lines.append("_Calculated value: $0.00 (no matched buttons have price rules)_")
-
-    if needed:
-        need_list = ", ".join(f"{m['year']} {m['slogan']}" for m in needed)
-        lines.append(f"\n⭐ *Needed buttons in this lot:* {need_list}")
-
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
@@ -388,19 +485,12 @@ def run_scan():
     before it could finish. We load CLIP (and reload buy_rules if needed)
     synchronously here — the incoming request itself provides the CPU.
     """
-    global vectors_loaded, buy_rules
+    global buy_rules
 
     if not vectors_loaded:
         print(">>> SCAN: CLIP not ready — loading synchronously within request...", flush=True)
-        try:
-            from . import clip_matcher as cm
-            cm.init(config.BUCKET_NAME)
-            vectors_loaded = True
-            print(">>> SCAN: CLIP loaded.", flush=True)
-        except Exception as exc:
-            print(f"!!! SCAN: CLIP init failed: {exc}", flush=True)
-            traceback.print_exc()
-            return jsonify({"status": "clip init failed", "error": str(exc)}), 500
+        if not _ensure_clip_loaded():
+            return jsonify({"status": "clip init failed"}), 500
 
     if not buy_rules:
         print(">>> SCAN: buy_rules empty — reloading...", flush=True)
@@ -449,14 +539,8 @@ def test_clip():
         return jsonify({"error": "pass ?item_id=<ebay_id> or ?url=<image_url>"}), 400
 
     # Ensure CLIP is loaded
-    global vectors_loaded
-    if not vectors_loaded:
-        try:
-            from . import clip_matcher as cm
-            cm.init(config.BUCKET_NAME)
-            vectors_loaded = True
-        except Exception as exc:
-            return jsonify({"error": f"CLIP init failed: {exc}"}), 500
+    if not _ensure_clip_loaded():
+        return jsonify({"error": "CLIP init failed"}), 500
 
     try:
         import requests as req
@@ -580,6 +664,32 @@ def ebay_account_deletion():
 # Daily scan (called from /run-scan endpoint)
 # ---------------------------------------------------------------------------
 
+def _scan_log_record(
+    listing:          dict,
+    photos_processed: int,
+    best_score:       float,
+    top_matches:      list[dict],
+    needed_hit:       bool,
+    alerted:          bool,
+) -> dict:
+    """Build one JSONL scan-log record for a processed listing."""
+    return {
+        "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "item_id":       listing.get("item_id", ""),
+        "title":         listing.get("title", ""),
+        "seller":        listing.get("seller", ""),
+        "asking":        listing.get("current_price", 0.0),
+        "photos_scored": photos_processed,
+        "best_score":    round(best_score, 4),
+        "top_matches":   [
+            {"year": m["year"], "slogan": m["slogan"], "overall": round(m["overall"], 4)}
+            for m in sorted(top_matches, key=lambda x: x["overall"], reverse=True)[:5]
+        ],
+        "needed_hit":    needed_hit,
+        "alerted":       alerted,
+    }
+
+
 def _run_daily_scan() -> None:
     """
     Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
@@ -664,6 +774,7 @@ def _run_daily_scan() -> None:
     stat_low_confidence = 0
     stat_rejected       = 0
     _listings_since_save = 0
+    scan_log_records: list[dict] = []   # one record per processed listing (groundwork data)
 
     from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
@@ -684,11 +795,24 @@ def _run_daily_scan() -> None:
             else:
                 picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
 
-            matched: dict[tuple, dict] = {}
-            best_score_seen = 0.0
-            photos_processed = 0
+            # Two-stage photo gating: always score photo 1; only pull the rest
+            # when the listing looks promising (title names a year, or photo 1
+            # already shows button-like signal). Keeps the scan from N× photo
+            # downloads on every junk listing now that we score multiple photos.
+            title_years = extract_years(title)
 
-            for photo_url in picture_urls[: config.MAX_PHOTOS_PER_LISTING]:
+            best_score_seen   = 0.0
+            photos_processed  = 0
+            needed_hits:    dict[tuple, dict] = {}  # (year, slogan) → enriched needed match
+            strong_matched: dict[tuple, dict] = {}  # (year, slogan) → match >= CONFIDENCE
+            log_top_matches: list[dict] = []
+
+            for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
+                if photo_idx == 1:  # decided after photo 1 is scored
+                    promising = bool(title_years) or best_score_seen >= config.REJECTION_THRESHOLD
+                    if not promising:
+                        break
+
                 try:
                     image_bytes = _ip.download_image(photo_url)
                     crops       = _ip.detect_and_crop(image_bytes)
@@ -701,78 +825,80 @@ def _run_daily_scan() -> None:
 
                 photos_processed += 1
 
-                # Encode all crops in one forward pass instead of one-by-one
+                # One forward pass; keep top-K candidates per crop down to the
+                # rejection floor so a needed button that is the 2nd/3rd guess
+                # on a blended photo is still visible.
                 try:
                     batch_results = _cm.match_crops_batch(
-                        crops, threshold=config.REJECTION_THRESHOLD
+                        crops,
+                        threshold=config.REJECTION_THRESHOLD,
+                        top_k=config.NEEDED_MATCH_TOP_K,
                     )
                 except Exception as exc:
                     print(f"!!! SCAN: match_crops_batch failed: {exc}", flush=True)
                     continue
 
-                for match in batch_results:
-                    if match is None:
+                for candidates in batch_results:
+                    if not candidates:
                         continue
-                    best_score_seen = max(best_score_seen, match["overall"])
-                    if match["overall"] >= config.CONFIDENCE_THRESHOLD:
-                        key = (match["year"], match["slogan"])
-                        if key not in matched or match["overall"] > matched[key]["overall"]:
-                            matched[key] = match
+                    best_score_seen = max(best_score_seen, candidates[0]["overall"])
+                    log_top_matches.append(candidates[0])
+
+                    for m in candidates:
+                        key     = (m["year"], m["slogan"])
+                        overall = m["overall"]
+
+                        # Strict matches feed the (optional) undervalued path.
+                        if overall >= config.CONFIDENCE_THRESHOLD and (
+                            key not in strong_matched or overall > strong_matched[key]["overall"]
+                        ):
+                            strong_matched[key] = m
+
+                        # Needed-button presence (recall-biased). Reuse the
+                        # fuzzy sheet lookup; a title-year match lowers the bar.
+                        price_single, _, _, amount_needed = sheets_client.get_buy_decision(
+                            m["year"], m["slogan"], buy_rules
+                        )
+                        if amount_needed <= 0:
+                            continue
+                        try:
+                            title_corroborated = int(m["year"]) in title_years
+                        except (ValueError, TypeError):
+                            title_corroborated = False
+                        bar = (config.REJECTION_THRESHOLD if title_corroborated
+                               else config.NEEDED_MATCH_THRESHOLD)
+                        if overall < bar:
+                            continue
+                        if key not in needed_hits or overall > needed_hits[key]["overall"]:
+                            enriched = dict(m)
+                            enriched["max_price_single"] = price_single
+                            enriched["amount_needed"]    = amount_needed
+                            needed_hits[key] = enriched
 
             if photos_processed == 0 or best_score_seen < config.REJECTION_THRESHOLD:
                 stat_rejected += 1
                 # Greppable title log for tuning EXCLUDED_KEYWORDS over time:
-                # apparel/non-buttons that slipped past the keyword filter land
-                # here. Filter Cloud Logging for "TITLE: [rejected".
+                # filter Cloud Logging for "TITLE: [rejected".
                 print(f">>> TITLE: [rejected {best_score_seen:.2f}] [{seller}] {title}", flush=True)
+                scan_log_records.append(_scan_log_record(
+                    listing, photos_processed, best_score_seen, log_top_matches,
+                    needed_hit=False, alerted=False,
+                ))
                 seen_store.mark_seen(item_id, seen)
                 continue
 
-            if not matched:
-                stat_low_confidence += 1
-                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] [{seller}] {title}", flush=True)
-                seen_store.mark_seen(item_id, seen)
-                continue
-
-            best_match = max(matched.values(), key=lambda m: m["overall"])
-            print(
-                f">>> TITLE: [match {best_match['overall']:.2f} "
-                f"{best_match['year']} {best_match['slogan']}] [{seller}] {title}",
-                flush=True,
-            )
-
-            enriched_matches = []
-            for (year, slogan), match in matched.items():
-                price_single, _, _, amount_needed = sheets_client.get_buy_decision(
-                    year, slogan, buy_rules
-                )
-                enriched = dict(match)
-                enriched["max_price_single"] = price_single
-                enriched["amount_needed"]    = amount_needed
-                enriched_matches.append(enriched)
-
-            lot_value    = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_matches)
-            margin       = lot_value - asking
-            needed_found = [m for m in enriched_matches if m["amount_needed"] > 0]
+            needed_buttons  = list(needed_hits.values())
             listing_alerted = False
 
-            if margin > 0:
-                if config.DRY_RUN:
-                    print(f"    [DRY RUN] Would post undervalued alert for {item_id}", flush=True)
-                else:
-                    notifier.send_undervalued_alert(
-                        slack_token=_slack_token,
-                        channel=_channel_id,
-                        listing=listing,
-                        matches=enriched_matches,
-                        lot_value=lot_value,
-                        asking_price=asking,
-                        margin=margin,
-                        unmatched_count=0,
-                    )
-                listing_alerted = True
-
-            if needed_found:
+            if needed_buttons:
+                lot_value = sum(
+                    sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
+                )
+                print(
+                    f">>> TITLE: [needed {best_score_seen:.2f} "
+                    f"{needed_buttons[0]['year']} {needed_buttons[0]['slogan']}] [{seller}] {title}",
+                    flush=True,
+                )
                 if config.DRY_RUN:
                     print(f"    [DRY RUN] Would post needed-buttons alert for {item_id}", flush=True)
                 else:
@@ -780,16 +906,52 @@ def _run_daily_scan() -> None:
                         slack_token=_slack_token,
                         channel=_channel_id,
                         listing=listing,
-                        needed_buttons=needed_found,
+                        needed_buttons=needed_buttons,
                         asking_price=asking,
                         lot_value=lot_value,
                     )
                 listing_alerted = True
 
+            # Optional, off by default: precise undervalued/margin alert. We no
+            # longer trust auto-valuation as the headline (see config).
+            if config.ENABLE_UNDERVALUED_ALERTS and strong_matched:
+                enriched_strong = []
+                for (year, slogan), m in strong_matched.items():
+                    price_single, _, _, amount_needed = sheets_client.get_buy_decision(
+                        year, slogan, buy_rules
+                    )
+                    e = dict(m)
+                    e["max_price_single"] = price_single
+                    e["amount_needed"]    = amount_needed
+                    enriched_strong.append(e)
+                lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_strong)
+                margin    = lot_value - asking
+                if margin > 0:
+                    if config.DRY_RUN:
+                        print(f"    [DRY RUN] Would post undervalued alert for {item_id}", flush=True)
+                    else:
+                        notifier.send_undervalued_alert(
+                            slack_token=_slack_token,
+                            channel=_channel_id,
+                            listing=listing,
+                            matches=enriched_strong,
+                            lot_value=lot_value,
+                            asking_price=asking,
+                            margin=margin,
+                            unmatched_count=0,
+                        )
+                    listing_alerted = True
+
             if listing_alerted:
                 stat_alerted += 1
             else:
                 stat_low_confidence += 1
+                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] [{seller}] {title}", flush=True)
+
+            scan_log_records.append(_scan_log_record(
+                listing, photos_processed, best_score_seen, log_top_matches,
+                needed_hit=bool(needed_buttons), alerted=listing_alerted,
+            ))
 
         except Exception as exc:
             print(f"!!! SCAN: Error processing {item_id}: {exc}", flush=True)
@@ -806,6 +968,12 @@ def _run_daily_scan() -> None:
     elif not seen_store.save_seen(seen):
         notifier.send_warning(_slack_token, _channel_id,
                               "Failed to save seen_items.json — next scan may re-alert.")
+
+    # Append the per-listing scan log (groundwork for a future automated valuer).
+    if config.DRY_RUN:
+        print(f"[DRY RUN] {len(scan_log_records)} scan-log records (not written).", flush=True)
+    elif scan_log_records and not seen_store.append_scan_log(scan_log_records):
+        print("!!! SCAN: Failed to append scan log to GCS.", flush=True)
 
     if config.DRY_RUN:
         print(
@@ -836,7 +1004,7 @@ def _run_daily_scan() -> None:
 
 def startup() -> None:
     """Load Google Sheets and CLIP model in the background."""
-    global buy_rules, vectors_loaded
+    global buy_rules
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -846,18 +1014,9 @@ def startup() -> None:
     except Exception as exc:
         print(f"!!! STARTUP: Sheets error: {exc}", flush=True)
 
-    def _hydrate():
-        global vectors_loaded
-        with _keep_cpu_hot():
-            try:
-                from . import clip_matcher as cm   # lazy: torch+clip imported here
-                cm.init(config.BUCKET_NAME)
-                vectors_loaded = True
-                print(">>> STARTUP: CLIP ready.", flush=True)
-            except Exception as exc:
-                print(f"!!! STARTUP: CLIP init failed: {exc}", flush=True)
-                traceback.print_exc()
-
-    threading.Thread(target=_hydrate, daemon=True).start()
+    # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
+    # may not finish until an HTTP request (a scan, /scout, or an upload)
+    # provides CPU — those paths all call _ensure_clip_loaded() to force it.
+    threading.Thread(target=_ensure_clip_loaded, daemon=True).start()
 
 

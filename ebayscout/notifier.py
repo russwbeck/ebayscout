@@ -105,7 +105,7 @@ def send_needed_alert(
     )
 
     header_text = (
-        f"⭐ *Needed button(s) found in eBay listing*\n"
+        f"⭐ *Possible needed button — review with `/scout`*\n"
         f"*<{listing_url}|{_truncate(title, 80)}>*\n"
         f"Asking: *${asking_price:.2f}*  |  {value_note}"
     )
@@ -160,14 +160,17 @@ def send_scan_summary(
     lines = [f"🔍 *Daily scan — {today}*", f"📦 {total} new listings  ({source_str})"]
 
     if alerted:
-        lines.append(f"🔔 {alerted} alert{'s' if alerted != 1 else ''} sent")
+        lines.append(
+            f"⭐ {alerted} needed-button candidate{'s' if alerted != 1 else ''}"
+            f" to review with /scout"
+        )
     else:
-        lines.append("🔔 No alerts — nothing undervalued or needed")
+        lines.append("⭐ No needed-button candidates today")
 
     if low_confidence:
         lines.append(
             f"🟡 {low_confidence} possible gameday button{'s' if low_confidence != 1 else ''}"
-            f"  (45–72% confidence — no alert)"
+            f"  (button-like, but not a needed match — no alert)"
         )
 
     if rejected:
