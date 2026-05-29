@@ -204,3 +204,32 @@ class TestMatchCrop:
             assert required_keys.issubset(result.keys())
             assert isinstance(result["year"], str)
             assert 0.0 <= result["overall"] <= 1.0
+
+    def test_top_k_returns_list_per_crop(self):
+        # top_k > 1 returns, per crop, a list of up to top_k match dicts
+        # (best first), all >= threshold. Backwards-compatible default (top_k=1)
+        # still returns a single dict-or-None per crop.
+        self._setup_minimal_state()
+        img = Image.new("RGB", (64, 64))
+
+        single = clip_matcher.match_crops_batch([img], threshold=0.0)
+        assert len(single) == 1
+        assert single[0] is None or isinstance(single[0], dict)
+
+        topk = clip_matcher.match_crops_batch([img], threshold=0.0, top_k=3)
+        assert len(topk) == 1
+        assert isinstance(topk[0], list)
+        assert len(topk[0]) <= 3
+        # ordered best-first and every entry has the public match shape
+        overalls = [m["overall"] for m in topk[0]]
+        assert overalls == sorted(overalls, reverse=True)
+        for m in topk[0]:
+            assert {"year", "slogan", "overall"}.issubset(m.keys())
+            assert m["overall"] >= 0.0
+
+    def test_top_k_respects_threshold(self):
+        # A threshold above any achievable score yields an empty candidate list.
+        self._setup_minimal_state()
+        img = Image.new("RGB", (64, 64))
+        topk = clip_matcher.match_crops_batch([img], threshold=1.01, top_k=3)
+        assert topk == [[]]

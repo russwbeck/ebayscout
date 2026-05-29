@@ -6,6 +6,28 @@ Kept separate so unit tests can import them without triggering
 module-level secret fetching in main.py.
 """
 
+import re
+
+# A 4-digit year 1900-2099 bounded by non-digits so prices like "$1,982" or
+# model numbers embedded in longer digit runs don't produce false matches.
+_YEAR_RE = re.compile(r"(?<!\d)(19|20)\d{2}(?!\d)")
+
+
+def extract_years(title: str) -> set[int]:
+    """
+    Pull plausible button years (1900-2099) out of a listing title.
+
+    Used as a cheap corroborating signal for the needed-button scan: if a
+    needed button's year appears in the title, a moderate image match for that
+    year is treated as a hit, and the title-year presence gates whether we pull
+    the listing's additional photos.
+
+    Returns a set of ints (empty if none found).
+    """
+    if not title:
+        return set()
+    return {int(m.group(0)) for m in _YEAR_RE.finditer(title)}
+
 
 def parse_price_source(text: str) -> tuple[float | None, str, int | None]:
     """

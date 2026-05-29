@@ -8,7 +8,42 @@ module-level GCP secret fetching in main.py.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from ebayscout.utils import parse_price_source, format_manual_result, title_has_excluded_keyword
+from ebayscout.utils import (
+    parse_price_source,
+    format_manual_result,
+    title_has_excluded_keyword,
+    extract_years,
+)
+
+
+class TestExtractYears:
+    def test_single_year(self):
+        assert extract_years("Penn State 1982 Fiesta Bowl button") == {1982}
+
+    def test_multiple_years(self):
+        assert extract_years("PSU buttons lot 1977 1980 1982") == {1977, 1980, 1982}
+
+    def test_no_year(self):
+        assert extract_years("Penn State Nittany Lions pinback button") == set()
+
+    def test_empty_title(self):
+        assert extract_years("") == set()
+
+    def test_ignores_too_long_digit_run(self):
+        # A year embedded in a longer digit run (e.g. a SKU) is not a year.
+        assert extract_years("item 219820 lot") == set()
+
+    def test_ignores_out_of_range(self):
+        # 1899 / 2100 are outside the 1900-2099 button-era window.
+        assert extract_years("vintage 1899 reproduction") == set()
+        assert extract_years("future 2100 design") == set()
+
+    def test_price_like_number_with_comma_not_matched(self):
+        # "$1,982" has a comma, so no bare 4-digit run — not a year.
+        assert extract_years("rare lot value $1,982 obo") == set()
+
+    def test_year_adjacent_to_punctuation(self):
+        assert extract_years("Penn State (1986) Orange Bowl") == {1986}
 
 
 class TestParsePriceSource:

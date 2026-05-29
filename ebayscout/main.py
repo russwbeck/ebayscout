@@ -15,6 +15,7 @@ Two interaction flows:
 """
 
 import contextlib
+import datetime
 import os
 import re
 import threading
@@ -29,7 +30,7 @@ from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
-from .utils import parse_price_source, format_manual_result
+from .utils import parse_price_source, format_manual_result, extract_years
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
 # a missing .so or slow first-import doesn't kill the entire process at startup.
@@ -663,6 +664,32 @@ def ebay_account_deletion():
 # Daily scan (called from /run-scan endpoint)
 # ---------------------------------------------------------------------------
 
+def _scan_log_record(
+    listing:          dict,
+    photos_processed: int,
+    best_score:       float,
+    top_matches:      list[dict],
+    needed_hit:       bool,
+    alerted:          bool,
+) -> dict:
+    """Build one JSONL scan-log record for a processed listing."""
+    return {
+        "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "item_id":       listing.get("item_id", ""),
+        "title":         listing.get("title", ""),
+        "seller":        listing.get("seller", ""),
+        "asking":        listing.get("current_price", 0.0),
+        "photos_scored": photos_processed,
+        "best_score":    round(best_score, 4),
+        "top_matches":   [
+            {"year": m["year"], "slogan": m["slogan"], "overall": round(m["overall"], 4)}
+            for m in sorted(top_matches, key=lambda x: x["overall"], reverse=True)[:5]
+        ],
+        "needed_hit":    needed_hit,
+        "alerted":       alerted,
+    }
+
+
 def _run_daily_scan() -> None:
     """
     Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
@@ -747,6 +774,7 @@ def _run_daily_scan() -> None:
     stat_low_confidence = 0
     stat_rejected       = 0
     _listings_since_save = 0
+    scan_log_records: list[dict] = []   # one record per processed listing (groundwork data)
 
     from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
@@ -767,11 +795,24 @@ def _run_daily_scan() -> None:
             else:
                 picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
 
-            matched: dict[tuple, dict] = {}
-            best_score_seen = 0.0
-            photos_processed = 0
+            # Two-stage photo gating: always score photo 1; only pull the rest
+            # when the listing looks promising (title names a year, or photo 1
+            # already shows button-like signal). Keeps the scan from N× photo
+            # downloads on every junk listing now that we score multiple photos.
+            title_years = extract_years(title)
 
-            for photo_url in picture_urls[: config.MAX_PHOTOS_PER_LISTING]:
+            best_score_seen   = 0.0
+            photos_processed  = 0
+            needed_hits:    dict[tuple, dict] = {}  # (year, slogan) → enriched needed match
+            strong_matched: dict[tuple, dict] = {}  # (year, slogan) → match >= CONFIDENCE
+            log_top_matches: list[dict] = []
+
+            for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
+                if photo_idx == 1:  # decided after photo 1 is scored
+                    promising = bool(title_years) or best_score_seen >= config.REJECTION_THRESHOLD
+                    if not promising:
+                        break
+
                 try:
                     image_bytes = _ip.download_image(photo_url)
                     crops       = _ip.detect_and_crop(image_bytes)
@@ -784,78 +825,80 @@ def _run_daily_scan() -> None:
 
                 photos_processed += 1
 
-                # Encode all crops in one forward pass instead of one-by-one
+                # One forward pass; keep top-K candidates per crop down to the
+                # rejection floor so a needed button that is the 2nd/3rd guess
+                # on a blended photo is still visible.
                 try:
                     batch_results = _cm.match_crops_batch(
-                        crops, threshold=config.REJECTION_THRESHOLD
+                        crops,
+                        threshold=config.REJECTION_THRESHOLD,
+                        top_k=config.NEEDED_MATCH_TOP_K,
                     )
                 except Exception as exc:
                     print(f"!!! SCAN: match_crops_batch failed: {exc}", flush=True)
                     continue
 
-                for match in batch_results:
-                    if match is None:
+                for candidates in batch_results:
+                    if not candidates:
                         continue
-                    best_score_seen = max(best_score_seen, match["overall"])
-                    if match["overall"] >= config.CONFIDENCE_THRESHOLD:
-                        key = (match["year"], match["slogan"])
-                        if key not in matched or match["overall"] > matched[key]["overall"]:
-                            matched[key] = match
+                    best_score_seen = max(best_score_seen, candidates[0]["overall"])
+                    log_top_matches.append(candidates[0])
+
+                    for m in candidates:
+                        key     = (m["year"], m["slogan"])
+                        overall = m["overall"]
+
+                        # Strict matches feed the (optional) undervalued path.
+                        if overall >= config.CONFIDENCE_THRESHOLD and (
+                            key not in strong_matched or overall > strong_matched[key]["overall"]
+                        ):
+                            strong_matched[key] = m
+
+                        # Needed-button presence (recall-biased). Reuse the
+                        # fuzzy sheet lookup; a title-year match lowers the bar.
+                        price_single, _, _, amount_needed = sheets_client.get_buy_decision(
+                            m["year"], m["slogan"], buy_rules
+                        )
+                        if amount_needed <= 0:
+                            continue
+                        try:
+                            title_corroborated = int(m["year"]) in title_years
+                        except (ValueError, TypeError):
+                            title_corroborated = False
+                        bar = (config.REJECTION_THRESHOLD if title_corroborated
+                               else config.NEEDED_MATCH_THRESHOLD)
+                        if overall < bar:
+                            continue
+                        if key not in needed_hits or overall > needed_hits[key]["overall"]:
+                            enriched = dict(m)
+                            enriched["max_price_single"] = price_single
+                            enriched["amount_needed"]    = amount_needed
+                            needed_hits[key] = enriched
 
             if photos_processed == 0 or best_score_seen < config.REJECTION_THRESHOLD:
                 stat_rejected += 1
                 # Greppable title log for tuning EXCLUDED_KEYWORDS over time:
-                # apparel/non-buttons that slipped past the keyword filter land
-                # here. Filter Cloud Logging for "TITLE: [rejected".
+                # filter Cloud Logging for "TITLE: [rejected".
                 print(f">>> TITLE: [rejected {best_score_seen:.2f}] [{seller}] {title}", flush=True)
+                scan_log_records.append(_scan_log_record(
+                    listing, photos_processed, best_score_seen, log_top_matches,
+                    needed_hit=False, alerted=False,
+                ))
                 seen_store.mark_seen(item_id, seen)
                 continue
 
-            if not matched:
-                stat_low_confidence += 1
-                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] [{seller}] {title}", flush=True)
-                seen_store.mark_seen(item_id, seen)
-                continue
-
-            best_match = max(matched.values(), key=lambda m: m["overall"])
-            print(
-                f">>> TITLE: [match {best_match['overall']:.2f} "
-                f"{best_match['year']} {best_match['slogan']}] [{seller}] {title}",
-                flush=True,
-            )
-
-            enriched_matches = []
-            for (year, slogan), match in matched.items():
-                price_single, _, _, amount_needed = sheets_client.get_buy_decision(
-                    year, slogan, buy_rules
-                )
-                enriched = dict(match)
-                enriched["max_price_single"] = price_single
-                enriched["amount_needed"]    = amount_needed
-                enriched_matches.append(enriched)
-
-            lot_value    = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_matches)
-            margin       = lot_value - asking
-            needed_found = [m for m in enriched_matches if m["amount_needed"] > 0]
+            needed_buttons  = list(needed_hits.values())
             listing_alerted = False
 
-            if margin > 0:
-                if config.DRY_RUN:
-                    print(f"    [DRY RUN] Would post undervalued alert for {item_id}", flush=True)
-                else:
-                    notifier.send_undervalued_alert(
-                        slack_token=_slack_token,
-                        channel=_channel_id,
-                        listing=listing,
-                        matches=enriched_matches,
-                        lot_value=lot_value,
-                        asking_price=asking,
-                        margin=margin,
-                        unmatched_count=0,
-                    )
-                listing_alerted = True
-
-            if needed_found:
+            if needed_buttons:
+                lot_value = sum(
+                    sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
+                )
+                print(
+                    f">>> TITLE: [needed {best_score_seen:.2f} "
+                    f"{needed_buttons[0]['year']} {needed_buttons[0]['slogan']}] [{seller}] {title}",
+                    flush=True,
+                )
                 if config.DRY_RUN:
                     print(f"    [DRY RUN] Would post needed-buttons alert for {item_id}", flush=True)
                 else:
@@ -863,16 +906,52 @@ def _run_daily_scan() -> None:
                         slack_token=_slack_token,
                         channel=_channel_id,
                         listing=listing,
-                        needed_buttons=needed_found,
+                        needed_buttons=needed_buttons,
                         asking_price=asking,
                         lot_value=lot_value,
                     )
                 listing_alerted = True
 
+            # Optional, off by default: precise undervalued/margin alert. We no
+            # longer trust auto-valuation as the headline (see config).
+            if config.ENABLE_UNDERVALUED_ALERTS and strong_matched:
+                enriched_strong = []
+                for (year, slogan), m in strong_matched.items():
+                    price_single, _, _, amount_needed = sheets_client.get_buy_decision(
+                        year, slogan, buy_rules
+                    )
+                    e = dict(m)
+                    e["max_price_single"] = price_single
+                    e["amount_needed"]    = amount_needed
+                    enriched_strong.append(e)
+                lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_strong)
+                margin    = lot_value - asking
+                if margin > 0:
+                    if config.DRY_RUN:
+                        print(f"    [DRY RUN] Would post undervalued alert for {item_id}", flush=True)
+                    else:
+                        notifier.send_undervalued_alert(
+                            slack_token=_slack_token,
+                            channel=_channel_id,
+                            listing=listing,
+                            matches=enriched_strong,
+                            lot_value=lot_value,
+                            asking_price=asking,
+                            margin=margin,
+                            unmatched_count=0,
+                        )
+                    listing_alerted = True
+
             if listing_alerted:
                 stat_alerted += 1
             else:
                 stat_low_confidence += 1
+                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] [{seller}] {title}", flush=True)
+
+            scan_log_records.append(_scan_log_record(
+                listing, photos_processed, best_score_seen, log_top_matches,
+                needed_hit=bool(needed_buttons), alerted=listing_alerted,
+            ))
 
         except Exception as exc:
             print(f"!!! SCAN: Error processing {item_id}: {exc}", flush=True)
@@ -889,6 +968,12 @@ def _run_daily_scan() -> None:
     elif not seen_store.save_seen(seen):
         notifier.send_warning(_slack_token, _channel_id,
                               "Failed to save seen_items.json — next scan may re-alert.")
+
+    # Append the per-listing scan log (groundwork for a future automated valuer).
+    if config.DRY_RUN:
+        print(f"[DRY RUN] {len(scan_log_records)} scan-log records (not written).", flush=True)
+    elif scan_log_records and not seen_store.append_scan_log(scan_log_records):
+        print("!!! SCAN: Failed to append scan log to GCS.", flush=True)
 
     if config.DRY_RUN:
         print(
