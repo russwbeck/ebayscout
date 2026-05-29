@@ -582,6 +582,83 @@ PyTorch thread budget (`torch.set_num_threads`/`set_num_interop_threads`,
 
 ---
 
+## 24. `/scout` confirm step: confirm count + suggested era
+
+Inspired by the `inventory-bot` Detector, which is far more accurate because the
+human supplies **count + era** up front (era pre-filters candidate years) and
+reviews per-button top-3. ebayscout's `/scout` previously auto-committed to the
+top-1 with no era narrowing. We added the cheapest high-value slice of that: a
+**confirmation step**.
+
+Flow (`pending_scans[user_id]["stage"]`): `await_price → previewing →
+await_confirm`. After the price reply, a **preview** (mode=`preview` on the
+internal route) detects the Hough count and guesses the era, then posts
+*"Found ~N buttons. Era looks like X. Reply `go`, or correct it…"*. The user's
+reply (`go` / a count / an era / both, e.g. `mellon 42`) sets the final count
+and `restrict_years` (era → year range, reusing #22), and the **full** match
+runs era-restricted.
+
+Era detection (`clip_matcher.guess_lot_era`): per-era centroid ("era-mean")
+image embeddings built from the reference vectors grouped by year; a sample of
+~`ERA_SAMPLE_LIMIT` crops is classified by nearest centroid and majority-voted.
+It is a **heuristic suggestion, always human-overridable** (`all` skips
+restriction) — realistically "CCB-vs-not" since Mellon/Citizens look alike.
+
+Because it's unvalidated, era detection is **heavily logged** (greppable `ERA:`
+lines): per-crop centroid scores + pick, the vote tally and final guess at
+preview, and the user's confirm/override + the restriction actually applied.
+Filter Cloud Logging for `ERA:` to mine trends and tune over time. Config:
+`BUTTON_ERAS`, `ENABLE_ERA_DETECTION`, `ERA_SAMPLE_LIMIT`. Both preview and full
+run inside the in-flight internal request (#23) so neither is throttled.
+
+**Post-result era feedback (closes the loop + labels the data).** When a
+specific era was applied, the analysis is followed by a *"Did I identify the era
+correctly? ✅ Yes / ❌ No — try {other era}"* prompt (Slack interactive buttons →
+`era_feedback_yes` / `era_feedback_no` actions). **Yes** logs positive labelled
+feedback and resolves the message (no re-run). **No** logs the miss and re-runs
+the analysis restricted to "the other era" (`utils.other_era` — runner-up by
+vote, else the next defined era); the re-run carries `feedback_round=True` so it
+doesn't loop. Both outcomes emit `ERA: feedback …` log lines — gold-standard
+labels for evaluating the classifier. Requires Slack **Interactivity** enabled
+with the Request URL set to `/slack/events` (Bolt routes actions through it).
+
+---
+
+## 25. Era-tagged searches (tight → broad crawl)
+
+Extends year-aware matching (#22) to the **bank era**: bake the era into the
+*search query* so each result self-tags which era to match against. A query like
+`Penn State Mellon button` both surfaces era-relevant listings and carries
+`search_era="Mellon"`, which the scan turns into `restrict_years` (the era's year
+range) — cutting cross-era misses, especially on multi-year lots.
+
+Crawl strategy, tight → broad (run in this order; each marks `seen` so the next
+skips what it caught):
+
+1. **Year crawl** (`?year_crawl=1`, #22) — exact year, tightest.
+2. **Era crawl** (`?era_crawl=1`, NEW) — **Mellon + Citizens** bank queries,
+   matched restricted to the era's year range. Broader (a bank-era lot spans many
+   years).
+3. **Daily scan** — very broad general queries (`Penn State`/`Nittany Lions` ×
+   button types) **plus the standalone `"Central Counties Bank"` query, kept in
+   the general set unrestricted**. CCB buttons are the **rarest**, so that query
+   runs every day with maximum broad coverage and is matched against the **full**
+   slogan/reference set — deliberately **not** era-narrowed. (Earlier draft wrongly
+   moved CCB into an era-restricted pass; reverted.)
+
+Mechanics mirror the year crawl exactly: `find_listings(search_era=…)` stamps the
+tag; `find_era_augmented_listings` runs `(query, era)` pairs;
+`utils.build_era_queries` generates `{Penn State, PSU, Nittany Lions} × {button,
+pin, badge, pinback} × {bank word}` for **Mellon and Citizens** (PSU-prefixed ones
+stay category-restricted to Sports Mem). Per-listing restriction priority:
+`search_year` (exact) → `search_era` (range) → single title-year → none — so the
+unrestricted CCB results (no `search_era`) fall through to the full matcher.
+Config: `ERA_SEARCH_PREFIXES`, `MELLON_CITIZENS_ERA_QUERIES`. `?era_crawl=1`
+composes with `?dry_run=1` / `?ignore_seen=1`; Cloud Scheduler never sends it, so
+the daily 9am job is unchanged.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |

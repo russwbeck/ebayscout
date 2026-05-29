@@ -54,6 +54,93 @@ def needed_years(buy_rules: dict) -> set[int]:
     return years
 
 
+_ERA_ALIASES = {
+    "Central Counties": ("central counties", "central", "counties", "ccb", "cc"),
+    "Mellon":           ("mellon",),
+    "Citizens":         ("citizens", "citizen"),
+}
+_ALL_ALIASES = ("all", "any", "everything", "both")
+
+
+def era_year_set(era_label: str, eras: dict) -> set[int]:
+    """
+    All years in an era's [lo, hi] range. Empty set for "all"/None/unknown
+    (meaning: no year restriction).
+    """
+    if not era_label or era_label.lower() in _ALL_ALIASES:
+        return set()
+    bounds = eras.get(era_label)
+    if not bounds:
+        return set()
+    lo, hi = bounds
+    return set(range(lo, hi + 1))
+
+
+def parse_era(text: str) -> str | None:
+    """
+    Map free text to a canonical era label, "all", or None.
+    Returns "all" if the user explicitly opts out of era restriction.
+    """
+    t = (text or "").lower()
+    if any(a in t for a in _ALL_ALIASES):
+        return "all"
+    for label, aliases in _ERA_ALIASES.items():
+        if any(a in t for a in aliases):
+            return label
+    return None
+
+
+def other_era(era_used: str | None, era_ranked: list, eras: dict) -> str | None:
+    """
+    The best alternative era to try on a 'No' — the runner-up by vote
+    (era_ranked), else the next defined era that isn't the one we used.
+    Returns None if there is no other era.
+    """
+    for era in (era_ranked or []):
+        if era and era != era_used:
+            return era
+    for era in eras:
+        if era != era_used:
+            return era
+    return None
+
+
+def parse_confirmation(text: str) -> tuple[int | None, str | None]:
+    """
+    Parse a confirmation reply at the count/era confirm step.
+
+    Returns (count_override, era_override):
+      - count_override: first bare integer found, else None (keep detected count)
+      - era_override:   canonical era label, "all", or None (keep suggested era)
+    "go"/"yes"/"ok" with nothing else → (None, None) = accept the suggestions.
+    """
+    count = None
+    m = re.search(r"(?<!\d)(\d{1,3})(?!\d)", text or "")
+    if m:
+        count = int(m.group(1))
+    return count, parse_era(text)
+
+
+def build_era_queries(
+    prefixes: list[str],
+    button_types: list[str],
+    era_word: str,
+    era_label: str,
+) -> list[tuple[str, str]]:
+    """
+    Build era-named search queries: one (query, era_label) pair per
+    prefix × button_type, e.g. ("Penn State Mellon button", "Mellon").
+
+    The bank word in the query both surfaces era-tagged listings and tells the
+    matcher which era to restrict to (search_era → restrict_years).
+    """
+    return [
+        (f"{prefix} {era_word} {btn}", era_label)
+        for prefix in prefixes
+        for btn in button_types
+    ]
+
+
 def build_year_queries(base_terms: list[str], years) -> list[tuple[str, int]]:
     """
     Build year-augmented search queries: one (query, year) pair per

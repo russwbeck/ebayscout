@@ -39,9 +39,12 @@ Estimated cost: **~$1/month** (Cloud Run + Cloud Scheduler).
 4. **Install to Workspace** → copy the **Bot User OAuth Token** (`xoxb-...`)
 5. Invite the bot to your `#ebay-scout` channel: `/invite @eBay Scout`
 
-The manual-upload flow (upload a photo → get a lot valuation) also needs the
-Events API and a slash command pointed at the same `/slack/events` endpoint
-(Slack Bolt routes both events and slash commands through it):
+The manual-upload flow also needs the Events API and a slash command pointed at
+the same `/slack/events` endpoint (Slack Bolt routes both through it). The flow
+is two steps: upload a photo → reply `$price | source` → the bot replies
+*"Found ~N buttons, era looks like X — reply `go` or correct count/era"* → reply
+`go` (or e.g. `mellon 42`) → lot valuation. Era detection is heavily logged
+(`ERA:` lines) for tuning.
 
 6. **Event Subscriptions → Enable Events**
    - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`
@@ -51,8 +54,11 @@ Events API and a slash command pointed at the same `/slack/events` endpoint
    - Command: `/scout`
    - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`
    - Short description: `Wake eBay Scout for manual photo analysis`
-8. **Reinstall to Workspace** (Slack requires a reinstall whenever event
-   subscriptions or slash commands change).
+8. **Interactivity & Shortcuts → Enable**
+   - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`
+   - Powers the "Did I identify the era correctly? ✅/❌" buttons on results.
+9. **Reinstall to Workspace** (Slack requires a reinstall whenever event
+   subscriptions, slash commands, or interactivity change).
 
 > **Why `/scout` exists.** CLIP (~30-60s to load) hydrates in a background
 > thread, but Cloud Run throttles CPU to ~0% between requests, so on a cold/idle
@@ -297,6 +303,29 @@ curl -X POST "${SERVICE_URL}/run-scan?year_crawl=1" -H "$TOKEN"
 Volume scales with (needed years × ~12 base terms), so it's an on-demand /
 periodic job, not part of the daily scan. Cloud Scheduler never sends
 `year_crawl`, so the 9am run stays on the light general queries.
+
+### Bank-era crawl (`?era_crawl=1`)
+
+Sources listings from the **Mellon + Citizens** bank searches, each matched
+restricted to that era's year range. Broader than the year crawl (catches
+multi-year lots within an era). Central Counties is **not** here — the
+`"Central Counties Bank"` query stays in the always-on daily general scan,
+unrestricted (CCB buttons are the rarest, so we keep maximum broad coverage).
+
+```bash
+curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1&dry_run=1" -H "$TOKEN"   # preview
+curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1" -H "$TOKEN"             # live
+```
+
+**Recommended backlog order — tight → broad** (each marks `seen`, so the next
+skips what it already caught; don't add `ignore_seen` unless you want a full
+re-scan):
+
+```bash
+curl -X POST "${SERVICE_URL}/run-scan?year_crawl=1" -H "$TOKEN"   # 1. exact years (tightest)
+curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1"  -H "$TOKEN"   # 2. Mellon + Citizens (broad)
+# 3. the daily 9am general scan covers everything else + Central Counties
+```
 
 ---
 

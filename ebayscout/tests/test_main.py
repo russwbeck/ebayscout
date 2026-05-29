@@ -15,7 +15,86 @@ from ebayscout.utils import (
     extract_years,
     needed_years,
     build_year_queries,
+    build_era_queries,
+    era_year_set,
+    parse_era,
+    parse_confirmation,
+    other_era,
 )
+
+
+class TestBuildEraQueries:
+    def test_prefix_button_product_tagged_with_era(self):
+        out = build_era_queries(["Penn State", "PSU"], ["button", "pin"], "Mellon", "Mellon")
+        assert ("Penn State Mellon button", "Mellon") in out
+        assert ("PSU Mellon pin", "Mellon") in out
+        assert len(out) == 4
+        assert all(era == "Mellon" for _q, era in out)
+
+    def test_central_counties_word(self):
+        out = build_era_queries(["Nittany Lions"], ["badge"], "Central Counties", "Central Counties")
+        assert out == [("Nittany Lions Central Counties badge", "Central Counties")]
+
+    def test_empty_inputs(self):
+        assert build_era_queries([], ["button"], "Mellon", "Mellon") == []
+        assert build_era_queries(["PSU"], [], "Mellon", "Mellon") == []
+
+_ERAS = {
+    "Central Counties": (1972, 1983),
+    "Mellon":           (1984, 2001),
+    "Citizens":         (2001, 2026),
+}
+
+
+class TestEraHelpers:
+    def test_era_year_set_range(self):
+        assert era_year_set("Central Counties", _ERAS) == set(range(1972, 1984))
+        assert era_year_set("Mellon", _ERAS) == set(range(1984, 2002))
+
+    def test_era_year_set_all_and_unknown_are_empty(self):
+        assert era_year_set("all", _ERAS) == set()
+        assert era_year_set("", _ERAS) == set()
+        assert era_year_set("Nonsense", _ERAS) == set()
+
+    def test_parse_era_aliases(self):
+        assert parse_era("ccb") == "Central Counties"
+        assert parse_era("central counties lot") == "Central Counties"
+        assert parse_era("looks like mellon") == "Mellon"
+        assert parse_era("citizens era") == "Citizens"
+
+    def test_parse_era_all_opt_out(self):
+        assert parse_era("all") == "all"
+        assert parse_era("any era") == "all"
+
+    def test_parse_era_none(self):
+        assert parse_era("go") is None
+        assert parse_era("42") is None
+
+    def test_parse_confirmation_go(self):
+        assert parse_confirmation("go") == (None, None)
+
+    def test_parse_confirmation_count_only(self):
+        assert parse_confirmation("42") == (42, None)
+
+    def test_parse_confirmation_era_only(self):
+        assert parse_confirmation("mellon") == (None, "Mellon")
+
+    def test_parse_confirmation_both(self):
+        assert parse_confirmation("mellon 42") == (42, "Mellon")
+        assert parse_confirmation("all 54") == (54, "all")
+
+    def test_other_era_prefers_runner_up_vote(self):
+        # Runner-up by vote that isn't the era we used.
+        assert other_era("Central Counties",
+                          ["Central Counties", "Mellon", "Citizens"], _ERAS) == "Mellon"
+
+    def test_other_era_falls_back_to_next_defined(self):
+        # No useful ranking → first defined era that isn't the one used.
+        assert other_era("Central Counties", [], _ERAS) == "Mellon"
+        assert other_era("Mellon", [], _ERAS) == "Central Counties"
+
+    def test_other_era_none_when_only_one(self):
+        assert other_era("Only", ["Only"], {"Only": (1, 2)}) is None
 
 
 class TestNeededYears:

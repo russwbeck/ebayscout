@@ -7,6 +7,8 @@ Edit EXCLUDED_SELLERS and SLACK_SCOUT_CHANNEL before first deploy.
 
 import os
 
+from .utils import build_era_queries
+
 # --- GCP ---
 BUCKET_NAME    = "60d488c5-9c8e-4acc-aac-button-data"
 PROJECT_NUMBER = "404960106109"
@@ -24,6 +26,20 @@ SERVICE_BASE_URL = os.environ.get(
 # The verification token is stored in GCP Secret Manager as
 # EBAY_DELETION_VERIFICATION_TOKEN (32-80 chars, alphanumeric + _ -)
 EBAY_DELETION_ENDPOINT = f"{SERVICE_BASE_URL}/ebay/account-deletion"
+
+# --- Button eras (bank sponsor → year range) ---
+# Used to narrow CLIP matching to a single era (restrict_years). Note: Central
+# Counties buttons look visually distinct and separate well; Mellon vs Citizens
+# look similar, so era auto-detection is realistically "CCB vs not" — it's always
+# offered as a human-overridable suggestion, never an auto-lock. 2001 overlaps
+# Mellon/Citizens intentionally.
+BUTTON_ERAS: dict = {
+    "Central Counties": (1972, 1983),
+    "Mellon":           (1984, 2001),
+    "Citizens":         (2001, 2026),
+}
+ENABLE_ERA_DETECTION = True
+ERA_SAMPLE_LIMIT     = 5    # crops encoded to guess the lot era at the preview step
 
 # --- CLIP scoring (match buttonmatcher's constants) ---
 CONFIDENCE_THRESHOLD      = 0.72   # above → confident match, eligible for alerts
@@ -137,16 +153,29 @@ BUTTON_TYPES  = ["button", "pin", "badge", "pinback"]
 # that floods unrestricted "PSU button/pin/badge/pinback" searches.
 SPORTS_MEMO_CATEGORY_ID = "64482"
 
-# Unrestricted queries — "Penn State" and "Nittany Lions" are unambiguous.
+# Unrestricted ("very broad") queries — "Penn State" and "Nittany Lions" are
+# unambiguous. "Central Counties Bank" STAYS here, unrestricted, and runs every
+# day: CCB buttons are the rarest, so we want maximum broad coverage on them
+# (matched against the full slogan/reference set, not era-narrowed).
 EBAY_SEARCH_QUERIES: list[str] = (
     [f"Penn State {btn}" for btn in BUTTON_TYPES]
     + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
     + ["Central Counties Bank"]
 )
-# Produces 9 queries:
-#   "Penn State button/pin/badge/pinback"
-#   "Nittany Lions button/pin/badge/pinback"
-#   "Central Counties Bank"
+# Produces 9 queries.
+
+# --- Era-named searches (bake the bank era into the query → restrict matching) ---
+# Mellon + Citizens only. Each (query, era_label) result is tagged search_era and
+# matched restricted to that era's year range (see BUTTON_ERAS). Run ON-DEMAND via
+# /run-scan?era_crawl=1 (broader, multi-year within an era; the tight year crawl
+# runs first and marks listings seen). Central Counties is deliberately NOT here —
+# it stays in the always-on general queries above. Prefixes include Nittany Lions.
+ERA_SEARCH_PREFIXES = ["Penn State", "PSU", "Nittany Lions"]
+
+MELLON_CITIZENS_ERA_QUERIES: list[tuple[str, str]] = (
+    build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Mellon", "Mellon")
+    + build_era_queries(ERA_SEARCH_PREFIXES, BUTTON_TYPES, "Citizens", "Citizens")
+)
 
 # PSU queries run with category_ids=SPORTS_MEMO_CATEGORY_ID so "PSU" matches
 # Penn State University buttons rather than Power Supply Units.

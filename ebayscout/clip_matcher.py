@@ -55,6 +55,8 @@ _text_types:    list[str]            = []     # sport types
 _initialized = False
 _init_lock   = threading.Lock()
 
+_era_means: dict | None = None   # era_label -> unit [D] tensor, built lazily
+
 
 def init(bucket_name: str = config.BUCKET_NAME) -> None:
     """
@@ -107,6 +109,81 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
 def reference_years() -> set[int]:
     """Years present in the loaded text reference data (empty before init())."""
     return {int(y) for y in _text_years}
+
+
+def _label_year(label) -> int | None:
+    """Parse a year from a reference label (plain int year or 'YEAR SLOGAN')."""
+    try:
+        return int(label) if isinstance(label, (int, float)) else int(str(label).split()[0])
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+
+def _build_era_means() -> dict:
+    """
+    Centroid (unit) image embedding per era, from the reference vectors grouped
+    by their year. Computed once; used to classify a crop's likely era.
+    """
+    means: dict = {}
+    if _ref_vectors is None or not _ref_labels:
+        return means
+    years = np.array([(_label_year(l) if _label_year(l) is not None else -1)
+                      for l in _ref_labels])
+    for era, (lo, hi) in config.BUTTON_ERAS.items():
+        idx = np.where((years >= lo) & (years <= hi))[0]
+        if len(idx) == 0:
+            continue
+        vec = _ref_vectors[idx].mean(dim=0)
+        vec = vec / vec.norm()
+        means[era] = vec
+    return means
+
+
+def guess_lot_era(pil_images: list, sample_limit: int | None = None) -> tuple:
+    """
+    Guess the dominant era of a lot by classifying a sample of crops against
+    per-era centroid embeddings and majority-voting.
+
+    Returns (era_label_or_None, detail) where `detail` is a rich dict for logging:
+    {guess, votes, sampled, total, per_crop:[{pick, scores:{era: cos}}]}.
+    Era detection is a heuristic suggestion (see config.BUTTON_ERAS) — log it,
+    don't trust it blindly.
+    """
+    global _era_means
+    if not config.ENABLE_ERA_DETECTION:
+        return None, {"enabled": False}
+    if not _initialized:
+        raise RuntimeError("clip_matcher.init() must be called before guess_lot_era().")
+    if _era_means is None:
+        _era_means = _build_era_means()
+    if not _era_means or not pil_images:
+        return None, {"guess": None, "votes": {}, "sampled": 0, "total": len(pil_images),
+                      "per_crop": [], "eras": list((_era_means or {}).keys())}
+
+    if sample_limit is None:
+        sample_limit = config.ERA_SAMPLE_LIMIT
+    sample = pil_images[:max(1, sample_limit)]
+
+    tensors = torch.stack([_preprocess(img) for img in sample]).to(_device)
+    with torch.inference_mode():
+        vecs = _model.encode_image(tensors).float()
+    vecs = vecs / vecs.norm(dim=-1, keepdim=True)
+
+    era_labels = list(_era_means.keys())
+    means_mat  = torch.stack([_era_means[e] for e in era_labels])   # [E, D]
+    sims = (vecs @ means_mat.T).cpu().numpy()                       # [n, E]
+
+    votes: dict = {}
+    per_crop: list = []
+    for i in range(sims.shape[0]):
+        scores = {era_labels[j]: round(float(sims[i][j]), 4) for j in range(len(era_labels))}
+        pick = max(scores, key=scores.get)
+        votes[pick] = votes.get(pick, 0) + 1
+        per_crop.append({"pick": pick, "scores": scores})
+
+    guess = max(votes, key=votes.get) if votes else None
+    return guess, {"guess": guess, "votes": votes, "sampled": len(sample),
+                   "total": len(pil_images), "per_crop": per_crop}
 
 
 def match_crops_batch(

@@ -30,6 +30,7 @@ def _reset():
     clip_matcher._text_years    = []
     clip_matcher._text_types    = []
     clip_matcher._initialized   = False
+    clip_matcher._era_means     = None
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +254,13 @@ class TestMatchCrop:
     def test_reference_years_reports_loaded_years(self):
         self._setup_minimal_state()
         assert clip_matcher.reference_years() == {1977}
+
+    def test_guess_lot_era_returns_label_and_detail(self):
+        # Minimal state has only 1977 buttons → Central Counties era. The era
+        # guess should be Central Counties with a logging-friendly detail dict.
+        self._setup_minimal_state()
+        era, detail = clip_matcher.guess_lot_era([Image.new("RGB", (64, 64))])
+        assert era == "Central Counties"
+        assert detail["guess"] == "Central Counties"
+        assert detail["votes"].get("Central Counties", 0) >= 1
+        assert detail["per_crop"] and "scores" in detail["per_crop"][0]
