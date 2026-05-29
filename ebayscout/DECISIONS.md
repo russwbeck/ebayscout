@@ -427,11 +427,12 @@ thread — one place that calls the lock-guarded, idempotent `clip_matcher.init(
 and flips `vectors_loaded`. A `_wake_lock` / `_wake_in_flight` flag coalesces
 concurrent wakes so the channel doesn't get duplicate "ready" posts.
 
-Infra note: we deliberately stayed **scale-to-zero** (cheapest) rather than
-pinning a warm instance. The `/scout` command + self-healing upload absorb the
-cold-start cost. `cloudbuild.yaml` / `DEPLOY.md` document the optional
-`--min-instances=1 --no-cpu-throttling` upgrade for instant uploads at higher
-cost. `--max-instances=1` must stay (#17 Bug 3).
+Infra note: the service stays **scale-to-zero** (cheapest). `--no-cpu-throttling`
+and a `--min-instances=1` warm instance are **off budget — do not add them**
+(see CLAUDE.md). The `/scout` command + self-healing upload absorb the cold-start
+cost; the way to keep CPU for heavy work is to run it inside an in-flight HTTP
+request (the `/run-scan` pattern), never always-on CPU. `--max-instances=1` must
+stay (#17 Bug 3).
 
 Setup requirement: the `/scout` command must be registered in the Slack app
 config (Slash Commands → Request URL `…/slack/events`) and the app reinstalled —

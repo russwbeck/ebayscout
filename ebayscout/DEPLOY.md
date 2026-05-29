@@ -152,17 +152,12 @@ gcloud run deploy ebay-scout \
 > Subsequent deploys are handled automatically by the Cloud Build trigger
 > (see below) — you only run this manually for the first deploy.
 
-> **Optional — eliminate the cold-start wait (higher cost).** By default the
-> service scales to zero, so the first upload after idle (or right after a
-> deploy) costs a ~60s CLIP wake (handled by `/scout` and the self-healing
-> upload flow). To make it instant instead, add these two flags to the
-> `gcloud run deploy` args here **and** in `cloudbuild.yaml`:
-> ```
->   --min-instances=1        # keep one container warm (no scale-to-zero)
->   --no-cpu-throttling      # let the background CLIP loader finish between requests
-> ```
-> Trade-off: `--min-instances=1` bills for one always-on 4Gi/2-vCPU instance
-> (well above the ~$1/month idle cost). Keep `--max-instances=1` either way —
+> **Budget constraint — the service stays scale-to-zero.** `--no-cpu-throttling`
+> and `--min-instances=1` (an always-on warm instance) are **off budget — do not
+> add them.** The first upload after idle costs a ~60s CLIP wake, which is
+> handled by `/scout` and the self-healing upload flow. The right way to keep CPU
+> allocated for heavy work is to run it **inside an in-flight HTTP request** (as
+> `/run-scan` does), not by paying for always-on CPU. Keep `--max-instances=1` —
 > manual `pending_scans` state lives in a single container's memory.
 
 ---
