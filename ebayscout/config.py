@@ -25,6 +25,20 @@ SERVICE_BASE_URL = os.environ.get(
 # EBAY_DELETION_VERIFICATION_TOKEN (32-80 chars, alphanumeric + _ -)
 EBAY_DELETION_ENDPOINT = f"{SERVICE_BASE_URL}/ebay/account-deletion"
 
+# --- Button eras (bank sponsor → year range) ---
+# Used to narrow CLIP matching to a single era (restrict_years). Note: Central
+# Counties buttons look visually distinct and separate well; Mellon vs Citizens
+# look similar, so era auto-detection is realistically "CCB vs not" — it's always
+# offered as a human-overridable suggestion, never an auto-lock. 2001 overlaps
+# Mellon/Citizens intentionally.
+BUTTON_ERAS: dict = {
+    "Central Counties": (1972, 1983),
+    "Mellon":           (1984, 2001),
+    "Citizens":         (2001, 2026),
+}
+ENABLE_ERA_DETECTION = True
+ERA_SAMPLE_LIMIT     = 5    # crops encoded to guess the lot era at the preview step
+
 # --- CLIP scoring (match buttonmatcher's constants) ---
 CONFIDENCE_THRESHOLD      = 0.72   # above → confident match, eligible for alerts
 REJECTION_THRESHOLD       = 0.45   # below → clearly not a gameday button

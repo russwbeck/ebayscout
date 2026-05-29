@@ -39,9 +39,12 @@ Estimated cost: **~$1/month** (Cloud Run + Cloud Scheduler).
 4. **Install to Workspace** → copy the **Bot User OAuth Token** (`xoxb-...`)
 5. Invite the bot to your `#ebay-scout` channel: `/invite @eBay Scout`
 
-The manual-upload flow (upload a photo → get a lot valuation) also needs the
-Events API and a slash command pointed at the same `/slack/events` endpoint
-(Slack Bolt routes both events and slash commands through it):
+The manual-upload flow also needs the Events API and a slash command pointed at
+the same `/slack/events` endpoint (Slack Bolt routes both through it). The flow
+is two steps: upload a photo → reply `$price | source` → the bot replies
+*"Found ~N buttons, era looks like X — reply `go` or correct count/era"* → reply
+`go` (or e.g. `mellon 42`) → lot valuation. Era detection is heavily logged
+(`ERA:` lines) for tuning.
 
 6. **Event Subscriptions → Enable Events**
    - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`

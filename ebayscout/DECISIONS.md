@@ -582,6 +582,37 @@ PyTorch thread budget (`torch.set_num_threads`/`set_num_interop_threads`,
 
 ---
 
+## 24. `/scout` confirm step: confirm count + suggested era
+
+Inspired by the `inventory-bot` Detector, which is far more accurate because the
+human supplies **count + era** up front (era pre-filters candidate years) and
+reviews per-button top-3. ebayscout's `/scout` previously auto-committed to the
+top-1 with no era narrowing. We added the cheapest high-value slice of that: a
+**confirmation step**.
+
+Flow (`pending_scans[user_id]["stage"]`): `await_price → previewing →
+await_confirm`. After the price reply, a **preview** (mode=`preview` on the
+internal route) detects the Hough count and guesses the era, then posts
+*"Found ~N buttons. Era looks like X. Reply `go`, or correct it…"*. The user's
+reply (`go` / a count / an era / both, e.g. `mellon 42`) sets the final count
+and `restrict_years` (era → year range, reusing #22), and the **full** match
+runs era-restricted.
+
+Era detection (`clip_matcher.guess_lot_era`): per-era centroid ("era-mean")
+image embeddings built from the reference vectors grouped by year; a sample of
+~`ERA_SAMPLE_LIMIT` crops is classified by nearest centroid and majority-voted.
+It is a **heuristic suggestion, always human-overridable** (`all` skips
+restriction) — realistically "CCB-vs-not" since Mellon/Citizens look alike.
+
+Because it's unvalidated, era detection is **heavily logged** (greppable `ERA:`
+lines): per-crop centroid scores + pick, the vote tally and final guess at
+preview, and the user's confirm/override + the restriction actually applied.
+Filter Cloud Logging for `ERA:` to mine trends and tune over time. Config:
+`BUTTON_ERAS`, `ENABLE_ERA_DETECTION`, `ERA_SAMPLE_LIMIT`. Both preview and full
+run inside the in-flight internal request (#23) so neither is throttled.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |

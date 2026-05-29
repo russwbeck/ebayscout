@@ -39,6 +39,8 @@ from .utils import (
     extract_years,
     needed_years,
     build_year_queries,
+    era_year_set,
+    parse_confirmation,
 )
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
@@ -245,6 +247,7 @@ def handle_file_shared(event, client):
         return
 
     pending_scans[user_id] = {
+        "stage":      "await_price",
         "file_url":   file_url,
         "channel_id": channel_id,
         "thread_ts":  event_ts,
@@ -296,26 +299,60 @@ def handle_file_shared(event, client):
 @bolt_app.event("message")
 def handle_message(event, client):
     """
-    Listens for all messages.  Only acts when:
-      - The sender has a pending scan in progress
-      - The message is a threaded reply in the correct thread
-      - The message is from a user (not the bot)
+    Two-stage manual flow, keyed on pending_scans[user_id]["stage"]:
+      await_price   → user sends "$price | source [| count]"; kick off a preview
+                      (detect count + guess era) and move to await_confirm.
+      previewing    → ignore stray replies while the preview runs.
+      await_confirm → user replies `go` / a count / an era / both; run the match
+                      with the confirmed count + era restriction.
     """
-    user_id   = event.get("user")
-    text      = (event.get("text") or "").strip()
+    user_id = event.get("user")
+    text    = (event.get("text") or "").strip()
 
-    # Ignore bot messages and file-share system events
     if not user_id or event.get("bot_id") or event.get("subtype") == "file_share":
         return
-
     if user_id not in pending_scans:
         return
 
-    scan = pending_scans[user_id]
+    scan  = pending_scans[user_id]
+    stage = scan.get("stage", "await_price")
 
-    # Parse "price | source" or "price | source | count"
+    if stage == "previewing":
+        return  # preview in progress; ignore until it posts the confirm prompt
+
+    # ----------------------------------------------------------------- confirm
+    if stage == "await_confirm":
+        count_override, era_override = parse_confirmation(text)
+        final_count = count_override if count_override is not None else scan.get("detected_count")
+        era_label   = era_override   if era_override   is not None else scan.get("era_guess")
+        restrict    = sorted(era_year_set(era_label, config.BUTTON_ERAS)) if era_label else []
+        overrode_era = era_override is not None and era_override != scan.get("era_guess")
+        print(
+            f">>> ERA: user confirm era={era_label or 'all'}"
+            f"{' OVERRIDE' if overrode_era else ''} (guess={scan.get('era_guess')}) "
+            f"count={final_count} (detected={scan.get('detected_count')})",
+            flush=True,
+        )
+        del pending_scans[user_id]
+        threading.Thread(
+            target=_dispatch_internal,
+            args=({
+                "mode":          "full",
+                "file_url":      scan["file_url"],
+                "channel_id":    scan["channel_id"],
+                "thread_ts":     scan["thread_ts"],
+                "asking_price":  scan["asking_price"],
+                "source":        scan["source"],
+                "button_count":  final_count,
+                "restrict_years": restrict,
+                "era_label":     era_label,
+            },),
+            daemon=False,
+        ).start()
+        return
+
+    # --------------------------------------------------------------- await_price
     asking_price, source, button_count = parse_price_source(text)
-
     if asking_price is None:
         client.chat_postMessage(
             channel=scan["channel_id"],
@@ -329,64 +366,40 @@ def handle_message(event, client):
         )
         return
 
-    # Clear pending state before dispatch (prevent double-processing)
-    del pending_scans[user_id]
-
-    # Dispatch the analysis to run inside a fresh in-flight HTTP request (see
-    # _dispatch_manual_analysis). Fire-and-forget in a thread so this Slack
-    # event handler still returns within Slack's 3s ack window. daemon=False so
-    # the dispatch outlives this webhook handler (per CLOUD_RUN_CPU_THROTTLE_FIX).
+    # Move to "previewing" so stray replies are ignored until the preview posts
+    # its confirm prompt (which overwrites the state with stage=await_confirm).
+    pending_scans[user_id] = {**scan, "stage": "previewing"}
     threading.Thread(
-        target=_dispatch_manual_analysis,
-        kwargs={
+        target=_dispatch_internal,
+        args=({
+            "mode":         "preview",
             "file_url":     scan["file_url"],
             "channel_id":   scan["channel_id"],
             "thread_ts":    scan["thread_ts"],
+            "user_id":      user_id,
             "asking_price": asking_price,
             "source":       source,
-            "button_count": button_count,
-        },
+            "count_hint":   button_count,
+        },),
         daemon=False,
     ).start()
 
 
-def _dispatch_manual_analysis(
-    file_url:     str,
-    channel_id:   str,
-    thread_ts:    str,
-    asking_price: float,
-    source:       str,
-    button_count: int | None,
-) -> None:
+def _dispatch_internal(payload: dict) -> None:
     """
-    POST the analysis payload to this service's own /internal/manual-analysis
-    endpoint so the heavy CLIP work runs inside an in-flight HTTP request (full
-    CPU on Cloud Run) rather than a throttled background thread. Must use the
-    external HTTPS URL — a localhost call bypasses the load balancer and does
-    NOT prevent throttling (see CLOUD_RUN_CPU_THROTTLE_FIX.md).
+    POST `payload` to this service's own /internal/manual-analysis endpoint so
+    the heavy work runs inside an in-flight HTTP request (full CPU on Cloud Run)
+    rather than a throttled background thread. Must use the external HTTPS URL —
+    a localhost call bypasses the load balancer and does NOT prevent throttling
+    (CLOUD_RUN_CPU_THROTTLE_FIX.md).
 
     Inline fallback runs ONLY when the work definitely did not start (couldn't
     reach the server, or a non-200 rejection). On a read timeout the server-side
-    analysis is still running, so we must NOT re-run it — that would double-post.
+    work is still running, so we must NOT re-run it — that would double-post.
     """
     import requests as req
 
-    def _run_inline(reason: str) -> None:
-        print(f"!!! MANUAL: {reason} — running inline (throttled) as fallback.", flush=True)
-        _run_manual_analysis(file_url, channel_id, thread_ts,
-                             asking_price, source, button_count)
-
-    payload = {
-        "file_url":     file_url,
-        "channel_id":   channel_id,
-        "thread_ts":    thread_ts,
-        "asking_price": asking_price,
-        "source":       source,
-        "button_count": button_count,
-    }
-
-    # Brief pause so the Slack-ack request releases its gunicorn worker before
-    # we claim another via the internal request.
+    # Brief pause so the Slack-ack request releases its gunicorn worker first.
     time.sleep(0.3)
 
     try:
@@ -397,20 +410,43 @@ def _dispatch_manual_analysis(
             timeout=1790,   # < Cloud Run --timeout=1800, ~10s headroom
         )
     except (req.exceptions.ConnectionError, req.exceptions.ConnectTimeout) as exc:
-        # Never reached the server → the analysis did not start → safe to run once.
-        _run_inline(f"could not reach internal endpoint ({exc})")
+        print(f"!!! MANUAL: could not reach internal endpoint ({exc}) — running inline.", flush=True)
+        _run_internal(payload)
         return
     except Exception as exc:
-        # Connected but the read ended early (e.g. ReadTimeout): the server-side
-        # analysis is STILL RUNNING. Do not retry — it would double-post.
         print(f"!!! MANUAL: internal dispatch read ended early ({exc}); "
-              f"server-side analysis is still running — not retrying.", flush=True)
+              f"server-side work is still running — not retrying.", flush=True)
         return
 
     if resp.status_code != 200:
-        # Server reached and rejected (e.g. 403 token / 404 URL) → work did not
-        # run → safe to run inline.
-        _run_inline(f"internal dispatch returned {resp.status_code}")
+        print(f"!!! MANUAL: internal dispatch returned {resp.status_code} — running inline.", flush=True)
+        _run_internal(payload)
+
+
+def _run_internal(data: dict) -> None:
+    """Dispatch an internal payload to the preview or full pipeline."""
+    if data.get("mode") == "preview":
+        _run_manual_preview(
+            file_url=data["file_url"],
+            channel_id=data["channel_id"],
+            thread_ts=data["thread_ts"],
+            user_id=data["user_id"],
+            asking_price=float(data["asking_price"]),
+            source=data.get("source", "Unknown"),
+            count_hint=data.get("count_hint"),
+        )
+    else:
+        restrict = set(data["restrict_years"]) if data.get("restrict_years") else None
+        _run_manual_analysis(
+            file_url=data["file_url"],
+            channel_id=data["channel_id"],
+            thread_ts=data["thread_ts"],
+            asking_price=float(data["asking_price"]),
+            source=data.get("source", "Unknown"),
+            button_count=data.get("button_count"),
+            restrict_years=restrict,
+            era_label=data.get("era_label"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +485,104 @@ def handle_scout_wake(ack, command, client):
 # Manual analysis pipeline
 # ---------------------------------------------------------------------------
 
+def _download_slack_image(file_url: str):
+    """Download a Slack file_private URL with the bot token. Returns bytes or None."""
+    try:
+        import requests as req
+        resp = req.get(
+            file_url,
+            headers={"Authorization": f"Bearer {_slack_token}"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        return resp.content
+    except Exception as exc:
+        print(f"!!! MANUAL: Failed to download uploaded image: {exc}", flush=True)
+        return None
+
+
+def _run_manual_preview(
+    file_url:     str,
+    channel_id:   str,
+    thread_ts:    str,
+    user_id:      str,
+    asking_price: float,
+    source:       str,
+    count_hint:   int | None = None,
+) -> None:
+    """
+    Stage 1 of the manual flow: detect the button count and guess the lot era,
+    then post a confirmation prompt and park the request in `await_confirm`.
+    Runs inside the internal request (full CPU). Heavily logs era detection.
+    """
+    client = WebClient(token=_slack_token)
+
+    def _reply(text: str) -> None:
+        client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=text, mrkdwn=True)
+
+    with _keep_cpu_hot():
+        if not _ensure_clip_loaded():
+            _reply("❌ eBay Scout is still waking up — try replying again in ~30s.")
+            pending_scans.pop(user_id, None)
+            return
+
+        image_bytes = _download_slack_image(file_url)
+        if image_bytes is None:
+            _reply("❌ Couldn't download the image — please try uploading again.")
+            pending_scans.pop(user_id, None)
+            return
+
+        try:
+            from . import image_proc as _ip
+            crops = _ip.detect_and_crop(image_bytes, button_count=count_hint)
+        except Exception as exc:
+            print(f"!!! MANUAL: preview detect_and_crop failed: {exc}", flush=True)
+            _reply("❌ Couldn't detect buttons in that image.")
+            pending_scans.pop(user_id, None)
+            return
+
+        if not crops:
+            _reply("No buttons detected in the image. Try a clearer or closer shot.")
+            pending_scans.pop(user_id, None)
+            return
+
+        count = len(crops)
+        from . import clip_matcher as _cm
+        try:
+            era_guess, detail = _cm.guess_lot_era(crops)
+        except Exception as exc:
+            print(f"!!! MANUAL: era guess failed: {exc}", flush=True)
+            era_guess, detail = None, {}
+
+        # Heavy, greppable era logging — filter Cloud Logging for "ERA:".
+        print(
+            f">>> ERA: preview guess={era_guess} votes={detail.get('votes')} "
+            f"sampled={detail.get('sampled')}/{detail.get('total')} detected_count={count} "
+            f"price=${asking_price:.2f} src={source}",
+            flush=True,
+        )
+        for i, pc in enumerate(detail.get("per_crop", [])):
+            print(f">>> ERA: preview crop {i} -> {pc['pick']} {pc['scores']}", flush=True)
+
+        pending_scans[user_id] = {
+            "stage":          "await_confirm",
+            "file_url":       file_url,
+            "channel_id":     channel_id,
+            "thread_ts":      thread_ts,
+            "asking_price":   asking_price,
+            "source":         source,
+            "detected_count": count,
+            "era_guess":      era_guess,
+        }
+
+        era_txt = f"*{era_guess}*" if era_guess else "_uncertain_"
+        _reply(
+            f"📸 Found *{count}* buttons. Era looks like {era_txt}.\n"
+            f"Reply *`go`* to analyze, or correct it — a count, an era "
+            f"(`CCB` / `Mellon` / `Citizens` / `all`), or both (e.g. `mellon 42`)."
+        )
+
+
 def _run_manual_analysis(
     file_url:     str,
     channel_id:   str,
@@ -456,14 +590,16 @@ def _run_manual_analysis(
     asking_price: float,
     source:       str,
     button_count: int | None = None,
+    restrict_years: set[int] | None = None,
+    era_label:    str | None = None,
 ) -> None:
     """
-    Download the uploaded image, detect buttons, match, and post results.
+    Stage 2: download, detect, match (optionally year/era-restricted), post the
+    lot analysis.
 
     Intended to run inside the /internal/manual-analysis HTTP request (not a
     background thread) so Cloud Run keeps full CPU allocated for the CLIP encode
     — a background thread is throttled to ~0% (see CLAUDE.md / DECISIONS.md #5).
-    Builds its own Slack client so it doesn't depend on a Bolt handler context.
     """
     client = WebClient(token=_slack_token)
 
@@ -480,18 +616,8 @@ def _run_manual_analysis(
             _reply("❌ eBay Scout is still waking up — try replying again in ~30s.")
             return
 
-        try:
-            # Download image with Slack auth header
-            import requests as req
-            resp = req.get(
-                file_url,
-                headers={"Authorization": f"Bearer {_slack_token}"},
-                timeout=20,
-            )
-            resp.raise_for_status()
-            image_bytes = resp.content
-        except Exception as exc:
-            print(f"!!! MANUAL: Failed to download uploaded image: {exc}", flush=True)
+        image_bytes = _download_slack_image(file_url)
+        if image_bytes is None:
             _reply("❌ Couldn't download the image — please try uploading again.")
             return
 
@@ -508,13 +634,21 @@ def _run_manual_analysis(
             _reply("No buttons detected in the image. Try a clearer or closer shot.")
             return
 
+        _restrict_txt = ("none" if not restrict_years
+                         else f"{min(restrict_years)}-{max(restrict_years)}")
+        print(
+            f">>> ERA: manual match era={era_label or 'all'} restrict={_restrict_txt} "
+            f"count={button_count} crops={len(crops)}",
+            flush=True,
+        )
+
         # Match each crop
         matched: dict[tuple, dict] = {}   # (year, slogan) → enriched match
         unmatched_count = 0
 
         from . import clip_matcher as _cm   # lazy import (already loaded if CLIP ready)
         try:
-            batch_results = _cm.match_crops_batch(crops)
+            batch_results = _cm.match_crops_batch(crops, restrict_years=restrict_years)
         except Exception as exc:
             print(f"!!! MANUAL: match_crops_batch error: {exc}", flush=True)
             batch_results = [None] * len(crops)
@@ -582,16 +716,9 @@ def internal_manual_analysis():
 
     data = request.get_json(silent=True) or {}
     try:
-        _run_manual_analysis(
-            file_url=data["file_url"],
-            channel_id=data["channel_id"],
-            thread_ts=data["thread_ts"],
-            asking_price=float(data["asking_price"]),
-            source=data.get("source", "Unknown"),
-            button_count=data.get("button_count"),
-        )
+        _run_internal(data)
     except Exception as exc:
-        print(f"!!! MANUAL: internal analysis failed: {exc}", flush=True)
+        print(f"!!! MANUAL: internal {data.get('mode', 'full')} failed: {exc}", flush=True)
         traceback.print_exc()
         return jsonify({"status": "error", "error": str(exc)}), 500
 

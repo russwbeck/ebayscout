@@ -15,7 +15,54 @@ from ebayscout.utils import (
     extract_years,
     needed_years,
     build_year_queries,
+    era_year_set,
+    parse_era,
+    parse_confirmation,
 )
+
+_ERAS = {
+    "Central Counties": (1972, 1983),
+    "Mellon":           (1984, 2001),
+    "Citizens":         (2001, 2026),
+}
+
+
+class TestEraHelpers:
+    def test_era_year_set_range(self):
+        assert era_year_set("Central Counties", _ERAS) == set(range(1972, 1984))
+        assert era_year_set("Mellon", _ERAS) == set(range(1984, 2002))
+
+    def test_era_year_set_all_and_unknown_are_empty(self):
+        assert era_year_set("all", _ERAS) == set()
+        assert era_year_set("", _ERAS) == set()
+        assert era_year_set("Nonsense", _ERAS) == set()
+
+    def test_parse_era_aliases(self):
+        assert parse_era("ccb") == "Central Counties"
+        assert parse_era("central counties lot") == "Central Counties"
+        assert parse_era("looks like mellon") == "Mellon"
+        assert parse_era("citizens era") == "Citizens"
+
+    def test_parse_era_all_opt_out(self):
+        assert parse_era("all") == "all"
+        assert parse_era("any era") == "all"
+
+    def test_parse_era_none(self):
+        assert parse_era("go") is None
+        assert parse_era("42") is None
+
+    def test_parse_confirmation_go(self):
+        assert parse_confirmation("go") == (None, None)
+
+    def test_parse_confirmation_count_only(self):
+        assert parse_confirmation("42") == (42, None)
+
+    def test_parse_confirmation_era_only(self):
+        assert parse_confirmation("mellon") == (None, "Mellon")
+
+    def test_parse_confirmation_both(self):
+        assert parse_confirmation("mellon 42") == (42, "Mellon")
+        assert parse_confirmation("all 54") == (54, "all")
 
 
 class TestNeededYears:
