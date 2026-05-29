@@ -246,6 +246,38 @@ After a successful smoke test:
 
 ---
 
+## One-time backfill (re-evaluate existing inventory)
+
+The scan only processes listings not already in `seen_items.json`. After a
+logic change (e.g. the needed-button detector), use the one-shot backfill to
+re-evaluate the currently-visible inventory. Note: the Browse API returns only
+the newest ~100 results per query, so this re-checks the *current* search
+windows, not all of eBay's history.
+
+```bash
+SERVICE_URL=$(gcloud run services describe ebay-scout \
+  --region=us-east1 --format='value(status.url)')
+TOKEN="Authorization: Bearer $(gcloud auth print-identity-token)"
+
+# 1. PREVIEW — re-evaluate everything visible, post nothing, write nothing.
+#    Check logs for ">>> TITLE: [needed/low-conf/rejected <score>]" lines and
+#    "[DRY RUN] Would post needed-buttons alert" to gauge volume, then tune
+#    config.NEEDED_MATCH_THRESHOLD if there are too many/few candidates.
+curl -X POST "${SERVICE_URL}/run-scan?ignore_seen=1&dry_run=1" -H "$TOKEN"
+
+# 2. LIVE backfill — once the threshold feels right. Posts real alerts and
+#    marks everything seen, so daily scans are forward-only afterward.
+curl -X POST "${SERVICE_URL}/run-scan?ignore_seen=1" -H "$TOKEN"
+```
+
+`ignore_seen` still checkpoints `seen_items.json` every 50 listings, so if the
+30-min request timeout is hit the backfill resumes on the next call. The daily
+Cloud Scheduler trigger sends neither parameter, so normal runs stay
+forward-only. No redeploy is needed — `dry_run=1` overrides `config.DRY_RUN`
+for that single request.
+
+---
+
 ## Updating the Excluded Sellers List
 
 Edit `ebayscout/config.py`:
