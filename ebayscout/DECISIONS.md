@@ -427,11 +427,12 @@ thread — one place that calls the lock-guarded, idempotent `clip_matcher.init(
 and flips `vectors_loaded`. A `_wake_lock` / `_wake_in_flight` flag coalesces
 concurrent wakes so the channel doesn't get duplicate "ready" posts.
 
-Infra note: we deliberately stayed **scale-to-zero** (cheapest) rather than
-pinning a warm instance. The `/scout` command + self-healing upload absorb the
-cold-start cost. `cloudbuild.yaml` / `DEPLOY.md` document the optional
-`--min-instances=1 --no-cpu-throttling` upgrade for instant uploads at higher
-cost. `--max-instances=1` must stay (#17 Bug 3).
+Infra note: the service stays **scale-to-zero** (cheapest). `--no-cpu-throttling`
+and a `--min-instances=1` warm instance are **off budget — do not add them**
+(see CLAUDE.md). The `/scout` command + self-healing upload absorb the cold-start
+cost; the way to keep CPU for heavy work is to run it inside an in-flight HTTP
+request (the `/run-scan` pattern), never always-on CPU. `--max-instances=1` must
+stay (#17 Bug 3).
 
 Setup requirement: the `/scout` command must be registered in the Slack app
 config (Slash Commands → Request URL `…/slack/events`) and the app reinstalled —
@@ -528,6 +529,56 @@ Mechanics:
 Why not fold the crawl into the daily scan: it's heavier (more API calls), and
 the daily 9am job should stay light. Why only needed years: searching years you
 don't collect is wasted quota.
+
+---
+
+## 23. Manual analysis was CPU-throttled (~19 min); moved into an in-flight request
+
+A real test of `/scout` + upload (54-button lot) took **~19 minutes** to return.
+CLIP was already warm ("Got it!" posts only when `vectors_loaded`), so the delay
+was throttled inference, not model loading.
+
+Root cause: `handle_message` acked the Slack event and ran `_run_manual_analysis`
+in a **daemon thread**. The moment the event handler returns, no HTTP request is
+in flight, so Cloud Run throttles the container's CPU to ~0%. The `_keep_cpu_hot`
+spinner (#5) keeps one core *nominally* ticking but does **not** restore full
+CPU — only an active inbound request does. So the encode crawled.
+
+This is exactly the pattern the `buttonmatcher` worker avoids: it runs the encode
+**synchronously inside an HTTP request** (`/internal/match`), keeping the request
+open so Cloud Run guarantees CPU.
+
+Fix (ported here): `handle_message` now fires a self-HTTP-POST to a new
+`/internal/manual-analysis` route (`_dispatch_manual_analysis`) and the analysis
+runs **synchronously inside that request** — same trick that already makes
+`/run-scan` reliable. The Slack event handler returns immediately (3s ack
+preserved); the dispatch runs in a daemon thread that only waits on the POST,
+while the *work* runs in the in-flight internal request with full CPU.
+
+Details:
+- The internal route is guarded by a per-instance random token
+  (`_INTERNAL_TOKEN`); since `workers=1` + `--max-instances=1`, caller and
+  handler share the process so the token always matches, and it's unguessable to
+  outsiders (the route is publicly reachable, like `/slack/events`).
+- `config.SERVICE_BASE_URL` (env-overridable) is the self-call target — must be
+  the **external HTTPS URL**. A `localhost` call bypasses the load balancer and
+  does **not** prevent throttling (per `CLOUD_RUN_CPU_THROTTLE_FIX.md`).
+- Inline fallback is **conditional, never a blind retry**: run inline only when
+  the work definitely didn't start — a connection error (never reached the
+  server) or a non-200 rejection. On a **read timeout the server-side analysis
+  is still running**, so `_dispatch_manual_analysis` does NOT re-run it (that
+  would double-post). Dispatch thread is `daemon=False` so it outlives the
+  webhook handler; a 0.3s pause lets the ack request release its worker first;
+  POST timeout is 1790s (< Cloud Run's 1800).
+- **Not** fixed with `--no-cpu-throttling` — that's off budget (CLAUDE.md). The
+  in-request pattern keeps us scale-to-zero.
+
+Separately, ebayscout's CLIP is full-precision eager PyTorch (no ONNX, and
+`quantize_dynamic` was removed in #12), so it is inherently slower per-encode
+than the worker — but that's minutes-at-worst, not the 19 we saw. We do pin the
+PyTorch thread budget (`torch.set_num_threads`/`set_num_interop_threads`,
+`OMP_NUM_THREADS=2` to match `--cpu=2`) to avoid over-subscription thrash
+(`CLOUD_RUN_CPU_THROTTLE_FIX.md` Part 5).
 
 ---
 

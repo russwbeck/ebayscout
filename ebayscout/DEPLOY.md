@@ -144,25 +144,27 @@ gcloud run deploy ebay-scout \
   --service-account=${SA}
 ```
 
-> **`--timeout=1800` matters.** `/run-scan` runs the scan **synchronously** and
-> returns 200 only when it finishes — this is what keeps Cloud Run's CPU
-> allocated for the whole scan (a background thread gets throttled to ~0%).
-> The request timeout (max 3600s) must comfortably exceed a full scan.
+> **`--timeout=1800` matters.** `/run-scan` **and** `/internal/manual-analysis`
+> run their work **synchronously** inside the request and return 200 only when
+> finished — this is what keeps Cloud Run's CPU allocated for the whole encode
+> (a background thread gets throttled to ~0%). The request timeout (max 3600s)
+> must comfortably exceed the work.
+
+> **`SERVICE_BASE_URL`** (`config.py`, env-overridable) must match this service's
+> own URL — the manual-upload flow self-POSTs to `<SERVICE_BASE_URL>/internal/
+> manual-analysis` to run the analysis in an in-flight request. The default is
+> the current URL; if you rename/relocate the service, set the `SERVICE_BASE_URL`
+> env var on the deploy.
 
 > Subsequent deploys are handled automatically by the Cloud Build trigger
 > (see below) — you only run this manually for the first deploy.
 
-> **Optional — eliminate the cold-start wait (higher cost).** By default the
-> service scales to zero, so the first upload after idle (or right after a
-> deploy) costs a ~60s CLIP wake (handled by `/scout` and the self-healing
-> upload flow). To make it instant instead, add these two flags to the
-> `gcloud run deploy` args here **and** in `cloudbuild.yaml`:
-> ```
->   --min-instances=1        # keep one container warm (no scale-to-zero)
->   --no-cpu-throttling      # let the background CLIP loader finish between requests
-> ```
-> Trade-off: `--min-instances=1` bills for one always-on 4Gi/2-vCPU instance
-> (well above the ~$1/month idle cost). Keep `--max-instances=1` either way —
+> **Budget constraint — the service stays scale-to-zero.** `--no-cpu-throttling`
+> and `--min-instances=1` (an always-on warm instance) are **off budget — do not
+> add them.** The first upload after idle costs a ~60s CLIP wake, which is
+> handled by `/scout` and the self-healing upload flow. The right way to keep CPU
+> allocated for heavy work is to run it **inside an in-flight HTTP request** (as
+> `/run-scan` does), not by paying for always-on CPU. Keep `--max-instances=1` —
 > manual `pending_scans` state lives in a single container's memory.
 
 ---

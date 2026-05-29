@@ -26,6 +26,17 @@ from google.cloud import storage
 
 from . import config
 
+# Pin PyTorch's CPU thread budget so it doesn't over-subscribe the container's
+# vCPUs and trip Cloud Run's throttle heuristic (CLOUD_RUN_CPU_THROTTLE_FIX.md,
+# Part 5). Default 2 matches the deploy's --cpu=2; override via OMP_NUM_THREADS.
+# Guarded: set_num_interop_threads must run before any parallel work and raises
+# if called twice — harmless to skip if torch was already engaged.
+try:
+    torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "2")))
+    torch.set_num_interop_threads(1)
+except Exception as _exc:   # pragma: no cover
+    print(f">>> CLIP: thread pin skipped ({_exc})", flush=True)
+
 # ---------------------------------------------------------------------------
 # Module-level state (populated by init())
 # ---------------------------------------------------------------------------
