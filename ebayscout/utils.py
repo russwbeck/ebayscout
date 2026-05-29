@@ -29,6 +29,46 @@ def extract_years(title: str) -> set[int]:
     return {int(m.group(0)) for m in _YEAR_RE.finditer(title)}
 
 
+def needed_years(buy_rules: dict) -> set[int]:
+    """
+    Years that still have at least one needed button (amount_needed > 0).
+
+    Drives the year-augmented deep crawl: we only issue year-specific eBay
+    searches for years the collector is actually chasing, skipping the many
+    empty years. buy_rules is keyed by (year_str, slogan) with an
+    "amount_needed" string value (see sheets_client.load_buy_rules).
+    """
+    years: set[int] = set()
+    for key, rule in buy_rules.items():
+        year = key[0] if isinstance(key, (tuple, list)) else key
+        try:
+            amount = int((rule or {}).get("amount_needed", 0) or 0)
+        except (ValueError, TypeError):
+            amount = 0
+        if amount <= 0:
+            continue
+        try:
+            years.add(int(str(year).strip()))
+        except (ValueError, TypeError):
+            continue
+    return years
+
+
+def build_year_queries(base_terms: list[str], years) -> list[tuple[str, int]]:
+    """
+    Build year-augmented search queries: one (query, year) pair per
+    base_term × year, e.g. ("Penn State button", 1982) → "Penn State button 1982".
+
+    Returned in ascending year order (then base-term order) for deterministic,
+    log-friendly crawling. Empty if either input is empty.
+    """
+    return [
+        (f"{term} {year}", year)
+        for year in sorted(set(years))
+        for term in base_terms
+    ]
+
+
 def parse_price_source(text: str) -> tuple[float | None, str, int | None]:
     """
     Parse a user reply in the form "$25.00 | Facebook Marketplace" or

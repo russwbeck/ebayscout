@@ -277,6 +277,25 @@ Cloud Scheduler trigger sends neither parameter, so normal runs stay
 forward-only. No redeploy is needed — `dry_run=1` overrides `config.DRY_RUN`
 for that single request.
 
+### Needed-year deep crawl (`?year_crawl=1`)
+
+Adds `&year_crawl=1` to source listings from year-augmented searches for your
+**needed** years (`amount_needed > 0` in the sheet) instead of the general
+queries — reaching old/deep inventory the general newest-100 windows miss. Each
+result is matched restricted to its search year. Same preview→live flow:
+
+```bash
+# Preview the year crawl (no alerts, nothing written; digest to Slack):
+curl -X POST "${SERVICE_URL}/run-scan?year_crawl=1&dry_run=1" -H "$TOKEN"
+
+# Live year crawl (add &ignore_seen=1 to re-check listings already seen):
+curl -X POST "${SERVICE_URL}/run-scan?year_crawl=1" -H "$TOKEN"
+```
+
+Volume scales with (needed years × ~12 base terms), so it's an on-demand /
+periodic job, not part of the daily scan. Cloud Scheduler never sends
+`year_crawl`, so the 9am run stays on the light general queries.
+
 ---
 
 ## Updating the Excluded Sellers List

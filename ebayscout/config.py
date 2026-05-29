@@ -146,6 +146,16 @@ EBAY_SEARCH_QUERIES: list[str] = (
 PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
 # Produces 4 queries: "PSU button", "PSU pin", "PSU badge", "PSU pinback"
 
+# --- Year-augmented deep-crawl terms (on-demand /run-scan?year_crawl=1) ---
+# Base terms that get a year appended (e.g. "Penn State button 1982") for each
+# needed year. "Central Counties Bank" is omitted — it's yearless and covered by
+# the general pass. PSU terms run category-restricted like the general scan.
+YEAR_CRAWL_TERMS: list[str] = (
+    [f"Penn State {btn}" for btn in BUTTON_TYPES]
+    + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
+)
+YEAR_CRAWL_PSU_TERMS: list[str] = list(PSU_SEARCH_QUERIES)
+
 # --- Dry-run mode (set True for smoke testing) ---
 # When True: the scan runs end-to-end but fires no real alerts and writes
 # nothing to GCS (no seen_items.json, no scan_log.jsonl) — it logs "[DRY RUN]"

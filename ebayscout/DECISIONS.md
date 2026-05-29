@@ -489,11 +489,53 @@ need it.
 
 ---
 
+## 22. Year-aware matching + needed-year deep crawl
+
+The matcher's most error-prone step is **choosing the year** (the 0.00-scores
+saga in #12, and the 0.697 "Gopher Broke" near-miss where 2003 lost to
+2002/2006). If the year is known up front, matching collapses to "confirm it's a
+button + pick the best slogan *within that year*" — small and accurate.
+
+Two independent improvements:
+
+**(A) Title-year restriction (free, in every scan).** When a listing's title
+names exactly one year that exists in the reference data, matching is restricted
+to that year (`match_crops_batch(restrict_years={year})`). The hook already
+existed — `_score_slogans` takes `allowed_years` — so this is wiring, not new
+scoring. Ambiguous/zero-year titles fall back to the full matcher.
+
+**(B) Needed-year deep crawl (on-demand).** Each eBay query returns only the
+**newest ~100** of its keyword bucket (no deep pagination — #6), so older
+needed-year buttons are invisible to the general queries. A query like
+`Penn State button 1982` returns the newest ~100 of a *tiny* bucket — usually
+*all* of it, including old listings — and matches eBay's title + item-specifics
+index, not just the title text we parse. This is the only thing year-searching
+adds over title-triggering, and it's the point: coverage of deep inventory.
+
+Mechanics:
+- Years come from `utils.needed_years(buy_rules)` — only years with
+  `amount_needed > 0`, so the many empty years cost zero calls.
+- `utils.build_year_queries(terms, years)` → `("Penn State button 1982", 1982)`
+  pairs; `ebay_client.find_year_augmented_listings` runs them and tags each
+  listing with `search_year`. `config.YEAR_CRAWL_TERMS` / `YEAR_CRAWL_PSU_TERMS`
+  define the base terms (Central Counties Bank omitted — yearless, general pass
+  covers it; PSU terms stay category-restricted).
+- Triggered by `/run-scan?year_crawl=1` (Cloud Scheduler never sends it).
+  Composes with `?ignore_seen=1` / `?dry_run=1`, so the guarded
+  preview→tune→live flow and the Slack digest from #20/backfill all apply.
+- Each crawl result is matched with `restrict_years={search_year}`.
+
+Why not fold the crawl into the daily scan: it's heavier (more API calls), and
+the daily 9am job should stay light. Why only needed years: searching years you
+don't collect is wasted quota.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| CLIP accuracy on multi-button photos | Mitigated (#21) | Scan no longer needs precise segmentation — it flags *needed-button candidates* (recall-biased, multi-photo) for human `/scout` review rather than auto-valuing. Tune `NEEDED_MATCH_THRESHOLD` from `SCAN_LOG_BLOB` data. |
+| CLIP accuracy on multi-button photos | Mitigated (#21, #22) | Scan flags *needed-button candidates* (recall-biased, multi-photo) for human `/scout` review rather than auto-valuing. Year-aware matching (#22) removes most year-confusion when the year is known from the title or search query. Tune `NEEDED_MATCH_THRESHOLD` from `SCAN_LOG_BLOB` data. |
 | kling24toys seller filter | Open | Listed in `EXCLUDED_SELLERS` but need to confirm actual eBay username matches after new scan logs show seller names in brackets. |
 | Manual upload "still loading" loop | Fixed (#20) | `/scout` slash command + self-healing `handle_file_shared`. Needs the `/scout` command registered in Slack and validated in production. |
 | Automated undervalued-lot valuation | Deferred (#21) | `ENABLE_UNDERVALUED_ALERTS=False`. Revisit once `scan_log.jsonl` shows whether per-lot valuation from photos is trustworthy. |
