@@ -18,6 +18,7 @@ from ebayscout.utils import (
     era_year_set,
     parse_era,
     parse_confirmation,
+    other_era,
 )
 
 _ERAS = {
@@ -63,6 +64,19 @@ class TestEraHelpers:
     def test_parse_confirmation_both(self):
         assert parse_confirmation("mellon 42") == (42, "Mellon")
         assert parse_confirmation("all 54") == (54, "all")
+
+    def test_other_era_prefers_runner_up_vote(self):
+        # Runner-up by vote that isn't the era we used.
+        assert other_era("Central Counties",
+                          ["Central Counties", "Mellon", "Citizens"], _ERAS) == "Mellon"
+
+    def test_other_era_falls_back_to_next_defined(self):
+        # No useful ranking → first defined era that isn't the one used.
+        assert other_era("Central Counties", [], _ERAS) == "Mellon"
+        assert other_era("Mellon", [], _ERAS) == "Central Counties"
+
+    def test_other_era_none_when_only_one(self):
+        assert other_era("Only", ["Only"], {"Only": (1, 2)}) is None
 
 
 class TestNeededYears:

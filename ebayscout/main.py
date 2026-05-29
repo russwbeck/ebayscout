@@ -16,6 +16,7 @@ Two interaction flows:
 
 import contextlib
 import datetime
+import json
 import os
 import re
 import secrets
@@ -41,6 +42,7 @@ from .utils import (
     build_year_queries,
     era_year_set,
     parse_confirmation,
+    other_era,
 )
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
@@ -346,6 +348,7 @@ def handle_message(event, client):
                 "button_count":  final_count,
                 "restrict_years": restrict,
                 "era_label":     era_label,
+                "era_ranked":    scan.get("era_ranked", []),
             },),
             daemon=False,
         ).start()
@@ -446,6 +449,8 @@ def _run_internal(data: dict) -> None:
             button_count=data.get("button_count"),
             restrict_years=restrict,
             era_label=data.get("era_label"),
+            era_ranked=data.get("era_ranked", []),
+            feedback_round=bool(data.get("feedback_round")),
         )
 
 
@@ -554,11 +559,15 @@ def _run_manual_preview(
             print(f"!!! MANUAL: era guess failed: {exc}", flush=True)
             era_guess, detail = None, {}
 
+        # Eras ranked by vote (best first) — used to offer "the other era" later.
+        era_ranked = [e for e, _ in sorted(
+            detail.get("votes", {}).items(), key=lambda kv: kv[1], reverse=True)]
+
         # Heavy, greppable era logging — filter Cloud Logging for "ERA:".
         print(
             f">>> ERA: preview guess={era_guess} votes={detail.get('votes')} "
-            f"sampled={detail.get('sampled')}/{detail.get('total')} detected_count={count} "
-            f"price=${asking_price:.2f} src={source}",
+            f"ranked={era_ranked} sampled={detail.get('sampled')}/{detail.get('total')} "
+            f"detected_count={count} price=${asking_price:.2f} src={source}",
             flush=True,
         )
         for i, pc in enumerate(detail.get("per_crop", [])):
@@ -573,6 +582,7 @@ def _run_manual_preview(
             "source":         source,
             "detected_count": count,
             "era_guess":      era_guess,
+            "era_ranked":     era_ranked,
         }
 
         era_txt = f"*{era_guess}*" if era_guess else "_uncertain_"
@@ -592,10 +602,14 @@ def _run_manual_analysis(
     button_count: int | None = None,
     restrict_years: set[int] | None = None,
     era_label:    str | None = None,
+    era_ranked:   list | None = None,
+    feedback_round: bool = False,
 ) -> None:
     """
     Stage 2: download, detect, match (optionally year/era-restricted), post the
-    lot analysis.
+    lot analysis. When an era was applied (and this isn't itself a re-run), also
+    posts a "Did I identify the era correctly? Yes/No" prompt — No re-runs with
+    the other era; Yes just records positive feedback.
 
     Intended to run inside the /internal/manual-analysis HTTP request (not a
     background thread) so Cloud Run keeps full CPU allocated for the CLIP encode
@@ -687,6 +701,112 @@ def _run_manual_analysis(
             needed=needed,
             unmatched_count=unmatched_count,
         ))
+
+        # Era feedback prompt — only when a specific era was applied and this
+        # isn't already a re-run (avoids loops). Posted as a separate message so
+        # the (possibly long) analysis text isn't constrained by block limits.
+        if era_label and era_label.lower() != "all" and not feedback_round:
+            alt_era = other_era(era_label, era_ranked or [], config.BUTTON_ERAS)
+            _post_era_feedback(client, channel_id, thread_ts, {
+                "file_url":     file_url,
+                "channel_id":   channel_id,
+                "thread_ts":    thread_ts,
+                "asking_price": asking_price,
+                "source":       source,
+                "button_count": button_count,
+                "era_used":     era_label,
+                "alt_era":      alt_era,
+            })
+
+
+def _post_era_feedback(client, channel_id: str, thread_ts: str, ctx: dict) -> None:
+    """Post the 'Did I identify the era correctly?' Yes/No prompt."""
+    value = json.dumps(ctx)
+    elements = [{
+        "type": "button",
+        "text": {"type": "plain_text", "text": "✅ Yes"},
+        "action_id": "era_feedback_yes",
+        "value": value,
+    }]
+    if ctx.get("alt_era"):
+        elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": f"❌ No — try {ctx['alt_era']}"},
+            "action_id": "era_feedback_no",
+            "style": "danger",
+            "value": value,
+        })
+    client.chat_postMessage(
+        channel=channel_id,
+        thread_ts=thread_ts,
+        text=f"Did I identify the era correctly? (used *{ctx['era_used']}*)",
+        blocks=[
+            {"type": "section",
+             "text": {"type": "mrkdwn",
+                      "text": f"Did I identify the era correctly? (used *{ctx['era_used']}*)"}},
+            {"type": "actions", "elements": elements},
+        ],
+    )
+
+
+@bolt_app.action("era_feedback_yes")
+def handle_era_feedback_yes(ack, body, action, client):
+    """User confirmed the era — record positive labelled feedback, no re-run."""
+    ack()
+    try:
+        ctx = json.loads(action.get("value") or "{}")
+    except Exception:
+        ctx = {}
+    print(f">>> ERA: feedback CORRECT era={ctx.get('era_used')} "
+          f"src={ctx.get('source')} count={ctx.get('button_count')}", flush=True)
+    _resolve_feedback_message(body, client, f"✅ Era confirmed: *{ctx.get('era_used')}* — thanks!")
+
+
+@bolt_app.action("era_feedback_no")
+def handle_era_feedback_no(ack, body, action, client):
+    """User said the era was wrong — re-run the analysis with the other era."""
+    ack()
+    try:
+        ctx = json.loads(action.get("value") or "{}")
+    except Exception:
+        ctx = {}
+    alt = ctx.get("alt_era")
+    print(f">>> ERA: feedback WRONG era={ctx.get('era_used')} -> re-running as {alt} "
+          f"src={ctx.get('source')} count={ctx.get('button_count')}", flush=True)
+    if not alt:
+        _resolve_feedback_message(body, client, "⚠️ No other era to try — reply with one (`mellon` / `citizens` / `all`).")
+        return
+    _resolve_feedback_message(body, client, f"🔁 Re-running as *{alt}*…")
+    threading.Thread(
+        target=_dispatch_internal,
+        args=({
+            "mode":          "full",
+            "file_url":      ctx["file_url"],
+            "channel_id":    ctx["channel_id"],
+            "thread_ts":     ctx["thread_ts"],
+            "asking_price":  ctx["asking_price"],
+            "source":        ctx.get("source", "Unknown"),
+            "button_count":  ctx.get("button_count"),
+            "restrict_years": sorted(era_year_set(alt, config.BUTTON_ERAS)),
+            "era_label":     alt,
+            "era_ranked":    [],
+            "feedback_round": True,   # the re-run won't post another Yes/No
+        },),
+        daemon=False,
+    ).start()
+
+
+def _resolve_feedback_message(body, client, text: str) -> None:
+    """Replace the Yes/No prompt with a resolution note (removes the buttons)."""
+    try:
+        container = body.get("container", {}) or {}
+        channel = (body.get("channel", {}) or {}).get("id") or container.get("channel_id")
+        ts = container.get("message_ts")
+        if channel and ts:
+            client.chat_update(channel=channel, ts=ts, text=text, blocks=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": text}}])
+    except Exception as exc:
+        print(f"!!! ERA: could not update feedback message: {exc}", flush=True)
 
 
 # ---------------------------------------------------------------------------

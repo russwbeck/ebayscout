@@ -90,6 +90,21 @@ def parse_era(text: str) -> str | None:
     return None
 
 
+def other_era(era_used: str | None, era_ranked: list, eras: dict) -> str | None:
+    """
+    The best alternative era to try on a 'No' — the runner-up by vote
+    (era_ranked), else the next defined era that isn't the one we used.
+    Returns None if there is no other era.
+    """
+    for era in (era_ranked or []):
+        if era and era != era_used:
+            return era
+    for era in eras:
+        if era != era_used:
+            return era
+    return None
+
+
 def parse_confirmation(text: str) -> tuple[int | None, str | None]:
     """
     Parse a confirmation reply at the count/era confirm step.

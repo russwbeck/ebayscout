@@ -611,6 +611,17 @@ Filter Cloud Logging for `ERA:` to mine trends and tune over time. Config:
 `BUTTON_ERAS`, `ENABLE_ERA_DETECTION`, `ERA_SAMPLE_LIMIT`. Both preview and full
 run inside the in-flight internal request (#23) so neither is throttled.
 
+**Post-result era feedback (closes the loop + labels the data).** When a
+specific era was applied, the analysis is followed by a *"Did I identify the era
+correctly? ✅ Yes / ❌ No — try {other era}"* prompt (Slack interactive buttons →
+`era_feedback_yes` / `era_feedback_no` actions). **Yes** logs positive labelled
+feedback and resolves the message (no re-run). **No** logs the miss and re-runs
+the analysis restricted to "the other era" (`utils.other_era` — runner-up by
+vote, else the next defined era); the re-run carries `feedback_round=True` so it
+doesn't loop. Both outcomes emit `ERA: feedback …` log lines — gold-standard
+labels for evaluating the classifier. Requires Slack **Interactivity** enabled
+with the Request URL set to `/slack/events` (Bolt routes actions through it).
+
 ---
 
 ## Remaining known issues

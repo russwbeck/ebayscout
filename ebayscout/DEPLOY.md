@@ -54,8 +54,11 @@ is two steps: upload a photo → reply `$price | source` → the bot replies
    - Command: `/scout`
    - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`
    - Short description: `Wake eBay Scout for manual photo analysis`
-8. **Reinstall to Workspace** (Slack requires a reinstall whenever event
-   subscriptions or slash commands change).
+8. **Interactivity & Shortcuts → Enable**
+   - Request URL: `https://ebay-scout-404960106109.us-east1.run.app/slack/events`
+   - Powers the "Did I identify the era correctly? ✅/❌" buttons on results.
+9. **Reinstall to Workspace** (Slack requires a reinstall whenever event
+   subscriptions, slash commands, or interactivity change).
 
 > **Why `/scout` exists.** CLIP (~30-60s to load) hydrates in a background
 > thread, but Cloud Run throttles CPU to ~0% between requests, so on a cold/idle
