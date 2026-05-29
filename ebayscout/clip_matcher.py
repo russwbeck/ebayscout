@@ -93,10 +93,16 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
         print(">>> CLIP: Initialization complete.", flush=True)
 
 
+def reference_years() -> set[int]:
+    """Years present in the loaded text reference data (empty before init())."""
+    return {int(y) for y in _text_years}
+
+
 def match_crops_batch(
     pil_images: list[Image.Image],
     threshold: float | None = None,
     top_k: int = 1,
+    restrict_years: set[int] | None = None,
 ) -> list:
     """
     Match a list of PIL.Image crops in a single model forward pass.
@@ -111,6 +117,10 @@ def match_crops_batch(
     (best first) whose score >= threshold. Used by the needed-button scan to
     inspect 2nd/3rd guesses on blended multi-button photos. The list is empty
     when no candidate clears the threshold.
+
+    restrict_years: when set, only those years are considered as match
+    candidates — used when the year is already known (from the search query or
+    a single title year) so scoring collapses to "best slogan within that year".
     """
     if threshold is None:
         threshold = config.CONFIDENCE_THRESHOLD
@@ -131,29 +141,34 @@ def match_crops_batch(
         image_sims = (vec @ _ref_vectors.T).cpu().numpy()[0]
         text_sims  = (vec @ _text_features.T).cpu().numpy()[0]
         if top_k == 1:
-            results.append(_score_best_match(image_sims, text_sims, threshold))
+            results.append(_score_best_match(image_sims, text_sims, threshold, restrict_years))
         else:
-            results.append(_score_top_matches(image_sims, text_sims, threshold, top_k))
+            results.append(_score_top_matches(image_sims, text_sims, threshold, top_k, restrict_years))
     return results
 
 
 def match_crop(
     pil_image: Image.Image,
     threshold: float | None = None,
+    restrict_years: set[int] | None = None,
 ) -> dict | None:
     """Match a single crop. Prefer match_crops_batch() when processing a list."""
-    results = match_crops_batch([pil_image], threshold)
+    results = match_crops_batch([pil_image], threshold, restrict_years=restrict_years)
     return results[0] if results else None
 
 
 def _ranked_matches(
     image_sims: np.ndarray,
     text_sims:  np.ndarray,
+    restrict_years: set[int] | None = None,
 ) -> list[dict]:
     """
     Rank candidate (year, slogan) matches for one encoded crop, best first.
     Returns the raw _score_slogans output (year as int); callers apply the
     threshold and format. Empty list if no candidate years could be scored.
+
+    restrict_years: when set, only those years are considered (the year is
+    already known from the search query or a single title year).
     """
 
     # Build year → best image score map from reference vectors
@@ -162,6 +177,8 @@ def _ranked_matches(
         try:
             year = int(label) if isinstance(label, (int, float)) else int(str(label).split()[0])
         except (ValueError, IndexError, AttributeError):
+            continue
+        if restrict_years is not None and year not in restrict_years:
             continue
         score = float(image_sims[i])
         if year not in year_image_scores or score > year_image_scores[year]:
@@ -213,9 +230,10 @@ def _score_best_match(
     image_sims: np.ndarray,
     text_sims:  np.ndarray,
     threshold:  float,
+    restrict_years: set[int] | None = None,
 ) -> dict | None:
     """Score one encoded crop and return the best match dict, or None."""
-    results = _ranked_matches(image_sims, text_sims)
+    results = _ranked_matches(image_sims, text_sims, restrict_years)
     if not results or results[0]["overall"] < threshold:
         return None
     return _format_match(results[0])
@@ -226,9 +244,10 @@ def _score_top_matches(
     text_sims:  np.ndarray,
     threshold:  float,
     top_k:      int,
+    restrict_years: set[int] | None = None,
 ) -> list[dict]:
     """Score one encoded crop and return up to top_k match dicts >= threshold."""
-    results = _ranked_matches(image_sims, text_sims)
+    results = _ranked_matches(image_sims, text_sims, restrict_years)
     return [
         _format_match(r) for r in results[:top_k]
         if r["overall"] >= threshold

@@ -233,3 +233,23 @@ class TestMatchCrop:
         img = Image.new("RGB", (64, 64))
         topk = clip_matcher.match_crops_batch([img], threshold=1.01, top_k=3)
         assert topk == [[]]
+
+    def test_restrict_years_excludes_other_years(self):
+        # Minimal state only has year 1977. Restricting to a year with no
+        # reference data yields no candidates; restricting to 1977 still matches.
+        self._setup_minimal_state()
+        img = Image.new("RGB", (64, 64))
+
+        none_year = clip_matcher.match_crops_batch(
+            [img], threshold=0.0, top_k=3, restrict_years={1999})
+        assert none_year == [[]]
+
+        right_year = clip_matcher.match_crops_batch(
+            [img], threshold=0.0, top_k=3, restrict_years={1977})
+        assert len(right_year) == 1
+        for m in right_year[0]:
+            assert m["year"] == "1977"
+
+    def test_reference_years_reports_loaded_years(self):
+        self._setup_minimal_state()
+        assert clip_matcher.reference_years() == {1977}

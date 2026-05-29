@@ -30,7 +30,13 @@ from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
-from .utils import parse_price_source, format_manual_result, extract_years
+from .utils import (
+    parse_price_source,
+    format_manual_result,
+    extract_years,
+    needed_years,
+    build_year_queries,
+)
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
 # a missing .so or slow first-import doesn't kill the entire process at startup.
@@ -485,13 +491,17 @@ def run_scan():
     before it could finish. We load CLIP (and reload buy_rules if needed)
     synchronously here — the incoming request itself provides the CPU.
 
-    One-shot backfill params (manual curl only — Cloud Scheduler sends neither):
+    One-shot params (manual curl only — Cloud Scheduler sends none of these):
       ?ignore_seen=1  process every fetched listing regardless of seen_items
                       (re-evaluate currently-visible inventory under new logic);
                       still checkpoints seen so it's resumable + forward-only after.
       ?dry_run=1      override config.DRY_RUN for this run only (post nothing,
                       write nothing) — pair with ignore_seen to preview volume
                       and tune NEEDED_MATCH_THRESHOLD before going live.
+      ?year_crawl=1   source listings from year-augmented searches for needed
+                      years (amount_needed > 0) instead of the general queries,
+                      matching each result restricted to its search year. Reaches
+                      deep inventory the general newest-100 windows miss.
     """
     global buy_rules
 
@@ -499,6 +509,7 @@ def run_scan():
         return (v or "").strip().lower() in ("1", "true", "yes", "on")
 
     ignore_seen   = _truthy(request.args.get("ignore_seen"))
+    year_crawl    = _truthy(request.args.get("year_crawl"))
     dry_run_param = True if _truthy(request.args.get("dry_run")) else None  # None → use config
 
     if not vectors_loaded:
@@ -521,13 +532,14 @@ def run_scan():
         return jsonify({"status": "already running"}), 409
 
     try:
-        _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param)
+        _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param, year_crawl=year_crawl)
     finally:
         _scan_lock.release()
 
     return jsonify({
         "status":      "scan complete",
         "ignore_seen": ignore_seen,
+        "year_crawl":  year_crawl,
         "dry_run":     config.DRY_RUN if dry_run_param is None else dry_run_param,
     }), 200
 
@@ -715,7 +727,11 @@ def _scan_log_record(
     }
 
 
-def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> None:
+def _run_daily_scan(
+    ignore_seen: bool = False,
+    dry_run: bool | None = None,
+    year_crawl: bool = False,
+) -> None:
     """
     Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
     buy_rules and clip_matcher state rather than re-initialising.
@@ -725,14 +741,17 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
                  checkpointed so the run is resumable and later runs stay
                  forward-only.
     dry_run:     None → use config.DRY_RUN; True/False overrides it for this run.
+    year_crawl:  when True, source listings from year-augmented searches for
+                 needed years (eBay only) instead of the general queries; each
+                 result is matched restricted to its search year.
     """
     from . import ebay_client, seen_items as seen_store
 
     dry_run = config.DRY_RUN if dry_run is None else dry_run
 
     print(
-        f">>> SCAN: Daily scan starting (eBay + Etsy) "
-        f"[dry_run={dry_run}, ignore_seen={ignore_seen}]...",
+        f">>> SCAN: Daily scan starting "
+        f"[dry_run={dry_run}, ignore_seen={ignore_seen}, year_crawl={year_crawl}]...",
         flush=True,
     )
 
@@ -749,54 +768,86 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
 
     all_listings: list[dict] = []
 
-    if ebay_app_id and ebay_cert_id:
+    if year_crawl:
+        # --- Year-augmented needed-year deep crawl (eBay only) ---
+        years = needed_years(buy_rules)
+        if not years:
+            print(">>> SCAN: year_crawl requested but no needed years in buy_rules — exiting.",
+                  flush=True)
+            return
+        if not (ebay_app_id and ebay_cert_id):
+            print(">>> SCAN: year_crawl needs eBay credentials — exiting.", flush=True)
+            return
+        print(f">>> SCAN: Year crawl over {len(years)} needed years: "
+              f"{sorted(years)}", flush=True)
         try:
-            ebay_listings = ebay_client.find_all_listings(
+            all_listings.extend(ebay_client.find_year_augmented_listings(
                 client_id=ebay_app_id,
                 client_secret=ebay_cert_id,
-                queries=config.EBAY_SEARCH_QUERIES,
+                year_queries=build_year_queries(config.YEAR_CRAWL_TERMS, years),
                 excluded_sellers=config.EXCLUDED_SELLERS,
                 max_results=config.EBAY_MAX_RESULTS,
-            )
-            all_listings.extend(ebay_listings)
-            # PSU queries restricted to Sports Memorabilia to avoid electronics
-            psu_listings = ebay_client.find_all_listings(
+            ))
+            # PSU terms restricted to Sports Memorabilia, same as the general scan.
+            all_listings.extend(ebay_client.find_year_augmented_listings(
                 client_id=ebay_app_id,
                 client_secret=ebay_cert_id,
-                queries=config.PSU_SEARCH_QUERIES,
+                year_queries=build_year_queries(config.YEAR_CRAWL_PSU_TERMS, years),
                 excluded_sellers=config.EXCLUDED_SELLERS,
                 max_results=config.EBAY_MAX_RESULTS,
                 category_ids=config.SPORTS_MEMO_CATEGORY_ID,
-            )
-            all_listings.extend(psu_listings)
-            print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
-                  f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
+            ))
         except Exception as exc:
-            print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
+            print(f"!!! SCAN: year crawl query failed: {exc}", flush=True)
     else:
-        print(">>> SCAN: Skipping eBay (no EBAY_APP_ID / EBAY_CERT_ID).", flush=True)
+        if ebay_app_id and ebay_cert_id:
+            try:
+                ebay_listings = ebay_client.find_all_listings(
+                    client_id=ebay_app_id,
+                    client_secret=ebay_cert_id,
+                    queries=config.EBAY_SEARCH_QUERIES,
+                    excluded_sellers=config.EXCLUDED_SELLERS,
+                    max_results=config.EBAY_MAX_RESULTS,
+                )
+                all_listings.extend(ebay_listings)
+                # PSU queries restricted to Sports Memorabilia to avoid electronics
+                psu_listings = ebay_client.find_all_listings(
+                    client_id=ebay_app_id,
+                    client_secret=ebay_cert_id,
+                    queries=config.PSU_SEARCH_QUERIES,
+                    excluded_sellers=config.EXCLUDED_SELLERS,
+                    max_results=config.EBAY_MAX_RESULTS,
+                    category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+                )
+                all_listings.extend(psu_listings)
+                print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
+                      f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
+            except Exception as exc:
+                print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
+        else:
+            print(">>> SCAN: Skipping eBay (no EBAY_APP_ID / EBAY_CERT_ID).", flush=True)
 
-    # Etsy listings
-    try:
-        etsy_api_key = _get_secret("ETSY_API_KEY")
-    except Exception as exc:
-        print(f"!!! SCAN: ETSY_API_KEY not available — skipping Etsy: {exc}", flush=True)
-        etsy_api_key = None
-
-    if etsy_api_key:
+        # Etsy listings (general pass only — Etsy has no year-augmented crawl)
         try:
-            etsy_listings = etsy_client.find_all_listings(
-                api_key=etsy_api_key,
-                queries=config.EBAY_SEARCH_QUERIES,
-                excluded_sellers=config.ETSY_EXCLUDED_SELLERS,
-                max_results=config.EBAY_MAX_RESULTS,
-            )
-            all_listings.extend(etsy_listings)
-            print(f">>> SCAN: Etsy returned {len(etsy_listings)} listings.", flush=True)
+            etsy_api_key = _get_secret("ETSY_API_KEY")
         except Exception as exc:
-            print(f"!!! SCAN: Etsy query failed: {exc}", flush=True)
-    else:
-        print(">>> SCAN: Skipping Etsy (no ETSY_API_KEY).", flush=True)
+            print(f"!!! SCAN: ETSY_API_KEY not available — skipping Etsy: {exc}", flush=True)
+            etsy_api_key = None
+
+        if etsy_api_key:
+            try:
+                etsy_listings = etsy_client.find_all_listings(
+                    api_key=etsy_api_key,
+                    queries=config.EBAY_SEARCH_QUERIES,
+                    excluded_sellers=config.ETSY_EXCLUDED_SELLERS,
+                    max_results=config.EBAY_MAX_RESULTS,
+                )
+                all_listings.extend(etsy_listings)
+                print(f">>> SCAN: Etsy returned {len(etsy_listings)} listings.", flush=True)
+            except Exception as exc:
+                print(f"!!! SCAN: Etsy query failed: {exc}", flush=True)
+        else:
+            print(">>> SCAN: Skipping Etsy (no ETSY_API_KEY).", flush=True)
 
     if not all_listings:
         print(">>> SCAN: No listings retrieved from any source — exiting.", flush=True)
@@ -823,11 +874,26 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
     from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
 
+    ref_years = _cm.reference_years()  # known years; gates single-title-year restriction
+
     for listing in new_listings:
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
         title   = listing.get("title", "?")
         seller  = listing.get("seller", "")
+
+        # Decide which years matching may consider for this listing:
+        #   - year-crawl result → the search year it came from
+        #   - general result whose title names exactly one known year → that year
+        #   - otherwise → unrestricted (full matcher)
+        title_years_all = extract_years(title)
+        search_year     = listing.get("search_year")
+        if search_year:
+            restrict_years: set[int] | None = {int(search_year)}
+        elif len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
+            restrict_years = {next(iter(title_years_all))}
+        else:
+            restrict_years = None
 
         try:
             if item_id.startswith("etsy_"):
@@ -843,7 +909,7 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
             # when the listing looks promising (title names a year, or photo 1
             # already shows button-like signal). Keeps the scan from N× photo
             # downloads on every junk listing now that we score multiple photos.
-            title_years = extract_years(title)
+            title_years = title_years_all
 
             best_score_seen   = 0.0
             photos_processed  = 0
@@ -879,6 +945,7 @@ def _run_daily_scan(ignore_seen: bool = False, dry_run: bool | None = None) -> N
                         crops,
                         threshold=config.REJECTION_THRESHOLD,
                         top_k=config.NEEDED_MATCH_TOP_K,
+                        restrict_years=restrict_years,
                     )
                 except Exception as exc:
                     print(f"!!! SCAN: match_crops_batch failed: {exc}", flush=True)

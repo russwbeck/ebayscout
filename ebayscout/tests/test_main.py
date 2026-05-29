@@ -13,7 +13,53 @@ from ebayscout.utils import (
     format_manual_result,
     title_has_excluded_keyword,
     extract_years,
+    needed_years,
+    build_year_queries,
 )
+
+
+class TestNeededYears:
+    def _rules(self):
+        return {
+            ("1982", "We Are Number One"): {"amount_needed": "2"},
+            ("1982", "Other Slogan"):      {"amount_needed": "0"},
+            ("1995", "Beat Michigan"):     {"amount_needed": "1"},
+            ("2003", "Gopher Broke"):      {"amount_needed": ""},   # blank → 0
+            ("abcd", "Bad Year"):          {"amount_needed": "5"},  # unparseable year
+        }
+
+    def test_selects_only_positive_amounts(self):
+        assert needed_years(self._rules()) == {1982, 1995}
+
+    def test_empty_rules(self):
+        assert needed_years({}) == set()
+
+    def test_skips_unparseable_year_but_keeps_others(self):
+        # "abcd" is dropped silently; 1982/1995 still returned.
+        years = needed_years(self._rules())
+        assert 1982 in years and 1995 in years
+        assert all(isinstance(y, int) for y in years)
+
+
+class TestBuildYearQueries:
+    def test_term_year_product(self):
+        out = build_year_queries(["Penn State button", "PSU pin"], {1982})
+        assert ("Penn State button 1982", 1982) in out
+        assert ("PSU pin 1982", 1982) in out
+        assert len(out) == 2
+
+    def test_sorted_by_year(self):
+        out = build_year_queries(["X"], [1995, 1982, 1990])
+        years = [y for _q, y in out]
+        assert years == [1982, 1990, 1995]
+
+    def test_empty_inputs(self):
+        assert build_year_queries([], {1982}) == []
+        assert build_year_queries(["X"], []) == []
+
+    def test_query_string_format(self):
+        out = build_year_queries(["Nittany Lions badge"], {2001})
+        assert out == [("Nittany Lions badge 2001", 2001)]
 
 
 class TestExtractYears:
