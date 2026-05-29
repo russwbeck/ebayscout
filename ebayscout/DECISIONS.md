@@ -659,11 +659,52 @@ the daily 9am job is unchanged.
 
 ---
 
+## 26. Placeholder slogans demoted + the 12-button cap removed
+
+First real crawls (log mining) exposed two issues:
+
+**Placeholder slogans over-matched.** "Slogan Unknown N" rows exist for the buy
+logic / `/scout` valuation (some priced $100), but in the scan they over-matched
+in CLIP and inflated the "lot value" line (~11% of needed hits). Fix:
+`config.NON_ALERTING_SLOGAN_PATTERNS = ["slogan unknown"]` +
+`utils.is_non_alerting_slogan`; the scan's needed loop skips matched slogans that
+hit it, so they never alert or enter `best_needed`. They stay fully active in
+`get_buy_decision` / `/scout` — buy logic unchanged.
+
+**A vestigial 12-button cap.** The automated scan called `detect_and_crop` with
+no `button_count`, so `expected` defaulted to `rows*cols = 4*3 = 12` and both
+truncation sites capped crops at 12. Logs showed a spike at exactly 12 with raw
+Hough up to 16 — big lots lost the needed button. This was never intended.
+
+Fix (`image_proc.detect_and_crop`, two modes keyed on `button_count`):
+- **scan mode** (no count): multi-scale Hough **sweep** (`HOUGH_RADIUS_SCALES`
+  large→small, merged; largest-first dedup in the existing fill-ratio loop
+  removes cross-scale dups); the radius-consistency filter is **skipped** (it
+  pruned the size-outlier needed button); crops capped only by a high safety
+  ceiling `MAX_CROPS_PER_PHOTO = 100`, **raised when the title states a bigger
+  lot** (`utils.extract_lot_count` → e.g. "Lot of 250" → 250). Per-listing total
+  bounded by `MAX_CROPS_PER_LISTING = 400` (also title-raised).
+- **count mode** (manual `/scout`): unchanged single-pass + half-radius fallback,
+  capped at the supplied count, consistency filter kept.
+- Resize raised 800 → `IMAGE_MAX_DIM = 1400` (better small-button recall; Hough
+  cost only — CLIP works on 224px crops).
+- `clip_matcher.match_crops_batch` now **sub-batches** encoding
+  (`ENCODE_BATCH = 16`) so an uncapped dense lot can't OOM the 4Gi container;
+  per-crop scoring / `top_k` / `restrict_years` / order are unchanged.
+- `>>> IMAGE:` logs extended with per-scale raw counts, `cap`, and `mode` so the
+  12-spike's removal and the new crop distribution are mineable.
+
+Tuning knobs (config-only, no logic redeploy): `MAX_CROPS_PER_PHOTO`,
+`MAX_CROPS_PER_LISTING`, `HOUGH_RADIUS_SCALES`, `IMAGE_MAX_DIM`, `ENCODE_BATCH`.
+
+---
+
 ## Remaining known issues
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| CLIP accuracy on multi-button photos | Mitigated (#21, #22) | Scan flags *needed-button candidates* (recall-biased, multi-photo) for human `/scout` review rather than auto-valuing. Year-aware matching (#22) removes most year-confusion when the year is known from the title or search query. Tune `NEEDED_MATCH_THRESHOLD` from `SCAN_LOG_BLOB` data. |
+| CLIP accuracy on multi-button photos | Mitigated (#21, #22, #26) | Scan flags *needed-button candidates* (recall-biased, multi-photo) for `/scout` review. Year-aware matching (#22) removes most year-confusion; the 12-crop cap is gone and detection is multi-scale (#26). Tune `NEEDED_MATCH_THRESHOLD` from `SCAN_LOG_BLOB` data. |
+| Dense-lot detection of small buttons | Open (improved #26) | Multi-scale Hough + 1400px resize catch far more than the old 12 cap, but truly tiny buttons in a 100+ photo may still be missed; the radius sweep / `IMAGE_MAX_DIM` can be pushed further if logs show misses. |
 | kling24toys seller filter | Open | Listed in `EXCLUDED_SELLERS` but need to confirm actual eBay username matches after new scan logs show seller names in brackets. |
 | Manual upload "still loading" loop | Fixed (#20) | `/scout` slash command + self-healing `handle_file_shared`. Needs the `/scout` command registered in Slack and validated in production. |
 | Automated undervalued-lot valuation | Deferred (#21) | `ENABLE_UNDERVALUED_ALERTS=False`. Revisit once `scan_log.jsonl` shows whether per-lot valuation from photos is trustworthy. |

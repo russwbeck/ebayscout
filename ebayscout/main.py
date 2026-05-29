@@ -43,6 +43,8 @@ from .utils import (
     era_year_set,
     parse_confirmation,
     other_era,
+    is_non_alerting_slogan,
+    extract_lot_count,
 )
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
@@ -1341,18 +1343,30 @@ def _run_daily_scan(
             best_needed: dict | None = None         # top needed-mapped candidate,
                                                     # even below bar (for tuning)
 
+            # Per-photo crop ceiling = 100, raised if the title states a bigger
+            # lot ("Lot of 250 pins"). Per-listing budget bounds total CLIP cost.
+            title_count   = extract_lot_count(title)
+            per_photo_cap = max(config.MAX_CROPS_PER_PHOTO, title_count or 0)
+            listing_budget = max(config.MAX_CROPS_PER_LISTING, title_count or 0)
+
             for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
                 if photo_idx == 1:  # decided after photo 1 is scored
                     promising = bool(title_years) or best_score_seen >= config.REJECTION_THRESHOLD
                     if not promising:
                         break
+                if listing_budget <= 0:
+                    break
 
                 try:
                     image_bytes = _ip.download_image(photo_url)
-                    crops       = _ip.detect_and_crop(image_bytes)
+                    crops       = _ip.detect_and_crop(image_bytes, max_crops=per_photo_cap)
                 except Exception as exc:
                     print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
                     continue
+
+                if crops:
+                    crops = crops[:listing_budget]
+                    listing_budget -= len(crops)
 
                 if not crops:
                     continue
@@ -1395,6 +1409,11 @@ def _run_daily_scan(
                             m["year"], m["slogan"], buy_rules
                         )
                         if amount_needed <= 0:
+                            continue
+                        # Placeholder slogans (e.g. "Slogan Unknown N") stay in
+                        # the buy logic / /scout valuation but must not trigger
+                        # scan alerts — they over-match and inflate lot value.
+                        if is_non_alerting_slogan(m["slogan"], config.NON_ALERTING_SLOGAN_PATTERNS):
                             continue
                         # Track the best needed-mapped candidate regardless of
                         # whether it clears the bar — this is the distribution

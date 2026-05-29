@@ -217,21 +217,27 @@ def match_crops_batch(
     if not pil_images:
         return []
 
-    # Stack all crops into one tensor → single forward pass
-    tensors = torch.stack([_preprocess(img) for img in pil_images]).to(_device)  # [N, C, H, W]
-    with torch.inference_mode():
-        vecs = _model.encode_image(tensors).float()                               # [N, D]
-    vecs = vecs / vecs.norm(dim=-1, keepdim=True)
-
+    # Encode in fixed-size chunks so an uncapped dense lot (100+ crops) doesn't
+    # spike activation memory on a 4Gi container. Per-crop scoring is identical;
+    # output order is preserved (chunks in order, crops within a chunk in order).
+    batch = max(1, getattr(config, "ENCODE_BATCH", 16))
     results = []
-    for vec in vecs:
-        vec = vec.unsqueeze(0)  # [1, D] — reuse single-crop scoring logic
-        image_sims = (vec @ _ref_vectors.T).cpu().numpy()[0]
-        text_sims  = (vec @ _text_features.T).cpu().numpy()[0]
-        if top_k == 1:
-            results.append(_score_best_match(image_sims, text_sims, threshold, restrict_years))
-        else:
-            results.append(_score_top_matches(image_sims, text_sims, threshold, top_k, restrict_years))
+    for start in range(0, len(pil_images), batch):
+        chunk = pil_images[start:start + batch]
+        tensors = torch.stack([_preprocess(img) for img in chunk]).to(_device)   # [n, C, H, W]
+        with torch.inference_mode():
+            vecs = _model.encode_image(tensors).float()                          # [n, D]
+        vecs = vecs / vecs.norm(dim=-1, keepdim=True)
+
+        for vec in vecs:
+            vec = vec.unsqueeze(0)  # [1, D] — reuse single-crop scoring logic
+            image_sims = (vec @ _ref_vectors.T).cpu().numpy()[0]
+            text_sims  = (vec @ _text_features.T).cpu().numpy()[0]
+            if top_k == 1:
+                results.append(_score_best_match(image_sims, text_sims, threshold, restrict_years))
+            else:
+                results.append(_score_top_matches(image_sims, text_sims, threshold, top_k, restrict_years))
+        del tensors, vecs   # release activations before the next chunk
     return results
 
 

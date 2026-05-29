@@ -20,7 +20,68 @@ from ebayscout.utils import (
     parse_era,
     parse_confirmation,
     other_era,
+    is_non_alerting_slogan,
+    extract_lot_count,
+    sweep_radii,
 )
+
+_PLACEHOLDERS = ["slogan unknown"]
+
+
+class TestIsNonAlertingSlogan:
+    def test_matches_placeholder_case_insensitive(self):
+        assert is_non_alerting_slogan("Slogan Unknown 5", _PLACEHOLDERS)
+        assert is_non_alerting_slogan("slogan unknown 2", _PLACEHOLDERS)
+
+    def test_real_slogan_not_flagged(self):
+        assert not is_non_alerting_slogan("Can The Juice", _PLACEHOLDERS)
+        assert not is_non_alerting_slogan("We Are #1", _PLACEHOLDERS)
+
+    def test_empty(self):
+        assert not is_non_alerting_slogan("", _PLACEHOLDERS)
+        assert not is_non_alerting_slogan("Slogan Unknown 1", [])
+
+
+class TestExtractLotCount:
+    def test_lot_of_n(self):
+        assert extract_lot_count("Lot of 54 Penn State buttons") == 54
+        assert extract_lot_count("Large lot of 250 PSU pins") == 250
+
+    def test_n_keyword_adjacent(self):
+        assert extract_lot_count("35 buttons vintage PSU") == 35
+        assert extract_lot_count("(12) buttons PSU") == 12
+
+    def test_set_of(self):
+        assert extract_lot_count("set of 35 badges") == 35
+
+    def test_conservative_when_keyword_separated(self):
+        # Count separated from the keyword by brand words isn't parsed — fine,
+        # since 35 < 100 (default cap) the override only needs the >100 forms.
+        assert extract_lot_count("35 Penn State pins vintage") is None
+
+    def test_no_count(self):
+        assert extract_lot_count("Large Lot of Penn State pins") is None
+        assert extract_lot_count("Penn State Football Button 1986") is None
+        assert extract_lot_count("") is None
+
+    def test_year_and_price_not_counted(self):
+        # 4-digit year / comma price must never read as a lot count.
+        assert extract_lot_count("1982 Penn State Champions Pin") is None
+        assert extract_lot_count("rare lot value $1,982 obo") is None
+
+    def test_takes_largest(self):
+        assert extract_lot_count("lot of 12 — 40 buttons total") == 40
+
+
+class TestSweepRadii:
+    def test_descending_deduped(self):
+        out = sweep_radii(70, (1.0, 0.66, 0.45, 0.30), 9)
+        assert out == [70, 46, 31, 21]
+
+    def test_floor_collapses_dupes(self):
+        out = sweep_radii(20, (1.0, 0.66, 0.45, 0.30), 9)
+        assert out == [20, 13, 9]            # 0.45*20=9, 0.30*20=6→floor 9 → deduped
+        assert out == sorted(set(out), reverse=True)
 
 
 class TestBuildEraQueries:
