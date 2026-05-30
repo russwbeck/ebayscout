@@ -5,7 +5,8 @@ a daily eBay/Etsy scan that flags listings likely to contain a **needed** Penn
 State gameday button (`amount_needed > 0`) for human review, and (2) serves a
 manual `/scout` mode where a user uploads a photo and gets a CLIP-based lot
 valuation. Full design history and rationale live in `ebayscout/DECISIONS.md` —
-read it before changing deploy/gunicorn/CPU behavior.
+read it before changing deploy/gunicorn/CPU behavior. For the latest status and
+next steps, start with `ebayscout/HANDOFF.md`.
 
 ## Hard constraints (do not violate)
 

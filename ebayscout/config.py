@@ -75,6 +75,25 @@ NEEDED_MATCH_THRESHOLD = 0.60
 # internally). A needed button is often the 2nd/3rd guess on a blended photo.
 NEEDED_MATCH_TOP_K     = 3
 
+# Slogans that must NOT trigger scan alerts even when amount_needed > 0. These
+# are placeholder/unknown rows that exist for the buy logic + /scout valuation
+# but over-match in CLIP and inflate "lot value" in the scan. Case-insensitive
+# substring match. They stay fully active in get_buy_decision / /scout.
+NON_ALERTING_SLOGAN_PATTERNS = ["slogan unknown"]
+
+# --- Button detection (image_proc.detect_and_crop) ---
+# Safety ceiling on crops returned for ONE photo in the automated scan (no
+# explicit button_count). It is NOT a feature limit — the old behaviour
+# accidentally capped at 12 (a 4x3 grid default). 100 is far above any real lot;
+# it only guards against a noise-storm image hallucinating thousands of circles.
+# Raised automatically when the listing title states a larger count.
+MAX_CROPS_PER_PHOTO   = 100
+MAX_CROPS_PER_LISTING = 400      # ceiling across all photos of one listing
+IMAGE_MAX_DIM         = 1400     # resize longest side (was 800); better small-button recall
+HOUGH_RADIUS_SCALES   = (1.0, 0.66, 0.45, 0.30)  # multi-scale sweep, large→small
+HOUGH_MIN_RADIUS_PX   = 9        # floor so we don't chase speckle
+ENCODE_BATCH          = 16       # sub-batch size for CLIP image encoding
+
 # --- Undervalued-lot alerts (deferred / opt-in) ---
 # Precise auto-valuation of a whole lot is unreliable without per-button
 # segmentation, so the undervalued/margin alert is OFF by default. The
@@ -193,9 +212,11 @@ YEAR_CRAWL_TERMS: list[str] = (
 YEAR_CRAWL_PSU_TERMS: list[str] = list(PSU_SEARCH_QUERIES)
 
 # --- Dry-run mode (set True for smoke testing) ---
-# When True: the scan runs end-to-end but fires no real alerts and writes
-# nothing to GCS (no seen_items.json, no scan_log.jsonl) — it logs "[DRY RUN]"
-# lines and posts a single preview digest of needed-button candidate scores to
-# the scout Slack channel (for tuning NEEDED_MATCH_THRESHOLD). Can also be
-# overridden per-request with /run-scan?dry_run=1.
+# When True: the scan runs end-to-end but fires no real alerts and does NOT
+# write seen_items.json (no dedup pollution) — it logs "[DRY RUN]" lines and
+# posts a single preview digest of needed-button candidate scores to the scout
+# Slack channel (for tuning NEEDED_MATCH_THRESHOLD). It DOES persist
+# scan_log.jsonl (checkpointed every 50) so a big preview's per-listing data
+# survives the 30-min request cap. Can be overridden per-request with
+# /run-scan?dry_run=1.
 DRY_RUN = False

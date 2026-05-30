@@ -16,6 +16,9 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from . import config
+from .utils import sweep_radii
+
 
 def download_image(url: str, timeout: int = 15) -> bytes:
     """
@@ -33,32 +36,39 @@ def detect_and_crop(
     cols: int = 3,
     expected: int | None = None,
     button_count: int | None = None,
+    max_crops: int | None = None,
 ) -> list[Image.Image]:
     """
     Detect individual buttons in a lot photo and return PIL.Image crops (RGB).
 
-    Uses OpenCV Hough circle detection; when no usable circles are found it
-    falls back to matching the whole photo as a single crop (rather than
-    slicing a fabricated grid). The `rows`/`cols`/`expected` hints size the
-    expected button radius and cap the number of circle crops.
+    Two modes, keyed on `button_count`:
+      - count mode (button_count given, e.g. manual /scout): single-pass Hough
+        sized to that grid, capped at the count — unchanged legacy behaviour.
+      - scan mode (button_count is None): multi-scale Hough sweep, NO 12-button
+        cap (an old 4x3 grid default) — capped only by a high safety ceiling
+        (config.MAX_CROPS_PER_PHOTO, raised by `max_crops` when a listing title
+        states more). The point is recall: catch the one needed button in a big
+        lot. The radius-consistency filter is skipped in scan mode so a
+        size-outlier needed button isn't pruned.
 
-    Args:
-        image_bytes: Raw image bytes (JPEG/PNG).
-        rows:        Expected grid rows (default 4).
-        cols:        Expected grid columns (default 3).
-        expected:    Total expected button count.  Defaults to rows * cols.
+    When no usable circles are found, falls back to the whole photo as one crop.
 
-    Returns:
-        List of PIL.Image.Image crops (RGB).  Empty list if detection fails.
+    Returns: list of PIL.Image.Image crops (RGB). Empty list if decode fails.
     """
+    scan_mode = button_count is None
     if button_count is not None:
         expected = button_count
-        # Derive rows/cols from count so expected_r scales correctly
+        # Derive rows/cols from count so the base radius scales correctly
         side = max(1, int(button_count ** 0.5))
         rows = side
         cols = max(1, (button_count + side - 1) // side)
     elif expected is None:
-        expected = rows * cols
+        expected = rows * cols   # radius/grouping hint only — NOT a crop cap
+
+    # Effective crop ceiling. Count mode → the explicit count. Scan mode → a high
+    # safety ceiling, raised when the title stated a bigger lot (max_crops).
+    cap = button_count if button_count is not None else max(
+        config.MAX_CROPS_PER_PHOTO, max_crops or 0)
 
     # Decode
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
@@ -69,8 +79,9 @@ def detect_and_crop(
 
     h, w = image_bgr.shape[:2]
 
-    # Resize to at most 800px on the longest side
-    max_dim = 800
+    # Resize to at most IMAGE_MAX_DIM on the longest side (larger = better
+    # small-button recall; Hough-only cost, CLIP still works on 224px crops).
+    max_dim = config.IMAGE_MAX_DIM
     scale = min(max_dim / w, max_dim / h, 1.0)
     if scale < 1.0:
         new_w, new_h = int(w * scale), int(h * scale)
@@ -124,33 +135,42 @@ def detect_and_crop(
     gray = cv2.GaussianBlur(mask, (9, 9), 2)
 
     # --- Hough circle detection ---
-    # Run two passes: one sized for the expected grid, one at half scale for
-    # dense lots where buttons are smaller than the grid assumption implies.
     def _hough(exp_r: int):
         return cv2.HoughCircles(
             gray, cv2.HOUGH_GRADIENT, dp=1.3,
-            minDist=int(exp_r * 1.7),
+            minDist=max(8, int(exp_r * 1.7)),
             param1=120, param2=24,
             minRadius=int(exp_r * 0.7),
             maxRadius=int(exp_r * 1.3),
         )
 
-    expected_r = int(min(h / rows, w / cols) * 0.35)
-    circles = _hough(expected_r)
+    base_r = int(min(h / rows, w / cols) * 0.35)
+    raw_by_scale = {}
 
-    # If the first pass finds fewer than 4 circles, try a denser pass at
-    # half the expected radius (handles 20-30+ button lot photos).
-    if circles is None or len(circles[0]) < 4:
-        small_r = max(10, expected_r // 2)
-        circles_small = _hough(small_r)
-        if circles_small is not None and (
-            circles is None or len(circles_small[0]) > len(circles[0])
-        ):
-            circles  = circles_small
-            expected_r = small_r
-
-    if circles is not None:
-        circles = np.around(circles[0]).astype(int)
+    if scan_mode:
+        # Multi-scale sweep (large→small radii), MERGE all circles. Largest-first
+        # dedup in the fill-ratio loop below removes cross-scale duplicates.
+        radii = sweep_radii(base_r, config.HOUGH_RADIUS_SCALES, config.HOUGH_MIN_RADIUS_PX)
+        all_circles = []
+        for r in radii:
+            c = _hough(r)
+            n = 0 if c is None else len(c[0])
+            raw_by_scale[r] = n
+            if c is not None:
+                all_circles.extend(np.around(c[0]).astype(int).tolist())
+        circles = np.array(all_circles, dtype=int) if all_circles else None
+    else:
+        # Count mode (manual /scout): single pass + half-radius fallback (legacy).
+        circles = _hough(base_r)
+        if circles is None or len(circles[0]) < 4:
+            small_r = max(10, base_r // 2)
+            circles_small = _hough(small_r)
+            if circles_small is not None and (
+                circles is None or len(circles_small[0]) > len(circles[0])
+            ):
+                circles = circles_small
+        if circles is not None:
+            circles = np.around(circles[0]).astype(int)
 
     crops_bgr: list[np.ndarray] = []
 
@@ -177,7 +197,7 @@ def detect_and_crop(
             ):
                 filtered.append((x, y, r))
 
-        filtered = filtered[:expected]
+        filtered = filtered[:cap]
 
         # Remove inner circles
         cleaned = [
@@ -189,8 +209,9 @@ def detect_and_crop(
             )
         ]
 
-        # Radius consistency filter
-        if cleaned:
+        # Radius consistency filter — count mode only. In scan mode it would
+        # prune the size-outlier button, which is often the one we need.
+        if cleaned and not scan_mode:
             radii    = [r for (_, _, r) in cleaned]
             median_r = float(np.median(radii))
             cleaned  = [
@@ -199,13 +220,14 @@ def detect_and_crop(
             ]
 
         print(
-            f">>> IMAGE: Hough circles — raw: {len(circles_list)}, "
-            f"filtered: {len(filtered)}, cleaned: {len(cleaned)}",
+            f">>> IMAGE: Hough circles — mode: {'scan' if scan_mode else 'count'}, "
+            f"raw_by_scale: {raw_by_scale or 'n/a'}, merged: {len(circles_list)}, "
+            f"filtered: {len(filtered)}, cleaned: {len(cleaned)}, cap: {cap}",
             flush=True,
         )
 
         if cleaned:
-            row_tol  = int(expected_r * 1.5)
+            row_tol  = int(base_r * 1.5)
             rows_est: list[list] = []
             for c in sorted(cleaned, key=lambda c: (c[1], c[0])):
                 placed = False
@@ -222,8 +244,9 @@ def detect_and_crop(
             for row in rows_est:
                 row.sort(key=lambda c: c[0])
 
-            final_circles = [c for row in rows_est for c in row][:expected]
-            print(f">>> IMAGE: Returning {len(final_circles)} Hough crops.", flush=True)
+            final_circles = [c for row in rows_est for c in row][:cap]
+            print(f">>> IMAGE: Returning {len(final_circles)} Hough crops "
+                  f"(mode={'scan' if scan_mode else 'count'}, cap={cap}).", flush=True)
 
             for (x, y, r) in final_circles:
                 pad = int(r * 0.1)

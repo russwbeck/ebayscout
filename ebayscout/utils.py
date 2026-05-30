@@ -29,6 +29,34 @@ def extract_years(title: str) -> set[int]:
     return {int(m.group(0)) for m in _YEAR_RE.finditer(title)}
 
 
+# Decade markers — "1990s", "1990's", "'90s", "90s". A decade lot spans 10 years,
+# so restricting matching to one search year would miss most of it.
+_DECADE_RE_4 = re.compile(r"(?<!\d)(19|20)(\d)0'?s\b", re.I)   # 1990s / 1980's
+_DECADE_RE_2 = re.compile(r"(?<!\d)'?([0-9])0s\b", re.I)        # 90s / '80s / 00s
+
+
+def extract_decades(title: str) -> set[int]:
+    """
+    Years covered by any decade marker in a title ("1990s" → {1990..1999}).
+
+    Catches the case where a year-crawl query for "1990" returns a "1990s"
+    decade lot: matching must consider the whole decade, not just the one year,
+    or we miss the other-year buttons in the lot.
+    """
+    if not title:
+        return set()
+    years: set[int] = set()
+    for m in _DECADE_RE_4.finditer(title):
+        dec = int(m.group(1) + m.group(2) + "0")
+        years |= set(range(dec, dec + 10))
+    for m in _DECADE_RE_2.finditer(title):
+        d = int(m.group(1))                 # tens digit 0-9
+        base = 1900 if d >= 7 else 2000     # 70s-90s → 19xx; 00s-30s → 20xx
+        dec = base + d * 10
+        years |= set(range(dec, dec + 10))
+    return years
+
+
 def needed_years(buy_rules: dict) -> set[int]:
     """
     Years that still have at least one needed button (amount_needed > 0).
@@ -52,6 +80,69 @@ def needed_years(buy_rules: dict) -> set[int]:
         except (ValueError, TypeError):
             continue
     return years
+
+
+def is_non_alerting_slogan(slogan: str, patterns) -> bool:
+    """
+    True if a matched slogan is a placeholder that should NOT trigger scan
+    alerts (e.g. "Slogan Unknown 5"). Case-insensitive substring match — same
+    style as title_has_excluded_keyword.
+
+    These rows stay in buy_rules / get_buy_decision so the /scout valuation and
+    buy logic still use them; this only suppresses them from the daily scan's
+    needed-button alerts, where they over-match and inflate lot value.
+    """
+    if not slogan:
+        return False
+    s = slogan.lower()
+    return any(p.lower() in s for p in (patterns or []))
+
+
+# A 1-3 digit quantity stated next to a lot/quantity keyword in a listing title,
+# e.g. "Lot of 54", "set of 35", "(12) buttons", "250 pins", "200+ pinbacks".
+# 1-3 digits only, so 4-digit years (1982) and price-like runs never match.
+_LOT_COUNT_RES = (
+    re.compile(r"(?:lot|set|group|grouping|collection)\s+of\s+\(?(\d{1,3})", re.I),
+    re.compile(r"(?<!\d)(\d{1,3})\s*\+?\s*(?:button|pin|badge|pinback|pinbacks|pins|buttons|badges|pc|pcs|piece|pieces)\b", re.I),
+    re.compile(r"\((\d{1,3})\)\s*(?:button|pin|badge|pinback|pc|pcs|piece)", re.I),
+)
+
+
+def extract_lot_count(title: str) -> int | None:
+    """
+    Parse a stated button/pin quantity from a listing title (for the detector's
+    per-photo crop ceiling: 100 unless the title says more). Returns the largest
+    plausible count found, or None.
+
+    Deliberately conservative: only 1-3 digit numbers adjacent to a lot/quantity
+    keyword, so years and prices don't masquerade as counts.
+    """
+    if not title:
+        return None
+    best = None
+    for rx in _LOT_COUNT_RES:
+        for m in rx.finditer(title):
+            try:
+                n = int(m.group(1))
+            except (ValueError, TypeError):
+                continue
+            if n > 0 and (best is None or n > best):
+                best = n
+    return best
+
+
+def sweep_radii(base_r: int, scales, floor: int) -> list[int]:
+    """
+    Multi-scale Hough radius schedule: base_r × each scale, floored, descending,
+    de-duplicated (the floor can collapse small scales onto the same value).
+    Pure arithmetic so it's unit-testable without cv2.
+    """
+    out: list[int] = []
+    for s in scales:
+        r = max(floor, int(base_r * s))
+        if r not in out:
+            out.append(r)
+    return out
 
 
 _ERA_ALIASES = {
