@@ -23,6 +23,7 @@ import secrets
 import threading
 import time
 import traceback
+from collections import Counter
 
 from flask import Flask, request, jsonify
 from slack_bolt import App
@@ -47,6 +48,7 @@ from .utils import (
     is_non_alerting_slogan,
     extract_lot_count,
     dedup_listings,
+    select_hunt_ids,
 )
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
@@ -885,6 +887,14 @@ def run_scan():
                       call (e.g. ?year_crawl=1&limit=150) until the JSON reports
                       remaining=0. Run live (omit dry_run) so the seen cursor
                       persists between chunks.
+      ?hunt_ids=1     fetch the specific eBay item_ids in HUNT_IDS_BLOB directly
+                      by ID and run them through the pipeline, recording each
+                      listing's full current data (asking price, condition,
+                      format) into the scan log / market DB. Runs additively
+                      with ?year_crawl=1 (rebuild the market DB from a prior
+                      run's IDs) or standalone (skips the general search). Pair
+                      with ?limit=N for a big ID list; live (omit dry_run) to
+                      persist records and advance the chunk cursor.
     """
     global buy_rules
 
@@ -894,6 +904,7 @@ def run_scan():
     ignore_seen   = _truthy(request.args.get("ignore_seen"))
     year_crawl    = _truthy(request.args.get("year_crawl"))
     era_crawl     = _truthy(request.args.get("era_crawl"))
+    hunt_ids      = _truthy(request.args.get("hunt_ids"))
     dry_run_param = True if _truthy(request.args.get("dry_run")) else None  # None → use config
     try:
         limit = max(0, int(request.args.get("limit", 0) or 0))
@@ -922,7 +933,7 @@ def run_scan():
     try:
         remaining = _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
                                     year_crawl=year_crawl, era_crawl=era_crawl,
-                                    limit=limit)
+                                    limit=limit, hunt_ids=hunt_ids)
     finally:
         _scan_lock.release()
 
@@ -931,6 +942,7 @@ def run_scan():
         "ignore_seen": ignore_seen,
         "year_crawl":  year_crawl,
         "era_crawl":   era_crawl,
+        "hunt_ids":    hunt_ids,
         "dry_run":     config.DRY_RUN if dry_run_param is None else dry_run_param,
         "limit":       limit,
         "remaining":   remaining,   # chunk mode: unseen listings left (0 = done)
@@ -1096,15 +1108,38 @@ def _scan_log_record(
     alerted:          bool,
     best_needed:      dict | None = None,
 ) -> dict:
-    """Build one JSONL scan-log record for a processed listing."""
+    """
+    Build one JSONL scan-log record for a processed listing.
+
+    Beyond the alert fields, this captures market-analysis groundwork (see
+    tools/market_report.py): the per-crop YEAR composition of the lot
+    (`year_counts`), how many buttons we detected (`crops_scored`) and the
+    stated lot size (`title_count`), plus the eBay buying format / condition /
+    bid count. Together with `asking` these let a report estimate cost/button
+    per YEAR from single-year-lot comps — the metric for pricing listings.
+    `top_matches` arrives as the full per-crop best-match list (one per crop).
+    """
+    title = listing.get("title", "")
+    # Year composition of the lot, from each crop's best match.
+    year_counts: dict[str, int] = dict(Counter(
+        str(m["year"]) for m in top_matches if m.get("year") is not None
+    ))
     return {
         "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "item_id":       listing.get("item_id", ""),
-        "title":         listing.get("title", ""),
+        "title":         title,
         "listing_url":   listing.get("listing_url", ""),
         "seller":        listing.get("seller", ""),
         "asking":        listing.get("current_price", 0.0),
+        "currency":      listing.get("currency", "USD"),
+        "buying_options": listing.get("buying_options", []),
+        "condition":     listing.get("condition", ""),
+        "bid_count":     listing.get("bid_count"),
         "photos_scored": photos_processed,
+        "crops_scored":  len(top_matches),          # detected buttons (proxy)
+        "title_count":   extract_lot_count(title),  # stated lot size, if any
+        "title_years":   sorted(extract_years(title)),
+        "year_counts":   year_counts,               # year -> # crops matched
         "best_score":    round(best_score, 4),
         "top_matches":   [
             {"year": m["year"], "slogan": m["slogan"], "overall": round(m["overall"], 4)}
@@ -1151,6 +1186,7 @@ def _run_daily_scan(
     year_crawl: bool = False,
     era_crawl: bool = False,
     limit: int = 0,
+    hunt_ids: bool = False,
 ) -> int:
     """
     Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
@@ -1173,6 +1209,12 @@ def _run_daily_scan(
                  walk the backlog one request-window at a time, keeping each at
                  full CPU. Must run live (not dry_run) for the seen cursor to
                  persist between chunks.
+    hunt_ids:    fetch the specific item_ids in the HUNT_IDS_BLOB list directly
+                 by ID (Browse getItem) and feed them through the pipeline, so
+                 each gets a full scan_log/market record with its current asking
+                 price. Runs additively during year_crawl (rebuilds the market
+                 DB from a prior run's IDs) and standalone via ?hunt_ids=1
+                 (skips the general search). Pair with limit for big ID lists.
 
     Returns the number of unseen listings still remaining after this call
     (chunk mode); 0 when not chunked or the backlog is exhausted.
@@ -1244,7 +1286,9 @@ def _run_daily_scan(
                 ebay_client, ebay_app_id, ebay_cert_id, config.MELLON_CITIZENS_ERA_QUERIES))
         except Exception as exc:
             print(f"!!! SCAN: era crawl query failed: {exc}", flush=True)
-    else:
+    elif not hunt_ids:
+        # General daily pass — skipped when hunting IDs standalone (?hunt_ids=1
+        # with no year/era crawl), since the hunt supplies its own listings.
         if ebay_app_id and ebay_cert_id:
             try:
                 ebay_listings = ebay_client.find_all_listings(
@@ -1293,6 +1337,40 @@ def _run_daily_scan(
                 print(f"!!! SCAN: Etsy query failed: {exc}", flush=True)
         else:
             print(">>> SCAN: Skipping Etsy (no ETSY_API_KEY).", flush=True)
+
+    # ID hunt: fetch specific known item_ids directly (e.g. recovered from a
+    # prior run's logs) to rebuild full market data — most importantly each
+    # listing's asking price, which the scan stdout never recorded. Three drivers:
+    #   - ?hunt_ids=1   explicit on-demand hunt (chunk it with ?limit=N)
+    #   - ?year_crawl=1 hunts alongside the yearly crawl
+    #   - the plain DAILY scheduled run auto-drains DAILY_HUNT_BUDGET ids/day in
+    #     the background — free, bounded, and self-stopping once all ids are seen.
+    # Forward-only: already-seen ids are dropped BEFORE fetching, so we never
+    # spend a getItem call (or money) on an id we won't process this run.
+    auto_daily = (not year_crawl and not era_crawl and not hunt_ids
+                  and not ignore_seen and not dry_run)
+    if hunt_ids or year_crawl or (auto_daily and config.DAILY_HUNT_BUDGET > 0):
+        if ebay_app_id and ebay_cert_id:
+            hunt_all = seen_store.load_hunt_ids()
+            cap = limit if limit > 0 else (config.DAILY_HUNT_BUDGET if auto_daily else 0)
+            hunt = select_hunt_ids(hunt_all, seen, ignore_seen=ignore_seen, cap=cap)
+            unseen_total = (len(hunt_all) if ignore_seen
+                            else sum(1 for i in hunt_all if seen_store.is_new(i, seen)))
+            if hunt:
+                print(f">>> SCAN: ID hunt — fetching {len(hunt)} of {unseen_total} unseen "
+                      f"id(s) (cap={cap or 'none'}); {max(0, unseen_total - len(hunt))} "
+                      f"will remain after this run.", flush=True)
+                try:
+                    all_listings.extend(
+                        ebay_client.find_listings_by_ids(ebay_app_id, ebay_cert_id, hunt))
+                except Exception as exc:
+                    print(f"!!! SCAN: ID hunt failed: {exc}", flush=True)
+            elif hunt_all:
+                print(">>> SCAN: ID hunt — backlog drained (all hunt ids already seen).",
+                      flush=True)
+        else:
+            print(">>> SCAN: hunt requested but no eBay credentials — skipping hunt.",
+                  flush=True)
 
     if not all_listings:
         print(">>> SCAN: No listings retrieved from any source — exiting.", flush=True)

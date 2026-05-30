@@ -251,3 +251,58 @@ class TestKeywordExclusion:
              patch("ebayscout.ebay_client.requests.get", return_value=resp):
             results = ebay_client.find_listings("id", "sec", "PSU button", [])
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# ID hunt — get_item / find_listings_by_ids
+# ---------------------------------------------------------------------------
+
+def _item(item_id="v1|111|0", title="1979 PSU Lot of 9", seller="s1",
+          price="18.00", buying=None, condition="Used", bids=None):
+    d = {
+        "itemId":     item_id,
+        "title":      title,
+        "seller":     {"username": seller},
+        "price":      {"value": price, "currency": "USD"},
+        "image":      {"imageUrl": "https://i.ebayimg.com/x.jpg"},
+        "itemWebUrl": "https://ebay.com/itm/111",
+        "condition":  condition,
+    }
+    if buying is not None:
+        d["buyingOptions"] = buying
+    if bids is not None:
+        d["bidCount"] = bids
+    return d
+
+
+class TestGetItem:
+    def test_parses_full_listing_with_market_fields(self):
+        resp = _mock_get(_item(buying=["AUCTION"], bids=3))
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client.requests.get", return_value=resp):
+            r = ebay_client.get_item("id", "sec", "v1|111|0")
+        assert r["item_id"] == "v1|111|0"
+        assert r["current_price"] == 18.0
+        assert r["seller"] == "s1"
+        assert r["buying_options"] == ["AUCTION"]
+        assert r["condition"] == "Used"
+        assert r["bid_count"] == 3
+
+    def test_returns_none_on_error(self):
+        with patch("ebayscout.ebay_client._get_app_token", return_value="TOK"), \
+             patch("ebayscout.ebay_client._get_with_retry", side_effect=RuntimeError("404")):
+            assert ebay_client.get_item("id", "sec", "v1|gone|0") is None
+
+
+class TestFindListingsByIds:
+    def test_hunts_dedups_and_skips_dead_ids(self):
+        def fake_get_item(cid, sec, item_id):
+            return None if item_id == "dead" else _parsed(item_id)
+
+        def _parsed(item_id):
+            return {"item_id": item_id, "title": "x", "current_price": 1.0}
+
+        with patch("ebayscout.ebay_client.get_item", side_effect=fake_get_item):
+            out = ebay_client.find_listings_by_ids("id", "sec", ["a", "a", "dead", "b"])
+        ids = [r["item_id"] for r in out]
+        assert ids == ["a", "b"]   # deduped input, dead one skipped

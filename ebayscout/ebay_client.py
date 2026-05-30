@@ -157,6 +157,12 @@ def find_listings(
             "seller":        seller,
             "search_year":   search_year,
             "search_era":    search_era,
+            # Market-analysis signals (Browse summary fields we previously dropped).
+            # buyingOptions: ["FIXED_PRICE"] / ["AUCTION"] / ["AUCTION","FIXED_PRICE"].
+            # bidCount + currentBidPrice are present only for auctions.
+            "buying_options": item.get("buyingOptions") or [],
+            "condition":      item.get("condition", "") or "",
+            "bid_count":      item.get("bidCount"),
         }
 
     print(f">>> EBAY FIND: '{keywords}' → {len(results)} unique listings", flush=True)
@@ -323,6 +329,87 @@ def get_item_pictures(client_id: str, client_secret: str, item_id: str) -> list[
 
     print(f">>> EBAY GETITEM: {item_id} → {len(urls)} picture URL(s)", flush=True)
     return urls
+
+
+def get_item(client_id: str, client_secret: str, item_id: str) -> dict | None:
+    """
+    Fetch one listing by item_id via Browse getItem and return it in the same
+    shape find_listings() produces (item_id, title, current_price, currency,
+    listing_url, gallery_url, seller, buying_options, condition, bid_count).
+
+    Used to "hunt" specific known IDs (e.g. recovered from a prior run's logs)
+    to backfill the market database with each listing's full CURRENT data —
+    crucially the asking price, which the scan stdout never recorded. Returns
+    None if the item can't be fetched (ended / removed / error); no keyword or
+    category exclusion is applied, since the caller chose these IDs deliberately.
+    """
+    try:
+        token = _get_app_token(client_id, client_secret)
+    except Exception as exc:
+        print(f"!!! EBAY AUTH: token request failed: {exc}", flush=True)
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
+    }
+    url = f"{config.EBAY_BROWSE_ITEM_URL}/{quote(item_id, safe='')}"
+
+    try:
+        resp = _get_with_retry(url, None, headers)
+        data = resp.json()
+    except Exception as exc:
+        print(f"!!! EBAY GETITEM: hunt failed for {item_id}: {exc}", flush=True)
+        return None
+
+    price_data = data.get("price") or {}
+    try:
+        price = float(price_data.get("value", "0"))
+    except (TypeError, ValueError):
+        price = 0.0
+
+    image = (data.get("image") or {}).get("imageUrl", "") or ""
+    if not image:
+        addl = data.get("additionalImages") or []
+        if addl:
+            image = addl[0].get("imageUrl", "") or ""
+
+    return {
+        "item_id":        data.get("itemId") or item_id,
+        "title":          data.get("title") or "",
+        "current_price":  price,
+        "currency":       price_data.get("currency", "USD"),
+        "listing_url":    data.get("itemWebUrl", "") or "",
+        "gallery_url":    image,
+        "seller":         (data.get("seller") or {}).get("username", "") or "",
+        "search_year":    None,
+        "search_era":     None,
+        "buying_options": data.get("buyingOptions") or [],
+        "condition":      data.get("condition", "") or "",
+        "bid_count":      data.get("bidCount"),
+    }
+
+
+def find_listings_by_ids(client_id: str, client_secret: str, item_ids) -> list[dict]:
+    """
+    Hunt a list of specific item_ids via get_item(), skipping any that can't be
+    fetched (ended/removed). Deduplicates the input and logs progress. The
+    returned listings flow through the normal scan pipeline, so each one gets a
+    full scan_log record (with price) — this is how a known ID list rebuilds the
+    market database. Composes with chunk mode (/run-scan?limit=N) for big lists.
+    """
+    seen: set = set()
+    unique = [i for i in item_ids if not (i in seen or seen.add(i))]
+    print(f">>> EBAY HUNT: fetching {len(unique)} item(s) by ID...", flush=True)
+    out: list[dict] = []
+    for n, item_id in enumerate(unique, 1):
+        listing = get_item(client_id, client_secret, item_id)
+        if listing:
+            out.append(listing)
+        if n % 50 == 0:
+            print(f">>> EBAY HUNT: {n}/{len(unique)} fetched ({len(out)} live).", flush=True)
+    print(f">>> EBAY HUNT: {len(out)} of {len(unique)} IDs still live.", flush=True)
+    return out
 
 
 # ---------------------------------------------------------------------------
