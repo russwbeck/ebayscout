@@ -61,6 +61,33 @@ def save_seen(seen: dict[str, str], bucket_name: str = config.BUCKET_NAME) -> bo
         return False
 
 
+def load_hunt_ids(bucket_name: str = config.BUCKET_NAME) -> list[str]:
+    """
+    Load the ID-hunt list (a JSON array of eBay item_ids) from GCS.
+
+    Returns [] if the blob does not exist (hunting is simply skipped then).
+    These are specific known IDs — e.g. recovered from a prior run's logs — that
+    the scan fetches directly by ID to rebuild full market data for each.
+    """
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob   = bucket.blob(config.HUNT_IDS_BLOB)
+
+        if not blob.exists():
+            print(">>> HUNT: hunt_ids.json not found — nothing to hunt.", flush=True)
+            return []
+
+        data = json.loads(blob.download_as_text())
+        ids  = [str(i) for i in data if i]
+        print(f">>> HUNT: Loaded {len(ids)} item IDs to hunt.", flush=True)
+        return ids
+
+    except Exception as exc:
+        print(f"!!! HUNT: Failed to load hunt_ids.json: {exc}", flush=True)
+        return []
+
+
 def append_scan_log(
     records: list[dict],
     bucket_name: str = config.BUCKET_NAME,

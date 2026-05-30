@@ -106,6 +106,13 @@ ENABLE_UNDERVALUED_ALERTS = False
 # price, photos scored, top matches + scores, needed-hit / alerted flags.
 SCAN_LOG_BLOB = "ebay_scout/scan_log.jsonl"
 
+# --- ID hunt list (rebuild the market DB from known eBay IDs) ---
+# A JSON array of eBay item_ids (e.g. recovered from a prior run's logs) that
+# the year crawl / hunt mode fetches directly by ID to backfill full per-listing
+# market data (asking price, condition, format) the original run never stored.
+# Upload the list to this blob; /run-scan?hunt_ids=1 (or ?year_crawl=1) reads it.
+HUNT_IDS_BLOB = "ebay_scout/hunt_ids.json"
+
 # --- eBay sellers to exclude (exact username, case-insensitive) ---
 EXCLUDED_SELLERS: list[str] = [
     "kling24toys",
