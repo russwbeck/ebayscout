@@ -82,6 +82,33 @@ def needed_years(buy_rules: dict) -> set[int]:
     return years
 
 
+def dedup_listings(listings: list[dict]) -> list[dict]:
+    """
+    Drop cross-pass duplicate listings, keeping the FIRST occurrence of each
+    item_id (which carries the search metadata — search_year / search_era — from
+    the query pass that found it first).
+
+    The scan combines several overlapping passes (general eBay + PSU + Etsy, or
+    multiple year-/era-augmented queries), so the same item_id routinely appears
+    2-3x in the merged list. Without this, a backfill processes — and counts —
+    the same listing repeatedly: the May 2026 backfill fetched 1024 rows that
+    were only 814 unique listings (~20% wasted CLIP compute and inflated volume).
+    Listings missing an "item_id" are kept as-is (nothing to dedup on).
+    """
+    seen_ids: set = set()
+    out: list[dict] = []
+    for listing in listings:
+        item_id = listing.get("item_id")
+        if item_id is None:
+            out.append(listing)
+            continue
+        if item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        out.append(listing)
+    return out
+
+
 def is_non_alerting_slogan(slogan: str, patterns) -> bool:
     """
     True if a matched slogan is a placeholder that should NOT trigger scan

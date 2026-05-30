@@ -6,6 +6,41 @@ the "what we did today + where it stands + what's next" layer on top.
 
 ---
 
+## 2026-05-30 — Backfill log analysis + chunk/dedup/audit
+
+Analyzed the May 29–30 dry-run backfill (rev 00031, **pre-#12**) from the Cloud
+Run stdout export + the 72-record daily `scan_log.jsonl`. Key findings:
+
+- **Headline was ~20% inflated by cross-pass duplicates**: 1024 rows were only
+  **814 unique listings → 405 needed** (not 469). `ignore_seen` skipped dedup.
+- **15.5h runtime = a CPU-starvation cliff**: 750 listings processed in ~25 min
+  at full CPU, then ~274 over 15h. `/run-scan` is synchronous but
+  `gunicorn timeout=0` lets the worker outlive Cloud Run's request window; past
+  it, CPU is throttled and the tail crawls. **Big backfills must be chunked.**
+- **~48% of needed hits are < 0.60** (ride the title-year corroboration floor) —
+  left as-is; user chose to **stay recall-biased** (no threshold change).
+- **Reference over-matching**: "Penn State Pins To Win" tops crops in 17/72
+  listings; 7 listings fully degenerate; some 0.00 (coverage gaps, CCB era).
+- Placeholder "Slogan Unknown" was 49/405 needed hits — **#12 fixes this**; ship it.
+
+Shipped this session (branch `claude/scan-logs-analysis-4U2Q9`):
+
+1. **`utils.dedup_listings`** + applied in `_run_daily_scan` before the loop
+   (drops cross-pass dup item_ids; logs the count).
+2. **Chunk mode `/run-scan?limit=N`** — resumable, forward-only; processes ≤N
+   unseen per call so each stays inside the CPU window. Returns `remaining` in
+   the JSON (re-issue until 0). Must run **live** (dry-run writes no seen cursor).
+   This is the unblocker for the live shopping-list backfill (next step #3).
+3. **`ebayscout/tools/audit_reference_coverage.py`** — `--scan-log` (pure-Python
+   attractor/degenerate/zero-score audit; runs anywhere) and `--coverage`
+   (needed-vs-reference gap list; needs torch+GCS+Sheets → Cloud/CI).
+
+Tests: `python -m pytest ebayscout/tests/test_main.py ebayscout/tests/test_audit.py -q`
+→ **85 passing** in-session (added dedup + audit-core tests). Matcher/CLIP tests
+still need CI.
+
+---
+
 ## TL;DR — current state
 
 - The bot was reframed from a (broken) **auto lot-valuer** into a recall-biased
