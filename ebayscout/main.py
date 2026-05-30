@@ -23,6 +23,7 @@ import secrets
 import threading
 import time
 import traceback
+from collections import Counter
 
 from flask import Flask, request, jsonify
 from slack_bolt import App
@@ -1096,15 +1097,38 @@ def _scan_log_record(
     alerted:          bool,
     best_needed:      dict | None = None,
 ) -> dict:
-    """Build one JSONL scan-log record for a processed listing."""
+    """
+    Build one JSONL scan-log record for a processed listing.
+
+    Beyond the alert fields, this captures market-analysis groundwork (see
+    tools/market_report.py): the per-crop YEAR composition of the lot
+    (`year_counts`), how many buttons we detected (`crops_scored`) and the
+    stated lot size (`title_count`), plus the eBay buying format / condition /
+    bid count. Together with `asking` these let a report estimate cost/button
+    per YEAR from single-year-lot comps — the metric for pricing listings.
+    `top_matches` arrives as the full per-crop best-match list (one per crop).
+    """
+    title = listing.get("title", "")
+    # Year composition of the lot, from each crop's best match.
+    year_counts: dict[str, int] = dict(Counter(
+        str(m["year"]) for m in top_matches if m.get("year") is not None
+    ))
     return {
         "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "item_id":       listing.get("item_id", ""),
-        "title":         listing.get("title", ""),
+        "title":         title,
         "listing_url":   listing.get("listing_url", ""),
         "seller":        listing.get("seller", ""),
         "asking":        listing.get("current_price", 0.0),
+        "currency":      listing.get("currency", "USD"),
+        "buying_options": listing.get("buying_options", []),
+        "condition":     listing.get("condition", ""),
+        "bid_count":     listing.get("bid_count"),
         "photos_scored": photos_processed,
+        "crops_scored":  len(top_matches),          # detected buttons (proxy)
+        "title_count":   extract_lot_count(title),  # stated lot size, if any
+        "title_years":   sorted(extract_years(title)),
+        "year_counts":   year_counts,               # year -> # crops matched
         "best_score":    round(best_score, 4),
         "top_matches":   [
             {"year": m["year"], "slogan": m["slogan"], "overall": round(m["overall"], 4)}

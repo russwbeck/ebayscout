@@ -157,6 +157,12 @@ def find_listings(
             "seller":        seller,
             "search_year":   search_year,
             "search_era":    search_era,
+            # Market-analysis signals (Browse summary fields we previously dropped).
+            # buyingOptions: ["FIXED_PRICE"] / ["AUCTION"] / ["AUCTION","FIXED_PRICE"].
+            # bidCount + currentBidPrice are present only for auctions.
+            "buying_options": item.get("buyingOptions") or [],
+            "condition":      item.get("condition", "") or "",
+            "bid_count":      item.get("bidCount"),
         }
 
     print(f">>> EBAY FIND: '{keywords}' → {len(results)} unique listings", flush=True)
