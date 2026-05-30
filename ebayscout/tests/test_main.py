@@ -25,7 +25,25 @@ from ebayscout.utils import (
     extract_lot_count,
     sweep_radii,
     dedup_listings,
+    select_hunt_ids,
 )
+
+
+class TestSelectHuntIds:
+    def test_skips_seen_and_caps(self):
+        ids = ["a", "b", "c", "d", "e"]
+        seen = {"a": "2026-01-01", "c": "2026-01-01"}   # dict, like the seen store
+        # forward-only: a, c dropped -> [b, d, e]; cap 2 -> [b, d]
+        assert select_hunt_ids(ids, seen, ignore_seen=False, cap=2) == ["b", "d"]
+
+    def test_no_cap_returns_all_unseen_in_order(self):
+        assert select_hunt_ids(["a", "b", "c"], {"b"}, cap=0) == ["a", "c"]
+
+    def test_ignore_seen_keeps_everything(self):
+        assert select_hunt_ids(["a", "b"], {"a", "b"}, ignore_seen=True, cap=0) == ["a", "b"]
+
+    def test_cap_larger_than_list(self):
+        assert select_hunt_ids(["a"], set(), cap=50) == ["a"]
 
 _PLACEHOLDERS = ["slogan unknown"]
 

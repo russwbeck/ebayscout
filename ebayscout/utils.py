@@ -109,6 +109,22 @@ def dedup_listings(listings: list[dict]) -> list[dict]:
     return out
 
 
+def select_hunt_ids(ids, seen, ignore_seen: bool = False, cap: int = 0) -> list[str]:
+    """
+    Pick which hunt item_ids to fetch this run, forward-only and budget-bounded.
+
+    Skips ids already in `seen` (so the daily auto-drain and on-demand chunks
+    never spend a getItem call — or money — re-fetching processed items), unless
+    ignore_seen forces a re-evaluation. Caps to `cap` ids when cap > 0 (the daily
+    DAILY_HUNT_BUDGET, or an explicit ?limit). Order is preserved, so repeated
+    runs walk the list. `seen` is any container supporting `in` (the seen dict).
+    """
+    out = list(ids) if ignore_seen else [i for i in ids if i not in seen]
+    if cap and cap > 0:
+        out = out[:cap]
+    return out
+
+
 def is_non_alerting_slogan(slogan: str, patterns) -> bool:
     """
     True if a matched slogan is a placeholder that should NOT trigger scan

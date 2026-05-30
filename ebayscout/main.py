@@ -48,6 +48,7 @@ from .utils import (
     is_non_alerting_slogan,
     extract_lot_count,
     dedup_listings,
+    select_hunt_ids,
 )
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
@@ -1339,21 +1340,36 @@ def _run_daily_scan(
 
     # ID hunt: fetch specific known item_ids directly (e.g. recovered from a
     # prior run's logs) to rebuild full market data — most importantly each
-    # listing's asking price, which the scan stdout never recorded. Additive to
-    # the year crawl (this is the "modify the yearly run" path) and also usable
-    # standalone via ?hunt_ids=1. Composes with chunk mode (?limit=N) for big
-    # lists; dedup below collapses any overlap with the searched listings.
-    if hunt_ids or year_crawl:
+    # listing's asking price, which the scan stdout never recorded. Three drivers:
+    #   - ?hunt_ids=1   explicit on-demand hunt (chunk it with ?limit=N)
+    #   - ?year_crawl=1 hunts alongside the yearly crawl
+    #   - the plain DAILY scheduled run auto-drains DAILY_HUNT_BUDGET ids/day in
+    #     the background — free, bounded, and self-stopping once all ids are seen.
+    # Forward-only: already-seen ids are dropped BEFORE fetching, so we never
+    # spend a getItem call (or money) on an id we won't process this run.
+    auto_daily = (not year_crawl and not era_crawl and not hunt_ids
+                  and not ignore_seen and not dry_run)
+    if hunt_ids or year_crawl or (auto_daily and config.DAILY_HUNT_BUDGET > 0):
         if ebay_app_id and ebay_cert_id:
-            hunt = seen_store.load_hunt_ids()
+            hunt_all = seen_store.load_hunt_ids()
+            cap = limit if limit > 0 else (config.DAILY_HUNT_BUDGET if auto_daily else 0)
+            hunt = select_hunt_ids(hunt_all, seen, ignore_seen=ignore_seen, cap=cap)
+            unseen_total = (len(hunt_all) if ignore_seen
+                            else sum(1 for i in hunt_all if seen_store.is_new(i, seen)))
             if hunt:
+                print(f">>> SCAN: ID hunt — fetching {len(hunt)} of {unseen_total} unseen "
+                      f"id(s) (cap={cap or 'none'}); {max(0, unseen_total - len(hunt))} "
+                      f"will remain after this run.", flush=True)
                 try:
                     all_listings.extend(
                         ebay_client.find_listings_by_ids(ebay_app_id, ebay_cert_id, hunt))
                 except Exception as exc:
                     print(f"!!! SCAN: ID hunt failed: {exc}", flush=True)
+            elif hunt_all:
+                print(">>> SCAN: ID hunt — backlog drained (all hunt ids already seen).",
+                      flush=True)
         else:
-            print(">>> SCAN: hunt_ids requested but no eBay credentials — skipping hunt.",
+            print(">>> SCAN: hunt requested but no eBay credentials — skipping hunt.",
                   flush=True)
 
     if not all_listings:

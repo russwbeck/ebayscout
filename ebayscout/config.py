@@ -113,6 +113,13 @@ SCAN_LOG_BLOB = "ebay_scout/scan_log.jsonl"
 # Upload the list to this blob; /run-scan?hunt_ids=1 (or ?year_crawl=1) reads it.
 HUNT_IDS_BLOB = "ebay_scout/hunt_ids.json"
 
+# How many hunt IDs the ordinary DAILY scheduled run drains per day (auto, in
+# the background of the normal scan). The daily run already happens, so this
+# amortises a big ID backlog over several days for free, bounded so it never
+# nears the request CPU window, and self-stops once every ID has been processed
+# (seen). 0 disables auto-draining (then hunt only via explicit ?hunt_ids=1).
+DAILY_HUNT_BUDGET = 50
+
 # --- eBay sellers to exclude (exact username, case-insensitive) ---
 EXCLUDED_SELLERS: list[str] = [
     "kling24toys",
