@@ -24,9 +24,37 @@ from ebayscout.utils import (
     is_non_alerting_slogan,
     extract_lot_count,
     sweep_radii,
+    dedup_listings,
 )
 
 _PLACEHOLDERS = ["slogan unknown"]
+
+
+class TestDedupListings:
+    def test_drops_cross_pass_duplicates_keeping_first(self):
+        listings = [
+            {"item_id": "a", "search_year": 2003},   # found first by year crawl
+            {"item_id": "b"},
+            {"item_id": "a"},                         # same item, general pass
+            {"item_id": "c"},
+            {"item_id": "b"},
+        ]
+        out = dedup_listings(listings)
+        assert [l["item_id"] for l in out] == ["a", "b", "c"]
+        # First occurrence wins, so its search metadata is preserved.
+        assert out[0]["search_year"] == 2003
+
+    def test_no_duplicates_is_identity(self):
+        listings = [{"item_id": "a"}, {"item_id": "b"}]
+        assert dedup_listings(listings) == listings
+
+    def test_listings_without_item_id_are_kept(self):
+        listings = [{"title": "x"}, {"item_id": "a"}, {"title": "y"}]
+        out = dedup_listings(listings)
+        assert len(out) == 3
+
+    def test_empty(self):
+        assert dedup_listings([]) == []
 
 
 class TestIsNonAlertingSlogan:

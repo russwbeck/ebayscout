@@ -46,6 +46,7 @@ from .utils import (
     other_era,
     is_non_alerting_slogan,
     extract_lot_count,
+    dedup_listings,
 )
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
@@ -877,6 +878,13 @@ def run_scan():
                       matching each restricted to its era's year range. Broader
                       than the year crawl (multi-year lots); run it after the
                       year crawl so seen-dedup skips what that already caught.
+      ?limit=N        resumable chunk mode: process at most N unseen listings
+                      this call (forward-only). A big backfill done as one
+                      request outlives its CPU window and the tail runs under
+                      throttle; chunking keeps each call fast. Re-issue the same
+                      call (e.g. ?year_crawl=1&limit=150) until the JSON reports
+                      remaining=0. Run live (omit dry_run) so the seen cursor
+                      persists between chunks.
     """
     global buy_rules
 
@@ -887,6 +895,10 @@ def run_scan():
     year_crawl    = _truthy(request.args.get("year_crawl"))
     era_crawl     = _truthy(request.args.get("era_crawl"))
     dry_run_param = True if _truthy(request.args.get("dry_run")) else None  # None → use config
+    try:
+        limit = max(0, int(request.args.get("limit", 0) or 0))
+    except (TypeError, ValueError):
+        limit = 0
 
     if not vectors_loaded:
         print(">>> SCAN: CLIP not ready — loading synchronously within request...", flush=True)
@@ -908,8 +920,9 @@ def run_scan():
         return jsonify({"status": "already running"}), 409
 
     try:
-        _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
-                        year_crawl=year_crawl, era_crawl=era_crawl)
+        remaining = _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
+                                    year_crawl=year_crawl, era_crawl=era_crawl,
+                                    limit=limit)
     finally:
         _scan_lock.release()
 
@@ -919,6 +932,8 @@ def run_scan():
         "year_crawl":  year_crawl,
         "era_crawl":   era_crawl,
         "dry_run":     config.DRY_RUN if dry_run_param is None else dry_run_param,
+        "limit":       limit,
+        "remaining":   remaining,   # chunk mode: unseen listings left (0 = done)
     }), 200
 
 
@@ -1135,7 +1150,8 @@ def _run_daily_scan(
     dry_run: bool | None = None,
     year_crawl: bool = False,
     era_crawl: bool = False,
-) -> None:
+    limit: int = 0,
+) -> int:
     """
     Runs the full eBay + Etsy scan pipeline, reusing the already-loaded
     buy_rules and clip_matcher state rather than re-initialising.
@@ -1152,6 +1168,14 @@ def _run_daily_scan(
                  searches (eBay only); each result is matched restricted to its
                  era's year range. Run after the year crawl (seen-dedup skips
                  what it caught).
+    limit:       when > 0, process at most this many UNSEEN listings this call
+                 (resumable chunk mode). Always forward-only so repeated calls
+                 walk the backlog one request-window at a time, keeping each at
+                 full CPU. Must run live (not dry_run) for the seen cursor to
+                 persist between chunks.
+
+    Returns the number of unseen listings still remaining after this call
+    (chunk mode); 0 when not chunked or the backlog is exhausted.
     """
     from . import ebay_client, seen_items as seen_store
 
@@ -1183,10 +1207,10 @@ def _run_daily_scan(
         if not years:
             print(">>> SCAN: year_crawl requested but no needed years in buy_rules — exiting.",
                   flush=True)
-            return
+            return 0
         if not (ebay_app_id and ebay_cert_id):
             print(">>> SCAN: year_crawl needs eBay credentials — exiting.", flush=True)
-            return
+            return 0
         print(f">>> SCAN: Year crawl over {len(years)} needed years: "
               f"{sorted(years)}", flush=True)
         try:
@@ -1212,7 +1236,7 @@ def _run_daily_scan(
         # --- On-demand Mellon + Citizens bank crawl (eBay only) ---
         if not (ebay_app_id and ebay_cert_id):
             print(">>> SCAN: era_crawl needs eBay credentials — exiting.", flush=True)
-            return
+            return 0
         print(f">>> SCAN: Era crawl over {len(config.MELLON_CITIZENS_ERA_QUERIES)} "
               f"bank queries (Mellon + Citizens).", flush=True)
         try:
@@ -1272,12 +1296,42 @@ def _run_daily_scan(
 
     if not all_listings:
         print(">>> SCAN: No listings retrieved from any source — exiting.", flush=True)
-        return
+        return 0
 
-    if ignore_seen:
-        new_listings = all_listings   # one-shot backfill: re-evaluate everything visible
+    # Drop cross-pass duplicate item_ids before processing. The general (eBay +
+    # PSU + Etsy) and the year/era crawls overlap heavily, so the same listing is
+    # routinely fetched 2-3x; without this it is processed and counted repeatedly
+    # (the May 2026 backfill was ~20% duplicate work — 1024 rows / 814 unique).
+    _pre_dedup = len(all_listings)
+    all_listings = dedup_listings(all_listings)
+    if len(all_listings) != _pre_dedup:
+        print(f">>> SCAN: De-duplicated listings {_pre_dedup} -> {len(all_listings)} "
+              f"({_pre_dedup - len(all_listings)} cross-pass duplicates dropped).", flush=True)
+
+    # Forward-only by default; ignore_seen re-evaluates everything visible.
+    # Chunk mode (limit > 0) is ALWAYS forward-only/seen-filtered so repeated
+    # calls advance through the backlog a request-window at a time instead of
+    # re-processing the same head — see the run_scan docstring. A large backfill
+    # done as one request outlives its CPU-funded window and the tail crawls
+    # under throttle (the May 2026 backfill: 750 listings fast, then ~274 over
+    # 15h); chunking keeps every call at full CPU.
+    if ignore_seen and not limit:
+        candidate = all_listings   # one-shot backfill: re-evaluate everything visible
     else:
-        new_listings = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
+        candidate = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
+
+    _chunk_remaining = 0
+    if limit and limit > 0:
+        new_listings = candidate[:limit]
+        _chunk_remaining = max(0, len(candidate) - len(new_listings))
+        print(f">>> SCAN: chunk mode — {len(candidate)} unseen of {len(all_listings)} "
+              f"fetched; processing {len(new_listings)} this chunk, "
+              f"{_chunk_remaining} remaining after.", flush=True)
+        if dry_run:
+            print(">>> SCAN: WARNING — chunk mode under dry_run writes no seen_items, "
+                  "so the cursor will NOT advance; run live to walk the backlog.", flush=True)
+    else:
+        new_listings = candidate
     ebay_new     = sum(1 for l in new_listings if not l["item_id"].startswith("etsy_"))
     etsy_new     = sum(1 for l in new_listings if     l["item_id"].startswith("etsy_"))
     print(
@@ -1584,7 +1638,11 @@ def _run_daily_scan(
         except Exception as exc:
             print(f"!!! SCAN: Failed to post scan summary: {exc}", flush=True)
 
+    if limit and limit > 0:
+        print(f">>> SCAN: chunk complete — {_chunk_remaining} unseen listings remain "
+              f"(re-run the same chunk call to continue; 0 = backlog exhausted).", flush=True)
     print(">>> SCAN: Daily scan complete.", flush=True)
+    return _chunk_remaining
 
 
 # ---------------------------------------------------------------------------
