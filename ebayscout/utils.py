@@ -29,6 +29,34 @@ def extract_years(title: str) -> set[int]:
     return {int(m.group(0)) for m in _YEAR_RE.finditer(title)}
 
 
+# Decade markers — "1990s", "1990's", "'90s", "90s". A decade lot spans 10 years,
+# so restricting matching to one search year would miss most of it.
+_DECADE_RE_4 = re.compile(r"(?<!\d)(19|20)(\d)0'?s\b", re.I)   # 1990s / 1980's
+_DECADE_RE_2 = re.compile(r"(?<!\d)'?([0-9])0s\b", re.I)        # 90s / '80s / 00s
+
+
+def extract_decades(title: str) -> set[int]:
+    """
+    Years covered by any decade marker in a title ("1990s" → {1990..1999}).
+
+    Catches the case where a year-crawl query for "1990" returns a "1990s"
+    decade lot: matching must consider the whole decade, not just the one year,
+    or we miss the other-year buttons in the lot.
+    """
+    if not title:
+        return set()
+    years: set[int] = set()
+    for m in _DECADE_RE_4.finditer(title):
+        dec = int(m.group(1) + m.group(2) + "0")
+        years |= set(range(dec, dec + 10))
+    for m in _DECADE_RE_2.finditer(title):
+        d = int(m.group(1))                 # tens digit 0-9
+        base = 1900 if d >= 7 else 2000     # 70s-90s → 19xx; 00s-30s → 20xx
+        dec = base + d * 10
+        years |= set(range(dec, dec + 10))
+    return years
+
+
 def needed_years(buy_rules: dict) -> set[int]:
     """
     Years that still have at least one needed button (amount_needed > 0).

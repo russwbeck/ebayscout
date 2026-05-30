@@ -38,6 +38,7 @@ from .utils import (
     parse_price_source,
     format_manual_result,
     extract_years,
+    extract_decades,
     needed_years,
     build_year_queries,
     era_year_set,
@@ -1290,6 +1291,7 @@ def _run_daily_scan(
     stat_rejected       = 0
     _listings_since_save = 0
     scan_log_records: list[dict] = []   # one record per processed listing (groundwork data)
+    _scanlog_flushed = 0                # how many records already appended to GCS
 
     from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
@@ -1302,18 +1304,22 @@ def _run_daily_scan(
         title   = listing.get("title", "?")
         seller  = listing.get("seller", "")
 
-        # Decide which years matching may consider for this listing (tight→broad):
-        #   - year-crawl result → the exact search year it came from
-        #   - era-tagged result (CCB daily / era crawl) → that era's year range
-        #   - general result whose title names exactly one known year → that year
-        #   - otherwise → unrestricted (full matcher)
+        # Decide which years matching may consider for this listing (tight→broad).
+        # A decade marker in the title ("1990s") means the lot spans the whole
+        # decade — broaden, never lock to one year, or we miss most of the lot.
         title_years_all = extract_years(title)
+        title_decades   = extract_decades(title)
         search_year     = listing.get("search_year")
         search_era      = listing.get("search_era")
         if search_year:
-            restrict_years: set[int] | None = {int(search_year)}
+            # Year-crawl hit. If the title is a decade lot, broaden the exact
+            # search year to the whole decade so other-year buttons aren't missed.
+            restrict_years: set[int] | None = {int(search_year)} | title_decades
         elif search_era:
             restrict_years = era_year_set(search_era, config.BUTTON_ERAS) or None
+        elif title_decades:
+            # General result that names a decade → consider that whole decade.
+            restrict_years = title_decades
         elif len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
             restrict_years = {next(iter(title_years_all))}
         else:
@@ -1520,8 +1526,14 @@ def _run_daily_scan(
 
         seen_store.mark_seen(item_id, seen)
         _listings_since_save += 1
-        if not dry_run and _listings_since_save >= 50:
-            seen_store.save_seen(seen)
+        if _listings_since_save >= 50:
+            if not dry_run:
+                seen_store.save_seen(seen)
+            # Checkpoint the scan-log data every 50 too (both modes) so a 30-min
+            # timeout on a big run never loses the records collected so far.
+            pending = scan_log_records[_scanlog_flushed:]
+            if pending and seen_store.append_scan_log(pending):
+                _scanlog_flushed = len(scan_log_records)
             _listings_since_save = 0
 
     if dry_run:
@@ -1530,11 +1542,18 @@ def _run_daily_scan(
         notifier.send_warning(_slack_token, _channel_id,
                               "Failed to save seen_items.json — next scan may re-alert.")
 
-    # Per-listing scan log. Live: append JSONL to GCS (groundwork for a future
-    # automated valuer). Dry run: write nothing to GCS, but post a single Slack
-    # digest so the preview's candidate scores are readable for threshold tuning.
+    # Flush any scan-log records not yet checkpointed (both modes). The bulk is
+    # already on GCS from the every-50 checkpoints above — this writes the tail.
+    pending = scan_log_records[_scanlog_flushed:]
+    if pending and not seen_store.append_scan_log(pending):
+        print("!!! SCAN: Failed to append final scan log to GCS.", flush=True)
+    else:
+        _scanlog_flushed = len(scan_log_records)
+    print(f">>> SCAN: scan-log records this run: {len(scan_log_records)} "
+          f"(flushed {_scanlog_flushed}).", flush=True)
+
+    # Dry-run preview also posts the single Slack digest of candidate scores.
     if dry_run:
-        print(f"[DRY RUN] {len(scan_log_records)} scan-log records (not written to GCS).", flush=True)
         try:
             notifier.send_backfill_digest(
                 slack_token=_slack_token,
@@ -1544,8 +1563,6 @@ def _run_daily_scan(
             )
         except Exception as exc:
             print(f"!!! SCAN: Failed to post backfill digest: {exc}", flush=True)
-    elif scan_log_records and not seen_store.append_scan_log(scan_log_records):
-        print("!!! SCAN: Failed to append scan log to GCS.", flush=True)
 
     if dry_run:
         print(

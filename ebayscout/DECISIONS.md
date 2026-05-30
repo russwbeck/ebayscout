@@ -699,6 +699,29 @@ Tuning knobs (config-only, no logic redeploy): `MAX_CROPS_PER_PHOTO`,
 
 ---
 
+## 27. scan_log checkpointed every 50 + decade-aware year restriction
+
+Two follow-ups from running the crawls.
+
+**scan_log every 50.** `seen_items.json` was already checkpointed every 50
+(#15), but `scan_log.jsonl` was appended only at the very end of the run — so a
+30-min timeout on a big crawl lost that run's structured per-listing data
+(the live `>>> TITLE/ERA/IMAGE` stdout still streamed, but the data file didn't).
+Fix: append `scan_log.jsonl` every 50 alongside the seen checkpoint, tracked by a
+`_scanlog_flushed` watermark (the buffer isn't cleared, so the dry-run digest
+still sees the full list); the tail is flushed at the end. This now runs in
+**both** live and dry-run (dry-run still does NOT write `seen_items.json` — no
+dedup pollution — but it DOES persist the scan-log so a big preview survives a
+timeout).
+
+**Decade-aware restriction.** The year crawl searches e.g. `"…1990"`, and eBay
+returns **"1990s" decade lots**; those were tagged `search_year=1990` and matching
+hard-restricted to 1990 only — missing every 1991–1999 button in the lot. Same
+bug on the title path (`extract_years("1990s")` reads 1990). Fix:
+`utils.extract_decades(title)` ("1990s"/"90s"/"1990's" → the 10-year set); the
+scan broadens the restriction to the decade when a decade marker is present
+(year-crawl: `{search_year} | decade`; general: the decade). A plain single year
+("…1990" with no `s`) still restricts to that one year.
 ## Remaining known issues
 
 | Issue | Status | Notes |

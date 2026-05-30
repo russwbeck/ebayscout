@@ -13,6 +13,7 @@ from ebayscout.utils import (
     format_manual_result,
     title_has_excluded_keyword,
     extract_years,
+    extract_decades,
     needed_years,
     build_year_queries,
     build_era_queries,
@@ -200,6 +201,28 @@ class TestBuildYearQueries:
     def test_query_string_format(self):
         out = build_year_queries(["Nittany Lions badge"], {2001})
         assert out == [("Nittany Lions badge 2001", 2001)]
+
+
+class TestExtractDecades:
+    def test_four_digit_decade(self):
+        assert extract_decades("Penn State buttons 1990s lot") == set(range(1990, 2000))
+
+    def test_apostrophe_decade(self):
+        assert extract_decades("PSU 1980's pins") == set(range(1980, 1990))
+
+    def test_two_digit_decade_maps_to_century(self):
+        assert extract_decades("vintage 90s PSU lot") == set(range(1990, 2000))
+        assert extract_decades("'00s Penn State") == set(range(2000, 2010))
+
+    def test_multiple_decades(self):
+        assert extract_decades("1980s and 1990s Penn State pins") == set(range(1980, 2000))
+
+    def test_plain_year_is_not_a_decade(self):
+        assert extract_decades("Penn State 1990 button") == set()
+        assert extract_decades("1982 Fiesta Bowl") == set()
+
+    def test_empty(self):
+        assert extract_decades("") == set()
 
 
 class TestExtractYears:

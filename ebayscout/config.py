@@ -212,9 +212,11 @@ YEAR_CRAWL_TERMS: list[str] = (
 YEAR_CRAWL_PSU_TERMS: list[str] = list(PSU_SEARCH_QUERIES)
 
 # --- Dry-run mode (set True for smoke testing) ---
-# When True: the scan runs end-to-end but fires no real alerts and writes
-# nothing to GCS (no seen_items.json, no scan_log.jsonl) — it logs "[DRY RUN]"
-# lines and posts a single preview digest of needed-button candidate scores to
-# the scout Slack channel (for tuning NEEDED_MATCH_THRESHOLD). Can also be
-# overridden per-request with /run-scan?dry_run=1.
+# When True: the scan runs end-to-end but fires no real alerts and does NOT
+# write seen_items.json (no dedup pollution) — it logs "[DRY RUN]" lines and
+# posts a single preview digest of needed-button candidate scores to the scout
+# Slack channel (for tuning NEEDED_MATCH_THRESHOLD). It DOES persist
+# scan_log.jsonl (checkpointed every 50) so a big preview's per-listing data
+# survives the 30-min request cap. Can be overridden per-request with
+# /run-scan?dry_run=1.
 DRY_RUN = False
