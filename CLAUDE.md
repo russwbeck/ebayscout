@@ -35,3 +35,31 @@ next steps, start with `ebayscout/HANDOFF.md`.
 - The full Python stack (torch/clip/flask/google-cloud) is **not installed** in
   web sessions — only pure-Python tests (e.g. `utils`) run here; matcher/notifier
   tests need CI. State honestly what was and wasn't actually run.
+
+## Process discipline (hard-learned — these cost the user CPU $$ and trust)
+
+Real mistakes from a prior session. Do not repeat them:
+
+- **Never commit to a branch after its PR has merged.** A merged PR is frozen at
+  its merge commit. Once a PR merges, cut a NEW branch for further work — do not
+  pile more commits onto the merged branch, and never tell the user a commit
+  "landed in" a PR. (This happened: commits were pushed onto an
+  already-merged branch and falsely described as part of the merged PR.)
+- **Re-query GitHub before stating ANY PR/commit fact** — merged or not, which
+  commits it contains, what's on `main` vs the branch. From the API, never from
+  memory. (The rule above already existed and was still violated — treat it as
+  non-negotiable.)
+- **Flag cost and scope before suggesting any command that triggers heavy
+  compute.** `?year_crawl=1`, `?ignore_seen=1`, and the ID hunt launch large
+  eBay-API + CPU runs that cost real money. Lead with the *minimal* command for
+  the user's stated goal; state exactly what a flag does and its cost before
+  offering it. (A suggested `?year_crawl=1` kicked off a full unwanted crawl.)
+- **Be precise about what each file/artifact IS.** Never hand the user a
+  throwaway analysis snapshot as if it were the live data path. Name the
+  canonical source of truth (the GCS blobs the service reads/writes:
+  `seen_items.json`, `scan_log.jsonl`, `hunt_ids.json`) explicitly.
+- **Before telling the user to run repo code, confirm it's on the branch they'll
+  actually run** (usually `main` via a fresh clone). Tooling stranded on an
+  unmerged branch won't exist in their checkout.
+- **Don't sprawl.** Do the one thing asked, cleanly; don't generate extra tools
+  or files that muddy what to do next.
