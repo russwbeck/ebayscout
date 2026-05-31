@@ -98,6 +98,20 @@ See `LOGGING.md` for the schema, the `LOGGER_ID` setup, and the
    PRs are merged/deployed.
 5. Only then start Step 3.
 
+## Round 4 — log Dussellbot (Haiku) interactions (diagnostics branch)
+
+Dussellbot was previously invisible to the sheet. Now logged (no new Dussellbot
+functionality added — only logging):
+- **buttonmatcher `/inventory`**: when Haiku is invoked, a `dussellbot_invoke`
+  row records it ran, what it transcribed (`typed_slogan`, with year+confidence),
+  and the top match it proposed. Confirming a Haiku suggestion writes a separate
+  `dussellbot` row; exhausting all options writes `dussellbot_skip`.
+- **buybot `/buy`**: Haiku returns free text, so one `dussellbot_invoke` row per
+  call — user's query in `typed_slogan`, Haiku's answer snippet in
+  `chosen_phrase`.
+- Shared `match_logging.py` unchanged (main.py-only edits); still byte-identical
+  across all bots; 26 tests pass; both mains compile.
+
 ## Notes / things to watch
 
 - All log writes are **fail-open**: a logging error is swallowed, never breaks

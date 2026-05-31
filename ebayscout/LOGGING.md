@@ -123,9 +123,18 @@ direct picks). Comparing the two — and `rank_*` (which is empty for
 Hough-missed buttons, since they never produced a leaderboard) — shows where the
 matcher fell short and what humans actually type.
 
-`source` ∈ `pick | direct | manual | dussellbot | other_sports |
-typed_search | missed_button | skip | skip_after_type | missed_button_skip` —
-which path produced the confirmation.
+`source` ∈ `pick | direct | manual | other_sports | typed_search |
+missed_button | skip | skip_after_type | missed_button_skip | dussellbot |
+dussellbot_invoke | dussellbot_skip` — which path produced the row.
+
+**Dussellbot (Haiku) is logged.** When the user clicks "Ask Dussellbot", a
+`dussellbot_invoke` row records that Haiku was called, what it transcribed
+(`typed_slogan`) and the top match it proposed — even if the user abandons. If
+the user then confirms one of Haiku's suggestions, a separate `dussellbot` row
+is written; if they exhaust everything, a `dussellbot_skip` row. (On `/buy`,
+Dussellbot returns free text, so only a `dussellbot_invoke` row is written, with
+the user's query in `typed_slogan` and Haiku's answer snippet in
+`chosen_phrase`.)
 
 ---
 
