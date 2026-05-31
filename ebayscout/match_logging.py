@@ -297,11 +297,18 @@ def build_confirm_record(
     rank_restricted,
     rank_shadow,
     shadow_leaderboard_size,
+    typed_slogan=None,
 ):
     """One record per user confirmation, written when the human picks an answer.
 
     ``rank_shadow`` is the key signal: the rank of the confirmed year in the
     *unrestricted* leaderboard.
+
+    ``typed_slogan`` captures the raw text the user typed (when they corrected a
+    bad/missing match by typing a slogan), kept separate from ``chosen_phrase``
+    (the database slogan they ultimately confirmed).  It is logged for EVERY
+    typed path — typed-search picks, missed-button picks, and skips after a
+    typed search — so we can study what humans type vs. what the matcher offered.
     """
     return {
         "schema": SCHEMA_CONFIRM,
@@ -316,7 +323,9 @@ def build_confirm_record(
         "chosen_year": str(chosen_year),
         "chosen_phrase": chosen_phrase,
         "chosen_type": chosen_type,
-        "source": source,                 # "pick"|"manual"|"dussellbot"|"other_sports"|"slogan_only"
+        "typed_slogan": typed_slogan,
+        "source": source,                 # pick|manual|dussellbot|other_sports|
+                                          # typed_search|missed_button|skip|skip_after_type
         "rank_restricted": rank_restricted,
         "rank_shadow": rank_shadow,
         "shadow_leaderboard_size": shadow_leaderboard_size,
@@ -336,8 +345,8 @@ MATCH_HEADER = [
 
 CONFIRM_HEADER = [
     "ts", "service", "command", "job_id", "thread_ts", "crop_num", "check_id",
-    "user_id", "chosen_year", "chosen_phrase", "chosen_type", "source",
-    "rank_restricted", "rank_shadow", "shadow_leaderboard_size",
+    "user_id", "chosen_year", "chosen_phrase", "chosen_type", "typed_slogan",
+    "source", "rank_restricted", "rank_shadow", "shadow_leaderboard_size",
 ]
 
 
@@ -375,7 +384,8 @@ def flatten_confirm_record(rec):
         _cell(rec.get("ts")), _cell(rec.get("service")), _cell(rec.get("command")),
         _cell(rec.get("job_id")), _cell(rec.get("thread_ts")), _cell(rec.get("crop_num")),
         _cell(rec.get("check_id")), _cell(rec.get("user_id")), _cell(rec.get("chosen_year")),
-        _cell(rec.get("chosen_phrase")), _cell(rec.get("chosen_type")), _cell(rec.get("source")),
+        _cell(rec.get("chosen_phrase")), _cell(rec.get("chosen_type")),
+        _cell(rec.get("typed_slogan")), _cell(rec.get("source")),
         _cell(rec.get("rank_restricted")), _cell(rec.get("rank_shadow")),
         _cell(rec.get("shadow_leaderboard_size")),
     ]

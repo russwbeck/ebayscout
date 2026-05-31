@@ -51,6 +51,23 @@ Fix (branch `claude/logging-diagnostics-fix`, NOT the merged PR branch):
 4. Confirm startup prints `MATCH_LOG: opened logging workbook '<name>' …`.
 5. `GET /internal/logtest`, or run a real `/sort`, and confirm rows appear.
 
+## Round 3 — capture user-typed slogans (on the diagnostics branch)
+
+Added to PR #23 (branch `claude/logging-diagnostics-fix`):
+- **`/sort` no-match buttons** now include **"📝 Type slogan instead"** (was
+  Skip-only). Typing a slogan runs another matching round, mirroring
+  `/inventory`; `mode` is threaded through `type_slogan_first` →
+  `first_type_modal` so a `/sort` typed search confirms back into the sort
+  section and falls back to Skip (not Dussellbot).
+- **New `typed_slogan` column** in `confirm_log` records the raw text the user
+  typed, kept separate from the DB slogan they confirmed.
+- Typed text is now logged on every typed path: typed-search picks
+  (`typed_search`), missed-button picks (`missed_button`), and both skips after
+  typing (`skip_after_type`, `missed_button_skip`). Hough-missed buttons log
+  `rank_*` as empty (no leaderboard existed), which is itself a useful signal.
+- Shared `match_logging.py` stays byte-identical across all three bots; 27
+  unit tests pass.
+
 eBay crawling/scan code in ebayscout is **left fully intact** — paused, not
 deleted, per direction.
 

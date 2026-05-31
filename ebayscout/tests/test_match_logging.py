@@ -166,6 +166,23 @@ def test_build_confirm_record():
     assert rec["schema"] == ml.SCHEMA_CONFIRM
     assert rec["chosen_year"] == "1990"
     assert rec["rank_shadow"] == 5
+    assert rec["typed_slogan"] is None        # default when not a typed path
+
+
+def test_confirm_record_logs_typed_slogan():
+    rec = ml.build_confirm_record(
+        service="buttonmatcher", command="/sort", job_id=None, thread_ts="t",
+        crop_num=3, check_id="k", user_id="u", chosen_year=1990,
+        chosen_phrase="Panthers' Pittfall", chosen_type="Football",
+        source="typed_search", rank_restricted=None, rank_shadow=2,
+        shadow_leaderboard_size=40, typed_slogan="panthers pitfall",
+    )
+    assert rec["typed_slogan"] == "panthers pitfall"
+    assert rec["source"] == "typed_search"
+    assert "typed_slogan" in ml.CONFIRM_HEADER
+    row = ml.flatten_confirm_record(rec)
+    assert len(row) == len(ml.CONFIRM_HEADER)
+    assert row[ml.CONFIRM_HEADER.index("typed_slogan")] == "panthers pitfall"
 
 
 # --- flatteners --------------------------------------------------------------

@@ -31,12 +31,11 @@ spreadsheet key). Two tabs are auto-created there on first run:
 
 ### Verifying the write path (do this before relying on logs)
 
-The `GET /internal/logtest` verification route lives in **buttonmatcher**; it
-writes to the same shared `LOGGER_ID` workbook all three bots use, so one check
-covers the write path for all of them. For this service, confirm a real `/scout`
-analysis produces `match_log` rows in the `LOGGER_ID` workbook. Startup logs
-print `match logging enabled (LOGGER_ID workbook)` when the secret + share are
-correct.
+After deploy, hit **`GET /internal/logtest`** once. It writes one synthetic row
+(tagged `command=/logtest`) to each tab in the `LOGGER_ID` workbook and returns
+a plain-text result. Confirm both rows appear, then delete them by hand. If it
+returns `match logging is DISABLED`, the `LOGGER_ID` secret or the
+service-account share is the problem.
 
 Writes are **batched** (all of an image's crop rows in a single `append_rows`)
 and **fail-open** — a logging error is printed and swallowed, never raised into
@@ -115,11 +114,18 @@ phrase, overall, image_score, text_score, type) as JSON in a single cell.
 
 ### `confirm_log`
 `ts, service, command, job_id, thread_ts, crop_num, check_id, user_id,
-chosen_year, chosen_phrase, chosen_type, source, rank_restricted, rank_shadow,
-shadow_leaderboard_size`
+chosen_year, chosen_phrase, chosen_type, typed_slogan, source, rank_restricted,
+rank_shadow, shadow_leaderboard_size`
 
-`source` ∈ `pick | direct | manual | dussellbot | other_sports | slogan_pick |
-skip` — which path produced the confirmation.
+`chosen_phrase` is the database slogan the user confirmed; `typed_slogan` is the
+raw text the user *typed* when they corrected a bad/missing match (empty for
+direct picks). Comparing the two — and `rank_*` (which is empty for
+Hough-missed buttons, since they never produced a leaderboard) — shows where the
+matcher fell short and what humans actually type.
+
+`source` ∈ `pick | direct | manual | dussellbot | other_sports |
+typed_search | missed_button | skip | skip_after_type | missed_button_skip` —
+which path produced the confirmation.
 
 ---
 
@@ -127,7 +133,12 @@ skip` — which path produced the confirmation.
 
 - **`/inventory`, `/sort`** (buttonmatcher): full per-crop detection +
   restricted + shadow leaderboards; confirmation joined by
-  `(channel_id, thread_ts, crop_num)`.
+  `(channel_id, thread_ts, crop_num)`. Both modes now offer **"📝 Type slogan
+  instead"** on a no-match button: the user types a slogan, the bot runs another
+  matching round, and the typed text is logged (`typed_slogan`) whether they
+  then pick a result (`source=typed_search`) or skip (`source=skip_after_type`).
+  Hough-missed buttons reported via "Type Missed Button" log the typed text too
+  (`source=missed_button` / `missed_button_skip`).
 - **`/buy`** (buybot): matches the whole uploaded image (no grid/count), so
   `det_count_user = 1`, `det_count_noinput` is the unguided circle count as an
   automation baseline, and the shadow leaderboard is the full universe.
