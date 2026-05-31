@@ -16,6 +16,7 @@ Two interaction flows:
 
 import contextlib
 import datetime
+import io
 import json
 import os
 import re
@@ -35,6 +36,8 @@ from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
+from . import match_logging as mlog
+from .match_logging import SheetLogger
 from .utils import (
     parse_price_source,
     format_manual_result,
@@ -87,6 +90,11 @@ handler  = SlackRequestHandler(bolt_app)
 
 buy_rules:     dict = {}
 vectors_loaded: bool = False
+
+# --- STRUCTURED LOGGING (advanced match/detection analytics) ---
+# Disabled until startup() attaches the log tabs.  All writes fail-open so
+# logging can never break /scout.  Shared byte-identical match_logging module.
+match_logger = SheetLogger(None, None, service="ebayscout")
 
 # pending_scans[user_id] = {file_url, channel_id, thread_ts}
 # Keyed by user so simultaneous uploads from different people work independently
@@ -680,6 +688,66 @@ def _run_manual_analysis(
                 key = (match["year"], match["slogan"])
                 if key not in matched or match["overall"] > matched[key]["overall"]:
                     matched[key] = match
+
+        # ------------------------------------------------------------
+        # STRUCTURED LOGGING: counterfactual ("shadow") pass + detection diag.
+        # The user supplies a button count + era restriction; the restricted
+        # result above is what drives the valuation.  Here we additionally run
+        # the SAME crops fully unrestricted (no era/year filter) and log, per
+        # crop, the restricted vs unrestricted best match — plus an unguided
+        # ("no user input") detection count — so we can learn how to close the
+        # gap and automate the era/count limitations away.  Entirely fail-open.
+        # ------------------------------------------------------------
+        try:
+            if match_logger.enabled and mlog.shadow_pass_enabled():
+                # Unguided detection baseline: re-run segmentation with NO count
+                # hint (scan-mode multi-scale sweep) and compare the crop count.
+                _noinput_n = None
+                try:
+                    _noinput_crops = _ip.detect_and_crop(image_bytes, button_count=None)
+                    _noinput_n = len(_noinput_crops)
+                except Exception as _de:
+                    print(f">>> MATCH_LOG: unguided detect failed: {_de}", flush=True)
+
+                # Shadow match: identical crops, no year restriction.
+                try:
+                    shadow_results = _cm.match_crops_batch(crops, restrict_years=None)
+                except Exception as _se:
+                    print(f">>> MATCH_LOG: shadow match failed: {_se}", flush=True)
+                    shadow_results = [None] * len(crops)
+
+                try:
+                    _pw, _ph = Image.open(io.BytesIO(image_bytes)).size
+                except Exception:
+                    _pw = _ph = 0
+
+                _detection = mlog.build_detection_diag(
+                    h=_ph, w=_pw, bg_brightness=0.0, bg_is_white=False, mask_path="",
+                    hough_pass1_count=len(crops), hough_retry_count=None,
+                    final_count_user=len(crops), final_count_noinput=_noinput_n,
+                    user_count=button_count, detector_used="hough", n_crops=len(crops),
+                )
+                _job_id = f"{thread_ts}:{int(time.time())}"
+                _records = []
+                for _i, (_r_match, _s_match) in enumerate(zip(batch_results, shadow_results), 1):
+                    _restricted_top = ([mlog.trim_top([_r_match], 1)[0]] if _r_match else [])
+                    _shadow_top     = ([mlog.trim_top([_s_match], 1)[0]] if _s_match else [])
+                    _records.append(mlog.build_match_record(
+                        service="ebayscout", command="/scout", mode="scout",
+                        job_id=_job_id, thread_ts=thread_ts, channel_id=channel_id,
+                        user_id="", crop_num=_i, check_id=None, detection=_detection,
+                        bank=(era_label or "all"),
+                        restricted_top=_restricted_top, shadow_top=_shadow_top,
+                        shadow_enabled=True,
+                    ))
+                match_logger.log_image_crops(_job_id, _records)
+                print(
+                    f">>> MATCH_LOG: /scout logged {len(_records)} crops "
+                    f"(guided={len(crops)}, unguided={_noinput_n}, "
+                    f"restrict={_restrict_txt}).", flush=True,
+                )
+        except Exception as _mlog_e:
+            print(f">>> MATCH_LOG: /scout logging failed: {_mlog_e}", flush=True)
 
         # Enrich with price data
         enriched_matches = []
@@ -1729,7 +1797,7 @@ def _run_daily_scan(
 
 def startup() -> None:
     """Load Google Sheets and CLIP model in the background."""
-    global buy_rules
+    global buy_rules, match_logger
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -1738,6 +1806,22 @@ def startup() -> None:
         buy_rules      = sheets_client.load_buy_rules(sheets_json, spreadsheet_id)
     except Exception as exc:
         print(f"!!! STARTUP: Sheets error: {exc}", flush=True)
+
+    # Attach the structured-logging tabs to the same workbook (fail-open: if this
+    # errors, match_logger stays disabled and /scout runs normally).
+    try:
+        import gspread
+        from google.oauth2 import service_account
+        _creds = service_account.Credentials.from_service_account_info(
+            json.loads(_get_secret("GOOGLE_SHEETS_JSON"))
+        ).with_scopes(["https://www.googleapis.com/auth/spreadsheets"])
+        _gc = gspread.authorize(_creds)
+        _ss = _gc.open_by_key(_get_secret("SPREADSHEET_ID"))
+        _mws, _cws = mlog.attach_log_tabs(_ss)
+        match_logger = SheetLogger(_mws, _cws, service="ebayscout")
+        print(f">>> STARTUP: match logging {'enabled' if match_logger.enabled else 'DISABLED'}.", flush=True)
+    except Exception as exc:
+        print(f"!!! STARTUP: match logging setup failed: {exc}", flush=True)
 
     # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
     # may not finish until an HTTP request (a scan, /scout, or an upload)
