@@ -1807,8 +1807,9 @@ def startup() -> None:
     except Exception as exc:
         print(f"!!! STARTUP: Sheets error: {exc}", flush=True)
 
-    # Attach the structured-logging tabs to the same workbook (fail-open: if this
-    # errors, match_logger stays disabled and /scout runs normally).
+    # Attach the structured-logging tabs to the DEDICATED logging workbook
+    # (LOGGER_ID secret), separate from the buy-rules sheet.  Fail-open: if this
+    # errors, match_logger stays disabled and /scout runs normally.
     try:
         import gspread
         from google.oauth2 import service_account
@@ -1816,10 +1817,10 @@ def startup() -> None:
             json.loads(_get_secret("GOOGLE_SHEETS_JSON"))
         ).with_scopes(["https://www.googleapis.com/auth/spreadsheets"])
         _gc = gspread.authorize(_creds)
-        _ss = _gc.open_by_key(_get_secret("SPREADSHEET_ID"))
-        _mws, _cws = mlog.attach_log_tabs(_ss)
+        _mws, _cws = mlog.open_log_sheets(_gc, _get_secret("LOGGER_ID"))
         match_logger = SheetLogger(_mws, _cws, service="ebayscout")
-        print(f">>> STARTUP: match logging {'enabled' if match_logger.enabled else 'DISABLED'}.", flush=True)
+        print(f">>> STARTUP: match logging {'enabled' if match_logger.enabled else 'DISABLED'} "
+              f"(LOGGER_ID workbook).", flush=True)
     except Exception as exc:
         print(f"!!! STARTUP: match logging setup failed: {exc}", flush=True)
 

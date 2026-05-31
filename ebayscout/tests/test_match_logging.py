@@ -192,6 +192,47 @@ def test_flatten_match_row_matches_header_width():
     assert row[ml.MATCH_HEADER.index("det_hough_retry")] == ""
 
 
+def test_detection_diag_includes_bg_saturation():
+    d = ml.build_detection_diag(
+        h=10, w=20, bg_brightness=180.0, bg_saturation=22.5, bg_is_white=True,
+        mask_path="blue_only", hough_pass1_count=8, hough_retry_count=None,
+        final_count_user=12, final_count_noinput=9, user_count=12,
+        detector_used="hough", n_crops=12,
+    )
+    assert d["bg_saturation"] == 22.5
+    # saturation is optional — defaults to None when the sampler didn't report it
+    d2 = ml.build_detection_diag(
+        h=10, w=20, bg_brightness=180.0, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=8, hough_retry_count=None, final_count_user=12,
+        final_count_noinput=9, user_count=12, detector_used="hough", n_crops=12,
+    )
+    assert d2["bg_saturation"] is None
+
+
+def test_bg_saturation_column_present_and_flattened():
+    assert "det_bg_saturation" in ml.MATCH_HEADER
+    diag = ml.build_detection_diag(
+        h=1, w=1, bg_brightness=180.0, bg_saturation=22.5, bg_is_white=True,
+        mask_path="blue_only", hough_pass1_count=1, hough_retry_count=None,
+        final_count_user=1, final_count_noinput=1, user_count=1,
+        detector_used="hough", n_crops=1,
+    )
+    rec = ml.build_match_record(
+        service="s", command="/c", mode="m", job_id="j", thread_ts="t",
+        channel_id="c", user_id="u", crop_num=1, check_id="k", detection=diag,
+        bank="all", restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    assert row[ml.MATCH_HEADER.index("det_bg_saturation")] == 22.5
+
+
+def test_trim_top_defaults_to_ten():
+    rows = [{"year": str(1900 + i), "overall": 1.0 - i * 0.01} for i in range(15)]
+    assert len(ml.trim_top(rows)) == 10            # bulk slogan detection = top 10
+    assert len(ml.trim_top(rows, 5)) == 5          # explicit n still honoured
+
+
 def test_flatten_confirm_row_matches_header_width():
     rec = ml.build_confirm_record(
         service="s", command="/c", job_id="j", thread_ts="t", crop_num=1,

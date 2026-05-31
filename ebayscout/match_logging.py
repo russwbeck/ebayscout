@@ -170,8 +170,13 @@ def rank_of(year, ordered_results):
     return None
 
 
-def trim_top(results, n=5):
-    """Serialize the top-n results compactly for logging into a single cell."""
+def trim_top(results, n=10):
+    """Serialize the top-n results compactly for logging into a single cell.
+
+    Defaults to the top 10 ("bulk slogan detection"): we want to see whether the
+    correct slogan even reaches the front of the line across ALL reference
+    images and slogans, and which references/slogans get over-promoted over time.
+    """
     out = []
     for r in (results or [])[:n]:
         out.append({
@@ -205,18 +210,26 @@ def build_detection_diag(
     user_count,
     detector_used,
     n_crops,
+    bg_saturation=None,
 ):
     """Detection diagnostics block.
 
     ``final_count_user`` and ``final_count_noinput`` are the heart of the
-    automation question: the first uses the user-supplied count/grid, the second
-    is an unguided sweep with no count.  The delta between them measures how much
-    the human's count is still doing for us.
+    detection-automation question: the first uses the user-supplied count/grid,
+    the second is an unguided sweep with no count.  The delta between them
+    measures how much the human's count is still doing for us.
+
+    ``bg_brightness`` / ``bg_saturation`` / ``bg_is_white`` / ``mask_path`` are
+    "what the background sampler saw" — logged so we can correlate the sampled
+    background against how many circles Hough finds.  The unguided count is NOT
+    analyzed beyond counting (that would waste compute); we only want to see
+    what it sees.
     """
     return {
         "h": int(h),
         "w": int(w),
         "bg_brightness": round(float(bg_brightness), 2),
+        "bg_saturation": (None if bg_saturation is None else round(float(bg_saturation), 2)),
         "bg_is_white": bool(bg_is_white),
         "mask_path": mask_path,                       # "blue_only" | "blue_or_white"
         "hough_pass1_count": int(hough_pass1_count),
@@ -314,9 +327,9 @@ def build_confirm_record(
 MATCH_HEADER = [
     "ts", "service", "command", "mode", "job_id", "thread_ts", "channel_id",
     "user_id", "crop_num", "check_id",
-    "det_h", "det_w", "det_bg_brightness", "det_bg_is_white", "det_mask_path",
-    "det_hough_pass1", "det_hough_retry", "det_count_user", "det_count_noinput",
-    "det_user_count", "det_detector_used", "det_n_crops",
+    "det_h", "det_w", "det_bg_brightness", "det_bg_saturation", "det_bg_is_white",
+    "det_mask_path", "det_hough_pass1", "det_hough_retry", "det_count_user",
+    "det_count_noinput", "det_user_count", "det_detector_used", "det_n_crops",
     "bank", "restricted_top_json", "shadow_enabled", "shadow_top_json",
 ]
 
@@ -344,6 +357,7 @@ def flatten_match_record(rec):
         _cell(rec.get("channel_id")), _cell(rec.get("user_id")), _cell(rec.get("crop_num")),
         _cell(rec.get("check_id")),
         _cell(d.get("h")), _cell(d.get("w")), _cell(d.get("bg_brightness")),
+        _cell(d.get("bg_saturation")),
         _cell(d.get("bg_is_white")), _cell(d.get("mask_path")),
         _cell(d.get("hough_pass1_count")), _cell(d.get("hough_retry_count")),
         _cell(d.get("final_count_user")), _cell(d.get("final_count_noinput")),

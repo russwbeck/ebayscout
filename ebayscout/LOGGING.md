@@ -15,13 +15,28 @@ no pytest needed).
 
 ## Where the data goes
 
-Two tabs are auto-created in the same workbook the bot already uses (the one
-holding the inventory / buy rules):
+Logs are written to a **dedicated logging spreadsheet**, separate from the
+inventory / buy-rules workbook, identified by the **`LOGGER_ID`** secret (the
+spreadsheet key). Two tabs are auto-created there on first run:
 
 | Tab | One row per | Written when |
 |---|---|---|
 | `match_log` | crop (button) | at detection/match time, batched one append per image |
 | `confirm_log` | human confirmation | when the user picks/confirms an answer |
+
+> The service account must have edit access to the `LOGGER_ID` spreadsheet.
+> If you change the column schema later, delete the old tab so it is recreated
+> with the new header (headers are only written when a tab is first created or
+> is empty).
+
+### Verifying the write path (do this before relying on logs)
+
+The `GET /internal/logtest` verification route lives in **buttonmatcher**; it
+writes to the same shared `LOGGER_ID` workbook all three bots use, so one check
+covers the write path for all of them. For this service, confirm a real `/scout`
+analysis produces `match_log` rows in the `LOGGER_ID` workbook. Startup logs
+print `match logging enabled (LOGGER_ID workbook)` when the secret + share are
+correct.
 
 Writes are **batched** (all of an image's crop rows in a single `append_rows`)
 and **fail-open** — a logging error is printed and swallowed, never raised into
@@ -56,14 +71,21 @@ We also log `det_bg_brightness`, `det_bg_is_white`, and `det_mask_path`
 (`blue_only` on white/paper backgrounds vs `blue_or_white` on wood) so we can
 correlate **background colour → Hough recall** directly.
 
-### 2. Matching: do the era/sport/year limitations still earn their keep?
+### 2. Matching ("bulk slogan detection"): can the right slogan reach the front?
 
 Today we boost accuracy by restricting the candidate pool (bank era, Football
 first, only known years). None of that scales to full automation. So alongside
 the **restricted** result the user sees, every crop is also scored against the
-**full unrestricted universe** (all years, all sports, no filter) — the
-"shadow" pass. This reuses the already-encoded crop vector, so it costs only a
-couple of extra matmuls.
+**full unrestricted universe** — all reference images and all slogans, all
+years, all sports — the "shadow" pass. This reuses the already-encoded crop
+vector, so it costs only a couple of extra matmuls (the crops are *not*
+re-detected — we only re-rank the matches we already have).
+
+Both `restricted_top_json` and `shadow_top_json` log the **top 10** candidates
+per crop. Over time this surfaces *which reference images / slogans get
+over-promoted* (consistently near the top for buttons that aren't them) and
+whether the correct slogan ever reaches the front of the line — the levers for
+getting the right button to #1 without human input.
 
 When the human confirms an answer, `confirm_log` records:
 
@@ -81,12 +103,14 @@ which button classes still need the guardrails.
 
 ### `match_log`
 `ts, service, command, mode, job_id, thread_ts, channel_id, user_id, crop_num,
-check_id, det_h, det_w, det_bg_brightness, det_bg_is_white, det_mask_path,
-det_hough_pass1, det_hough_retry, det_count_user, det_count_noinput,
-det_user_count, det_detector_used, det_n_crops, bank, restricted_top_json,
-shadow_enabled, shadow_top_json`
+check_id, det_h, det_w, det_bg_brightness, det_bg_saturation, det_bg_is_white,
+det_mask_path, det_hough_pass1, det_hough_retry, det_count_user,
+det_count_noinput, det_user_count, det_detector_used, det_n_crops, bank,
+restricted_top_json, shadow_enabled, shadow_top_json`
 
-`restricted_top_json` / `shadow_top_json` hold the top-5 candidates (year,
+`det_bg_brightness` / `det_bg_saturation` are what the border sampler saw (HSV
+mean V / S); `det_bg_is_white` and `det_mask_path` are the resulting decisions.
+`restricted_top_json` / `shadow_top_json` hold the **top 10** candidates (year,
 phrase, overall, image_score, text_score, type) as JSON in a single cell.
 
 ### `confirm_log`
