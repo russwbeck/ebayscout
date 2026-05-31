@@ -227,6 +227,28 @@ def test_bg_saturation_column_present_and_flattened():
     assert row[ml.MATCH_HEADER.index("det_bg_saturation")] == 22.5
 
 
+def test_extract_spreadsheet_key_from_url_and_bare():
+    key = "1AbCdEf-GhIjKlMnOpQrStUvWxYz0123456789_ABC"
+    url = f"https://docs.google.com/spreadsheets/d/{key}/edit#gid=0"
+    assert ml._extract_spreadsheet_key(url) == key
+    assert ml._extract_spreadsheet_key(f"  {key}\n") == key   # strips whitespace
+    assert ml._extract_spreadsheet_key(key) == key
+    assert ml._extract_spreadsheet_key("") == ""
+    assert ml._extract_spreadsheet_key(None) == ""
+
+
+def test_disabled_logger_warns_once(capsys=None):
+    import io as _io
+    import contextlib as _ctx
+    logger = ml.SheetLogger(None, None, service="x")
+    buf = _io.StringIO()
+    with _ctx.redirect_stdout(buf):
+        logger.log_image_crops("j", [{"detection": {}}])
+        logger.log_image_crops("j2", [{"detection": {}}])  # should NOT warn again
+    out = buf.getvalue()
+    assert out.count("logging is DISABLED") == 1   # warned exactly once
+
+
 def test_trim_top_defaults_to_ten():
     rows = [{"year": str(1900 + i), "overall": 1.0 - i * 0.01} for i in range(15)]
     assert len(ml.trim_top(rows)) == 10            # bulk slogan detection = top 10

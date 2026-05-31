@@ -44,6 +44,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import traceback
 
 
@@ -394,6 +395,8 @@ class SheetLogger:
         self._match_ws = match_ws
         self._confirm_ws = confirm_ws
         self._service = service
+        self._warned_disabled = False   # so a disabled logger says so ONCE
+        self._logged_first_write = False
 
     @property
     def service(self):
@@ -403,43 +406,86 @@ class SheetLogger:
     def enabled(self):
         return self._match_ws is not None or self._confirm_ws is not None
 
+    def _warn_disabled_once(self, what):
+        if not self._warned_disabled:
+            print(f">>> MATCH_LOG: SKIPPED {what} — logging is DISABLED "
+                  f"(no worksheet handle; check LOGGER_ID + sheet sharing at "
+                  f"startup).", flush=True)
+            self._warned_disabled = True
+
     def log_image_crops(self, job_id, records):
         """Append all per-crop match rows for one image in a single batched call."""
-        if not records or self._match_ws is None:
+        if not records:
+            return
+        if self._match_ws is None:
+            self._warn_disabled_once("match write")
             return
         try:
             rows = [flatten_match_record(r) for r in records]
             self._match_ws.append_rows(rows, value_input_option="RAW")
+            if not self._logged_first_write:
+                print(f">>> MATCH_LOG: ✅ first match write OK "
+                      f"({len(rows)} row(s), job {job_id}).", flush=True)
+                self._logged_first_write = True
         except Exception as e:
-            print(f">>> MATCH_LOG: match write failed for job {job_id}: {e}", flush=True)
+            print(f">>> MATCH_LOG: match write FAILED for job {job_id}: "
+                  f"{type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
 
     def log_confirmation(self, check_id, record):
         if self._confirm_ws is None:
+            self._warn_disabled_once("confirm write")
             return
         try:
             self._confirm_ws.append_row(
                 flatten_confirm_record(record), value_input_option="RAW"
             )
         except Exception as e:
-            print(f">>> MATCH_LOG: confirm write failed for {check_id}: {e}", flush=True)
+            print(f">>> MATCH_LOG: confirm write FAILED for {check_id}: "
+                  f"{type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
+
+
+def _extract_spreadsheet_key(raw):
+    """Accept either a bare spreadsheet key or a full Google Sheets URL (and
+    tolerate stray whitespace/newlines in the secret).  Returns the key.
+
+    A common setup mistake is pasting the whole URL into the LOGGER_ID secret;
+    gspread.open_by_key needs just the key, so we extract it here.
+    """
+    s = (raw or "").strip()
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", s)
+    if m:
+        return m.group(1)
+    return s
 
 
 def open_log_sheets(gspread_client, spreadsheet_id):
     """Open (creating if needed) the match_log / confirm_log tabs and ensure
     headers exist.  Returns (match_ws, confirm_ws).  On any failure returns
-    (None, None) so the caller's SheetLogger is simply disabled — never fatal.
+    (None, None) so the caller's SheetLogger is simply disabled — never fatal,
+    but the reason is printed loudly so a silent disable is diagnosable.
 
-    Not unit-tested here (needs live gspread); kept tiny and defensive.
+    Not unit-tested for the live gspread path; the key extraction is.
     """
+    key = _extract_spreadsheet_key(spreadsheet_id)
+    _hint = f"key='{key[:6]}…{key[-4:]}' (len={len(key)})" if key else "key=EMPTY"
+    if not key:
+        print(">>> MATCH_LOG: open_log_sheets ABORT — LOGGER_ID is empty. "
+              "Set the LOGGER_ID secret to the logging spreadsheet's key.", flush=True)
+        return None, None
     try:
-        ss = gspread_client.open_by_key(spreadsheet_id)
+        ss = gspread_client.open_by_key(key)
         match_ws = _ensure_tab(ss, MATCH_TAB, MATCH_HEADER)
         confirm_ws = _ensure_tab(ss, CONFIRM_TAB, CONFIRM_HEADER)
+        print(f">>> MATCH_LOG: opened logging workbook '{ss.title}' ({_hint}); "
+              f"tabs '{MATCH_TAB}' + '{CONFIRM_TAB}' ready.", flush=True)
         return match_ws, confirm_ws
     except Exception as e:
-        print(f">>> MATCH_LOG: open_log_sheets failed: {e}", flush=True)
+        print(f">>> MATCH_LOG: open_log_sheets FAILED ({_hint}): {type(e).__name__}: {e}. "
+              "Most likely the logging spreadsheet is NOT shared with the bot's "
+              "service-account email (give it Editor), or LOGGER_ID is wrong.",
+              flush=True)
         traceback.print_exc()
         return None, None
 

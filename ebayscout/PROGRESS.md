@@ -16,11 +16,40 @@ slogan to #1 without the era/sport/year limitations.
 
 | Step | Description | State |
 |---|---|---|
-| 1 | Advanced detection + match logging in buttonmatcher | ✅ code complete, in PR |
-| 2 | Same logging in `/buy` (buybot) and `/scout` (ebayscout) | ✅ code complete, in PR |
-| — | **Verify writes to the `LOGGER_ID` spreadsheet** | ⏳ pending live `/internal/logtest` |
-| 3 | Merge buybot (`/buy`, `/suggest`) into buttonmatcher | ⬜ not started (awaiting log verification) |
+| 1 | Advanced detection + match logging in buttonmatcher | ✅ merged (PR #22) |
+| 2 | Same logging in `/buy` (buybot) and `/scout` (ebayscout) | ✅ in PR |
+| — | **Verify writes to the `LOGGER_ID` spreadsheet** | ⚠️ first live run wrote NOTHING — diagnosing (see below) |
+| 3 | Merge buybot (`/buy`, `/suggest`) into buttonmatcher | ⬜ blocked on log verification |
 | 4 | Move `/scout` into buttonmatcher; decommission standalone | ⬜ not started |
+
+## Round 2 — logging wrote nothing (diagnosis + fix)
+
+First live `/sort` run (2026-05-31): the new code ran (the unguided-count log
+line appeared) but **no `>>> MATCH_LOG:` line appeared at all** — meaning the
+logger was disabled at startup (`open_log_sheets` threw and was swallowed) and
+then skipped silently on every write.
+
+Almost certainly the new logging spreadsheet is **not shared with the bot's
+service-account email** (gspread `open_by_key` raises on an inaccessible sheet),
+or `LOGGER_ID` holds a full URL / trailing newline instead of the bare key.
+
+Fix (branch `claude/logging-diagnostics-fix`, NOT the merged PR branch):
+- `open_log_sheets` now prints a loud, actionable line on success AND failure
+  (names the workbook, the key prefix, and "share with the service account").
+- `LOGGER_ID` may now be a full Sheets **URL or** a bare key — the key is
+  extracted (`_extract_spreadsheet_key`), and whitespace/newlines are trimmed.
+- `SheetLogger` warns ONCE when a write is skipped because logging is disabled,
+  and prints a one-time "✅ first match write OK" when it succeeds — so silence
+  is no longer ambiguous.
+- `init_sheets`/`startup` now print the **service-account email** so it's
+  obvious which address to share the logging sheet with (Editor).
+
+### Action for the operator
+1. Deploy this branch.
+2. Read startup logs for `service account = …@….iam.gserviceaccount.com`.
+3. Share the `LOGGER_ID` spreadsheet with that email as **Editor**.
+4. Confirm startup prints `MATCH_LOG: opened logging workbook '<name>' …`.
+5. `GET /internal/logtest`, or run a real `/sort`, and confirm rows appear.
 
 eBay crawling/scan code in ebayscout is **left fully intact** — paused, not
 deleted, per direction.

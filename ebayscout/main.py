@@ -1813,10 +1813,12 @@ def startup() -> None:
     try:
         import gspread
         from google.oauth2 import service_account
+        _creds_info = json.loads(_get_secret("GOOGLE_SHEETS_JSON"))
         _creds = service_account.Credentials.from_service_account_info(
-            json.loads(_get_secret("GOOGLE_SHEETS_JSON"))
+            _creds_info
         ).with_scopes(["https://www.googleapis.com/auth/spreadsheets"])
         _gc = gspread.authorize(_creds)
+        print(f">>> STARTUP: logging service account = {_creds_info.get('client_email', 'UNKNOWN')}", flush=True)
         _mws, _cws = mlog.open_log_sheets(_gc, _get_secret("LOGGER_ID"))
         match_logger = SheetLogger(_mws, _cws, service="ebayscout")
         print(f">>> STARTUP: match logging {'enabled' if match_logger.enabled else 'DISABLED'} "
