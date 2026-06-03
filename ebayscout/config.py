@@ -14,8 +14,9 @@ BUCKET_NAME    = "60d488c5-9c8e-4acc-aac-button-data"
 PROJECT_NUMBER = "404960106109"
 
 # --- Service base URL (this Cloud Run service's own public URL) ---
-# Used for the manual-analysis self-request (see main.py). Must match the
-# deployed service URL. Override at runtime with the SERVICE_BASE_URL env var.
+# Used to build the eBay account-deletion endpoint URL (EBAY_DELETION_ENDPOINT
+# below). Must match the deployed service URL. Override at runtime with the
+# SERVICE_BASE_URL env var.
 SERVICE_BASE_URL = os.environ.get(
     "SERVICE_BASE_URL", "https://ebay-scout-404960106109.us-east1.run.app"
 )
