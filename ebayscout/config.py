@@ -42,16 +42,33 @@ BUTTON_ERAS: dict = {
 ENABLE_ERA_DETECTION = True
 ERA_SAMPLE_LIMIT     = 5    # crops encoded to guess the lot era at the preview step
 
-# --- CLIP scoring (match buttonmatcher's constants) ---
-CONFIDENCE_THRESHOLD      = 0.72   # above → confident match, eligible for alerts
-REJECTION_THRESHOLD       = 0.45   # below → clearly not a gameday button
-ALPHA                     = 0.7   # image weight  (matches match_buttons.py)
-BETA                      = 0.3   # text weight   (matches match_buttons.py)
+# --- CLIP scoring (match buttonmatcher's constants EXACTLY) ---
+# ebayscout now mirrors buttonmatcher's unified scorer so its confidence tiers
+# (GREEN/AUTO below) transfer directly. ALPHA=BETA=0.5 with a single >0.9 text
+# boost, a <0.3 text penalty, and a rarity tiebreaker (see clip_matcher.py).
+CONFIDENCE_THRESHOLD      = 0.72   # legacy band marker (kept for scan_log/back-compat)
+REJECTION_THRESHOLD       = 0.45   # legacy band marker (kept for scan_log/back-compat)
+ALPHA                     = 0.5   # image weight  (matches buttonmatcher score_slogans)
+BETA                      = 0.5   # text weight   (matches buttonmatcher score_slogans)
 SLOGAN_PENALTY_THRESHOLD  = 0.3   # below this slogan_score → penalise overall
 PENALTY_MULTIPLIER        = 0.7
 
+# --- Confidence tiers (calibrated on buttonmatcher's 0.5/0.5 + boost + penalty
+# score; copied verbatim from buttonmatcher/main.py). A crop is "confirmed" only
+# when its top match is AUTO (>=0.85) or GREEN (>=0.82, or #1 leads #2 by >=0.12).
+AUTO_RESOLVE_THRESHOLD    = 0.85   # top-1 at/above this auto-confirms
+GREEN_THRESHOLD           = 0.82   # solo-score green: 0 wrong above this in data
+GREEN_GAP                 = 0.12   # a #1 leading #2 by this much earns green too
+RED_THRESHOLD             = 0.65   # below this = low confidence (35% wrong in data)
+
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
+
+# --- on-demand2 (/crawl500) run-state marker ---
+# Tracks whether /crawl500 has completed its first run. On the FIRST run it may
+# re-scan already-seen lots to reach the 500 cap; on every run after it processes
+# only unseen lots (still capped at 500). See seen_items.py load/save helpers.
+ONDEMAND2_STATE_BLOB = "ebay_scout/ondemand2_state.json"
 
 # --- eBay Browse API ---
 # Replaces the Finding + Shopping APIs, both decommissioned by eBay 2025-02-05.
@@ -215,6 +232,24 @@ MELLON_CITIZENS_ERA_QUERIES: list[tuple[str, str]] = (
 # Penn State University buttons rather than Power Supply Units.
 PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
 # Produces 4 queries: "PSU button", "PSU pin", "PSU badge", "PSU pinback"
+
+# --- on-demand2 (/crawl500) search ---------------------------------------------
+# User-stipulated search, distinct from everything above:
+#   "Penn State" AND (Citizens OR Mellon OR "Central Counties")
+#                AND (button* OR pin* OR Badge*)
+# The eBay Browse `q` parameter has no reliable boolean/wildcard support, and
+# find_listings() does not paginate past one <=200 window, so we OR-expand the
+# query into one explicit phrase per (bank x button-type), dedup, and cap at 500.
+# NO seller exclusion (see /internal/crawl500); the apparel-keyword + Clothing
+# category noise filters stay on.
+CRAWL500_BANKS: list[str] = ["Citizens", "Mellon", "Central Counties"]
+CRAWL500_QUERIES: list[str] = [
+    f"Penn State {bank} {btn}"
+    for bank in CRAWL500_BANKS
+    for btn in BUTTON_TYPES
+]
+# Produces 3 banks x 4 button-types = 12 queries.
+CRAWL500_MAX_LOTS = 500   # hard ceiling on lots processed per /crawl500 run
 
 # --- Year-augmented deep-crawl terms (on-demand /run-scan?year_crawl=1) ---
 # Base terms that get a year appended (e.g. "Penn State button 1982") for each

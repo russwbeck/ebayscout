@@ -18,6 +18,19 @@ import gspread
 from google.oauth2 import service_account
 
 
+def get_gspread_client(sheets_json: str):
+    """Return an authorized gspread client from the service-account JSON.
+
+    Shares the same credentials path as load_buy_rules(); used to open the
+    match_logging workbook (LOGGER_ID). Raises on bad credentials so the caller
+    can disable logging fail-open.
+    """
+    creds_info   = json.loads(sheets_json)
+    creds        = service_account.Credentials.from_service_account_info(creds_info)
+    scoped_creds = creds.with_scopes(["https://www.googleapis.com/auth/spreadsheets"])
+    return gspread.authorize(scoped_creds)
+
+
 def load_buy_rules(sheets_json: str, spreadsheet_id: str) -> dict:
     """
     Connect to Google Sheets and load all buy rules into a dict.

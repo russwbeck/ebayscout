@@ -37,7 +37,8 @@ def detect_and_crop(
     expected: int | None = None,
     button_count: int | None = None,
     max_crops: int | None = None,
-) -> list[Image.Image]:
+    return_diag: bool = False,
+):
     """
     Detect individual buttons in a lot photo and return PIL.Image crops (RGB).
 
@@ -54,8 +55,25 @@ def detect_and_crop(
     When no usable circles are found, falls back to the whole photo as one crop.
 
     Returns: list of PIL.Image.Image crops (RGB). Empty list if decode fails.
+    When return_diag=True, returns (crops, diag) where diag is a dict of detection
+    telemetry compatible with match_logging.build_detection_diag (fields the scan
+    can fill; ni_*/user_count stay None — ebayscout has no user-supplied count).
     """
     scan_mode = button_count is None
+    diag: dict = {
+        "h": None, "w": None,
+        "bg_brightness": None, "bg_saturation": None, "bg_is_white": None,
+        "mask_path": None, "hough_pass1_count": 0,
+        "final_count_user": 0, "n_crops": 0, "detector_used": None,
+        "raw_hough": None, "circles_rejected": None,
+        "radius_min": None, "radius_max": None,
+        "radius_mean": None, "radius_std": None,
+    }
+
+    def _ret(crops):
+        diag["n_crops"] = len(crops)
+        diag["final_count_user"] = len(crops)
+        return (crops, diag) if return_diag else crops
     if button_count is not None:
         expected = button_count
         # Derive rows/cols from count so the base radius scales correctly
@@ -75,7 +93,7 @@ def detect_and_crop(
     image_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if image_bgr is None:
         print("!!! IMAGE_PROC: Failed to decode image bytes.", flush=True)
-        return []
+        return _ret([])
 
     h, w = image_bgr.shape[:2]
 
@@ -87,6 +105,8 @@ def detect_and_crop(
         new_w, new_h = int(w * scale), int(h * scale)
         image_bgr = cv2.resize(image_bgr, (new_w, new_h))
         h, w = new_h, new_w
+
+    diag["h"], diag["w"] = int(h), int(w)
 
     # --- Glare removal ---
     gray_orig  = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
@@ -112,6 +132,11 @@ def detect_and_crop(
     _bg_mean_s = float(np.mean(_hsv_border[:, 1]))
     _bg_mean_v = float(np.mean(_hsv_border[:, 2]))
     _white_bg  = _bg_mean_s < 65 and _bg_mean_v > 170
+
+    diag["bg_brightness"] = _bg_mean_v
+    diag["bg_saturation"] = _bg_mean_s
+    diag["bg_is_white"]   = bool(_white_bg)
+    diag["mask_path"]     = "blue_only" if _white_bg else "blue_or_white"
 
     # --- HSV colour mask ---
     hsv        = cv2.cvtColor(img_noglare, cv2.COLOR_BGR2HSV)
@@ -171,6 +196,12 @@ def detect_and_crop(
                 circles = circles_small
         if circles is not None:
             circles = np.around(circles[0]).astype(int)
+
+    diag["raw_hough"] = (
+        sum(raw_by_scale.values()) if raw_by_scale
+        else (0 if circles is None else len(circles))
+    )
+    diag["hough_pass1_count"] = diag["raw_hough"]
 
     crops_bgr: list[np.ndarray] = []
 
@@ -259,7 +290,16 @@ def detect_and_crop(
                     crops_bgr.append(crop)
 
             if crops_bgr:
-                return _bgr_to_pil(crops_bgr)
+                radii_final = [int(r) for (_, _, r) in final_circles]
+                if radii_final:
+                    diag["radius_min"]  = int(min(radii_final))
+                    diag["radius_max"]  = int(max(radii_final))
+                    diag["radius_mean"] = float(np.mean(radii_final))
+                    diag["radius_std"]  = float(np.std(radii_final))
+                if diag["raw_hough"] is not None:
+                    diag["circles_rejected"] = max(0, diag["raw_hough"] - len(final_circles))
+                diag["detector_used"] = "hough"
+                return _ret(_bgr_to_pil(crops_bgr))
 
     # --- Whole-image fallback ---
     # Hough found no usable circles.  These photos are almost never a clean
@@ -268,7 +308,8 @@ def detect_and_crop(
     # single-button listing, and harmless otherwise (a multi-button blend just
     # scores below threshold and is rejected downstream).
     print(">>> IMAGE: No circles detected — using whole image as a single crop.", flush=True)
-    return _bgr_to_pil([image_bgr])
+    diag["detector_used"] = "whole"
+    return _ret(_bgr_to_pil([image_bgr]))
 
 
 def _bgr_to_pil(crops_bgr: list[np.ndarray]) -> list[Image.Image]:

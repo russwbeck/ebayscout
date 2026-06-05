@@ -82,7 +82,9 @@ class TestScoreSlogans:
         assert results[0]["slogan"] == "We Are Number One"
 
     def test_penalty_applied_for_low_slogan_score(self):
-        # Very low text sim → penalty multiplier applied
+        # Very low text sim → penalty multiplier applied (buttonmatcher parity:
+        # ALPHA=BETA=0.5, *0.7 penalty, then the capped rarity tiebreaker).
+        from ebayscout import scoring
         sims = self._text_sims([0.10, 0.10, 0.10])  # all below 0.15 → norm=0.0
         results = clip_matcher._score_slogans(
             text_sims=sims,
@@ -90,13 +92,14 @@ class TestScoreSlogans:
             allowed_years={1977},
         )
         assert len(results) == 1
-        # With 0.0 slogan_score: raw = 0.6*0.8 + 0.4*0.0 = 0.48 → * 0.7 = 0.336
-        assert results[0]["overall"] == pytest.approx(0.48 * 0.7, abs=1e-3)
+        blend    = config.ALPHA * 0.8 + config.BETA * 0.0   # 0.40
+        expected = min(1.0, blend * config.PENALTY_MULTIPLIER
+                       + scoring.rarity_bonus(results[0]["slogan"]))
+        assert results[0]["overall"] == pytest.approx(expected, abs=1e-6)
 
     def test_boost_applied_for_high_slogan_score(self):
-        # slogan_score > 0.9 triggers boost
-        # score 0.35 + 0.001 → normalize to slightly > 1.0 → clamped to 1.0
-        # Use raw text sim 0.40 → (0.40 - 0.15) / 0.20 = 1.25 → clamped to 1.0
+        # slogan_score = 1.0 → boost = (1.0 - 0.9) * 2.5 = 0.25
+        # overall = 0.5*0.8 + 0.5*1.0 + 0.25 = 1.15 (+rarity) → clamped to 1.0
         sims = self._text_sims([0.40, 0.10, 0.10])
         results = clip_matcher._score_slogans(
             text_sims=sims,
@@ -104,8 +107,6 @@ class TestScoreSlogans:
             allowed_years={1977},
         )
         assert len(results) == 1
-        # slogan_score = 1.0 → boost = (1.0 - 0.9) * 2.5 = 0.25
-        # overall = 0.6*0.8 + 0.4*1.0 + 0.25 = 0.48 + 0.40 + 0.25 = 1.13 → clamped to 1.0
         assert results[0]["overall"] == pytest.approx(1.0)
 
     def test_returns_empty_for_no_valid_years(self):

@@ -119,6 +119,42 @@ def append_scan_log(
         return False
 
 
+def ondemand2_first_run_done(bucket_name: str = config.BUCKET_NAME) -> bool:
+    """Return True if /crawl500 has already completed its first run.
+
+    On the first run /crawl500 may re-scan already-seen lots to reach its 500
+    cap; every run after processes only unseen lots. State lives in a tiny GCS
+    marker (ONDEMAND2_STATE_BLOB). Missing/unreadable marker → treat as first run.
+    """
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob   = bucket.blob(config.ONDEMAND2_STATE_BLOB)
+        if not blob.exists():
+            return False
+        data = json.loads(blob.download_as_text())
+        return bool(data.get("first_run_done", False))
+    except Exception as exc:
+        print(f"!!! OD2: Failed to read {config.ONDEMAND2_STATE_BLOB}: {exc}", flush=True)
+        return False
+
+
+def mark_ondemand2_first_run_done(bucket_name: str = config.BUCKET_NAME) -> bool:
+    """Persist that /crawl500 has completed its first run (idempotent)."""
+    try:
+        client  = storage.Client()
+        bucket  = client.bucket(bucket_name)
+        blob    = bucket.blob(config.ONDEMAND2_STATE_BLOB)
+        payload = json.dumps({"first_run_done": True,
+                              "updated": date.today().isoformat()}, indent=2)
+        blob.upload_from_string(payload, content_type="application/json")
+        print(f">>> OD2: Marked first run done in {config.ONDEMAND2_STATE_BLOB}.", flush=True)
+        return True
+    except Exception as exc:
+        print(f"!!! OD2: Failed to write {config.ONDEMAND2_STATE_BLOB}: {exc}", flush=True)
+        return False
+
+
 def is_new(item_id: str, seen: dict[str, str]) -> bool:
     """Return True if item_id has not been processed before."""
     return item_id not in seen

@@ -722,6 +722,54 @@ bug on the title path (`extract_years("1990s")` reads 1990). Fix:
 scan broadens the restriction to the decade when a decade marker is present
 (year-crawl: `{search_year} | decade`; general: the decade). A plain single year
 ("…1990" with no `s`) still restricts to that one year.
+
+## 28. Unified buttonmatcher scoring + green/auto-only confirmation + per-event logging + `/crawl500`
+
+A major convergence onto buttonmatcher's pipeline, plus a new on-demand search.
+
+**Exact scoring parity.** ebayscout's matcher had drifted (`ALPHA=0.7/BETA=0.3`,
+a second 0.75–0.9 boost tier, no rarity tiebreaker, top-5 year selection). It now
+mirrors buttonmatcher's `score_slogans` / `match_logging.build_leaderboard`
+**exactly**: `ALPHA=BETA=0.5`, a single `>0.9` text boost, the `<0.3` penalty, the
+capped (`≤0.04`) rarity tiebreaker (`scoring.py` — `tokenize`/`STOPWORDS`/
+`rarity_weight`, with `word_freq` built in `clip_matcher.init()`), and dual-signal
+year selection (top-3 image years ∪ top-3 text years). This makes the calibrated
+confidence tiers transfer directly and guarantees logged leaderboards == live
+scores.
+
+**Green/auto-only confirmation.** The recall-biased `NEEDED_MATCH_THRESHOLD=0.60`
+(/0.45 title-corroborated) bar is replaced by a precision gate: a crop is an
+identified button only when its top match is **auto** (`overall ≥ 0.85`) or **green**
+(`overall ≥ 0.82`, or its #1 leads #2 by `≥ 0.12`) — `scoring.is_confirmed`. Among
+confirmed buttons, `amount_needed > 0` (placeholders suppressed) marks a needed
+lot. Daily-scan tallies became `alerted / confirmed_not_needed / rejected`. This
+trades recall for precision deliberately (fewer daily alerts).
+
+**buttonmatcher logging, written PER EVENT.** `match_logging.py` is copied
+verbatim from buttonmatcher (same cross-bot module) and writes to the shared
+`LOGGER_ID` workbook (`match_log` + `confirm_log`, `service="ebayscout"`). Every
+crop gets a `match_log` row (detection diag + restricted_top + shadow leaderboard
+via `match_crops_with_diagnostics`); every auto/green crop gets a `confirm_log`
+row (`source=auto_resolve|green`, `rank_shadow` = the headline automation metric).
+**Rows are flushed per image / per confirmation, never buffered to the end**, so a
+CPU-throttle/timeout/crash never discards already-processed work — the one
+intentional delta from the verbatim module is a bounded 429 retry+backoff in
+`SheetLogger`. The goal is thousands of rows to inform future automation.
+
+**`/crawl500` (on-demand2).** New Slack slash command (served at the new
+`/slack/events` Bolt route, signed with `SIGNING_SECRET_ES`). It acks in <3s and
+kicks `/internal/crawl500` through the load balancer (`SERVICE_URL`, per-startup
+`X-Internal-Secret` — mirrors buttonmatcher `/internal/match`) so the heavy run
+gets a fresh CPU-funded request. The user-stipulated search
+`"Penn State" AND (Citizens OR Mellon OR "Central Counties") AND (button* OR pin*
+OR Badge*)` is OR-expanded into 3 banks × 4 button-types = 12 explicit queries
+(Browse `q` has no reliable boolean/wildcard support and `find_listings` doesn't
+paginate), deduped and **capped at 500 lots**. **No seller exclusion**; the
+apparel-keyword + Clothing-category noise filters stay on. Its **first run** may
+re-scan already-seen lots to reach 500 (tracked by `ONDEMAND2_STATE_BLOB`); every
+run after processes only unseen lots. Cost: up to 500 eBay+CLIP lots per run —
+treat like `?year_crawl=1`.
+
 ## Remaining known issues
 
 | Issue | Status | Notes |
