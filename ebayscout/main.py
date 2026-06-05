@@ -272,12 +272,9 @@ def health():
 # ---------------------------------------------------------------------------
 
 @flask_app.route("/slack/events", methods=["POST"])
-@flask_app.route("/slack/commands", methods=["POST"])
 def slack_events():
-    """Entry point for all Slack interactions (slash commands), delegated to the
-    Bolt handler. Mirrors buttonmatcher/main.py:4721-4727. Served at BOTH
-    /slack/events and /slack/commands so the /crawl500 Request URL works whether
-    Slack is pointed at the events or the commands path."""
+    """Single entry point for all Slack interactions (slash commands), delegated
+    to the Bolt handler. Mirrors buttonmatcher/main.py:4721-4727."""
     if request.content_type and "application/json" in request.content_type:
         data = request.get_json(silent=True)
         if data and data.get("type") == "url_verification":
