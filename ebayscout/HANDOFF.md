@@ -6,6 +6,55 @@ the "what we did today + where it stands + what's next" layer on top.
 
 ---
 
+## 2026-06-05 — buttonmatcher scoring/logging + green/auto gate + `/crawl500`
+
+Branch `claude/ebay-scout-auto-ondemand-I8AOS`. Major convergence onto
+buttonmatcher's pipeline plus a new on-demand search (full rationale: **DECISIONS
+#28**).
+
+Shipped:
+
+1. **Exact scoring parity** with buttonmatcher (`ALPHA=BETA=0.5`, single `>0.9`
+   boost, `<0.3` penalty, capped rarity tiebreaker, dual-signal year selection).
+   New pure-python `scoring.py` (tiers + rarity); `clip_matcher.init()` builds the
+   `word_freq` table.
+2. **Green/auto-only confirmation.** A crop counts only when AUTO (`≥0.85`) or
+   GREEN (`≥0.82` / gap `≥0.12`). Needed = a confirmed button with
+   `amount_needed>0`. Daily tallies now `alerted / confirmed_not_needed / rejected`.
+   Decision logic refactored into shared `_evaluate_listing` (used by the daily
+   scan and `/crawl500`).
+3. **buttonmatcher logging, per event.** `match_logging.py` copied verbatim
+   (+ a 429 retry); writes `match_log`/`confirm_log` to the shared `LOGGER_ID`
+   workbook as `service="ebayscout"`. One row per crop + one per auto/green
+   confirmation, **flushed per image / per confirmation** so a throttle/crash
+   never loses work. `image_proc.detect_and_crop(return_diag=True)` feeds the
+   detection diag; `clip_matcher.match_crops_with_diagnostics` produces the
+   restricted + shadow leaderboards.
+4. **`/crawl500`** Slack slash command → new `/slack/events` Bolt route → kicks
+   `/internal/crawl500` via `SERVICE_URL` + `X-Internal-Secret`. Fixed
+   Citizens/Mellon/Central-Counties × button/pin/badge/pinback search (12
+   OR-expanded queries), **cap 500**, **no seller exclusion**, first-run re-scans
+   seen (`ONDEMAND2_STATE_BLOB`). Secrets reused: `SIGNING_SECRET_ES`,
+   `CHANNEL_ID_EBAY`, `LOGGER_ID` (all already in Secret Manager).
+
+Tests run in-session (no torch/slack/gcs here): `pytest ebayscout/tests/` minus
+the 4 modules needing those libs → **178 passed, 3 skipped** (the skips are the
+GCS-mocked `/crawl500` state tests, CI-only). New: `test_scoring.py`,
+`test_match_logging.py`, `test_crawl500.py`. All modules `py_compile`-clean.
+Matcher/CLIP/notifier/sheets/seen tests still need CI.
+
+**Next / verify in prod:**
+- Deploy (`cloudbuild.yaml` now sets `SERVICE_URL`); confirm `SIGNING_SECRET_ES`
+  is live and point the `/crawl500` Slack command Request URL at
+  `https://ebay-scout-404960106109.us-east1.run.app/slack/events`.
+- Smoke: run `/crawl500`, confirm rows land in the `LOGGER_ID` workbook's
+  `match_log`/`confirm_log` (tagged `ebayscout` / `/crawl500`), the summary posts,
+  `ondemand2_state.json` flips after run 1, and run 2 skips seen lots.
+- Watch the first daily `/run-scan` under the stricter green/auto gate (expect
+  fewer, higher-precision alerts).
+- **Cost:** `/crawl500` is a heavy paid run (≤500 eBay+CLIP lots; first run also
+  re-scans seen) — treat like `?year_crawl=1`.
+
 ## 2026-05-30 — Backfill log analysis + chunk/dedup/audit
 
 Analyzed the May 29–30 dry-run backfill (rev 00031, **pre-#12**) from the Cloud

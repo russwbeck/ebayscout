@@ -135,7 +135,7 @@ def send_scan_summary(
     slack_token: str,
     channel: str,
     alerted: int,
-    low_confidence: int,
+    confirmed_not_needed: int,
     rejected: int,
     ebay_count: int,
     etsy_count: int,
@@ -143,16 +143,15 @@ def send_scan_summary(
     """
     Post a single end-of-scan summary message.
 
-    alerted:        listings that triggered at least one alert
-    low_confidence: listings where best crop score was between
-                    REJECTION_THRESHOLD and CONFIDENCE_THRESHOLD
-    rejected:       listings where every crop scored below REJECTION_THRESHOLD
-    ebay_count:     new eBay listings processed
-    etsy_count:     new Etsy listings processed
+    alerted:              listings with a confirmed (auto/green) needed button
+    confirmed_not_needed: listings with a confirmed button, but none needed
+    rejected:             listings where no crop reached the green/auto gate
+    ebay_count:           new eBay listings processed
+    etsy_count:           new Etsy listings processed
     """
     from datetime import date
     today      = date.today().strftime("%a %b %-d")
-    total      = alerted + low_confidence + rejected
+    total      = alerted + confirmed_not_needed + rejected
     source_str = f"eBay: {ebay_count}"
     if etsy_count:
         source_str += f" · Etsy: {etsy_count}"
@@ -167,14 +166,15 @@ def send_scan_summary(
     else:
         lines.append("⭐ No needed-button candidates today")
 
-    if low_confidence:
+    if confirmed_not_needed:
         lines.append(
-            f"🟡 {low_confidence} possible gameday button{'s' if low_confidence != 1 else ''}"
-            f"  (button-like, but not a needed match — no alert)"
+            f"🟢 {confirmed_not_needed} confirmed gameday button"
+            f"{'s' if confirmed_not_needed != 1 else ''}"
+            f"  (auto/green match, but not a needed year — no alert)"
         )
 
     if rejected:
-        lines.append(f"🗑️ {rejected} not gameday buttons  (<45% confidence)")
+        lines.append(f"🗑️ {rejected} not confirmed  (no auto/green match)")
 
     _post_message(slack_token, channel, "\n".join(lines))
 
@@ -231,6 +231,34 @@ def send_backfill_digest(
     else:
         lines.append("_No needed-button candidates surfaced in this preview._")
 
+    _post_message(slack_token, channel, "\n".join(lines))
+
+
+def send_crawl500_summary(
+    slack_token: str,
+    channel: str,
+    processed: int,
+    alerted: int,
+    confirmed_not_needed: int,
+    rejected: int,
+    first_run: bool,
+) -> None:
+    """Post a single end-of-run summary for an on-demand2 /crawl500 search."""
+    lines = [
+        f"🔎 *crawl500 complete* — processed *{processed}* lot{'s' if processed != 1 else ''}"
+        f"{' (first run — included already-seen lots)' if first_run else ''}.",
+    ]
+    if alerted:
+        lines.append(f"⭐ {alerted} needed-button candidate{'s' if alerted != 1 else ''} to review")
+    else:
+        lines.append("⭐ No needed-button candidates this run")
+    if confirmed_not_needed:
+        lines.append(
+            f"🟢 {confirmed_not_needed} confirmed gameday button"
+            f"{'s' if confirmed_not_needed != 1 else ''}  (auto/green, not a needed year)"
+        )
+    if rejected:
+        lines.append(f"🗑️ {rejected} not confirmed  (no auto/green match)")
     _post_message(slack_token, channel, "\n".join(lines))
 
 

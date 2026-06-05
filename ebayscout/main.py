@@ -13,17 +13,24 @@ Interaction flow:
 
 import contextlib
 import datetime
+import ipaddress
+import os
 import threading
 import traceback
+import uuid
 from collections import Counter
 
+import requests
 from flask import Flask, request, jsonify
 from google.cloud import secretmanager
+from slack_bolt import App
+from slack_bolt.adapter.flask import SlackRequestHandler
 
 from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
+from . import match_logging as mlog
 from .utils import (
     extract_years,
     extract_decades,
@@ -53,9 +60,23 @@ def _get_secret(secret_id: str) -> str:
 
 
 print(">>> INIT: Fetching Slack secrets...", flush=True)
-_slack_token    = _get_secret("EBAY_BOT_TOKEN")
-_channel_id     = _get_secret("CHANNEL_ID_EBAY")
+_slack_token     = _get_secret("EBAY_BOT_TOKEN")
+_channel_id      = _get_secret("CHANNEL_ID_EBAY")
+_signing_secret  = _get_secret("SIGNING_SECRET_ES")
 print(">>> INIT: Slack secrets loaded.", flush=True)
+
+# Slack Bolt app — serves the /crawl500 slash command via /slack/events.
+app     = App(token=_slack_token, signing_secret=_signing_secret)
+handler = SlackRequestHandler(app)
+
+# External URL the slash handler uses to invoke /internal/crawl500 through the
+# load balancer, so the heavy 500-lot run gets a fresh CPU-funded request (Cloud
+# Run throttles CPU between requests). Set SERVICE_URL in the deploy env; falls
+# back to localhost for local dev (CPU may throttle there). Mirrors buttonmatcher.
+_SERVICE_URL     = os.environ.get("SERVICE_URL", "").rstrip("/")
+_INTERNAL_SECRET = str(uuid.uuid4())   # per-startup token — never leaves this process
+print(f">>> INIT: SERVICE_URL={'set (' + _SERVICE_URL + ')' if _SERVICE_URL else 'NOT SET — using localhost (CPU may throttle)'}",
+      flush=True)
 
 # ---------------------------------------------------------------------------
 # Global state (populated by startup())
@@ -64,8 +85,12 @@ print(">>> INIT: Slack secrets loaded.", flush=True)
 buy_rules:     dict = {}
 vectors_loaded: bool = False
 
-# Held for the duration of a daily scan so an overlapping trigger can't start
-# a second concurrent run.
+# match_logging.SheetLogger, built in startup() against the LOGGER_ID workbook.
+# Fail-open: if it can't open the sheet, logging is silently disabled.
+match_logger: mlog.SheetLogger | None = None
+
+# Held for the duration of a daily scan / crawl so an overlapping trigger can't
+# start a second concurrent run.
 _scan_lock = threading.Lock()
 
 
@@ -240,6 +265,87 @@ def health():
     if not vectors_loaded:
         return "OK - hydrating", 200
     return "OK - ready", 200
+
+
+# ---------------------------------------------------------------------------
+# Slack slash command: /crawl500 (on-demand2 search)
+# ---------------------------------------------------------------------------
+
+@flask_app.route("/slack/events", methods=["POST"])
+def slack_events():
+    """Single entry point for all Slack interactions (slash commands), delegated
+    to the Bolt handler. Mirrors buttonmatcher/main.py:4721-4727."""
+    if request.content_type and "application/json" in request.content_type:
+        data = request.get_json(silent=True)
+        if data and data.get("type") == "url_verification":
+            return data.get("challenge"), 200
+    return handler.handle(request)
+
+
+@app.command("/crawl500")
+def handle_crawl500_command(ack, body):
+    """on-demand2: search the fixed Citizens/Mellon/Central-Counties button query
+    (max 500 lots, no seller exclusion) and log every crop for automation.
+
+    Slack requires an ack within 3s, so we ack immediately and kick the heavy run
+    via /internal/crawl500 through the load balancer (fresh CPU-funded request).
+    """
+    ack("🔎 Starting `/crawl500` — searching up to 500 lots, this runs in the "
+        "background and will post results to the channel.")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            # Long read timeout: the run executes synchronously inside this call
+            # so CPU stays allocated for its whole duration (up to the 1800s cap).
+            requests.post(f"{base}/internal/crawl500", headers=headers, timeout=1800)
+        except Exception as exc:
+            print(f"!!! CRAWL500: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"/crawl500 failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
+def _is_localhost(remote_addr: str | None) -> bool:
+    try:
+        return ipaddress.ip_address(remote_addr or "").is_loopback
+    except ValueError:
+        return False
+
+
+@flask_app.route("/internal/crawl500", methods=["POST"])
+def internal_crawl500():
+    """Run the on-demand2 500-lot search synchronously in this request so Cloud
+    Run keeps CPU allocated for the whole run. Auth: per-startup X-Internal-Secret
+    header, or a localhost caller (local dev). Mirrors buttonmatcher /internal/match."""
+    provided     = request.headers.get("X-Internal-Secret", "")
+    from_localhost = _is_localhost(request.remote_addr)
+    if provided != _INTERNAL_SECRET and not from_localhost:
+        return jsonify({"status": "forbidden"}), 403
+
+    if not vectors_loaded and not _ensure_clip_loaded():
+        return jsonify({"status": "clip init failed"}), 500
+
+    global buy_rules
+    if not buy_rules:
+        try:
+            buy_rules = sheets_client.load_buy_rules(
+                _get_secret("GOOGLE_SHEETS_JSON"), _get_secret("SPREADSHEET_ID"))
+        except Exception as exc:
+            print(f"!!! CRAWL500: buy_rules reload failed: {exc}", flush=True)
+
+    if not _scan_lock.acquire(blocking=False):
+        return jsonify({"status": "already running"}), 409
+    try:
+        processed = _run_crawl500()
+    finally:
+        _scan_lock.release()
+    return jsonify({"status": "crawl500 complete", "processed": processed}), 200
 
 
 @flask_app.route("/test-clip", methods=["GET"])
@@ -462,6 +568,187 @@ def _run_era_queries(ebay_client, ebay_app_id, ebay_cert_id, era_queries: list) 
             category_ids=config.SPORTS_MEMO_CATEGORY_ID,
         ))
     return out
+
+
+def _log_confirmation(job_id: str, check_id: str, crop_num: int,
+                      top: dict, diagc: dict, command: str) -> None:
+    """Write one confirm_log row the instant a crop is auto/green confirmed.
+
+    rank_shadow (the confirmed year's rank in the unrestricted leaderboard) is the
+    headline automation metric: rank 1 means no restrictions were needed.
+    """
+    if match_logger is None:
+        return
+    shadow_full = diagc.get("shadow_full") or []
+    try:
+        rec = mlog.build_confirm_record(
+            service="ebayscout", command=command, job_id=job_id, thread_ts=None,
+            crop_num=crop_num, check_id=check_id, user_id=None,
+            chosen_year=top["year"], chosen_phrase=top["slogan"], chosen_type="Football",
+            source=("auto_resolve" if top["overall"] >= config.AUTO_RESOLVE_THRESHOLD else "green"),
+            rank_restricted=mlog.rank_of(top["year"], diagc.get("restricted_top") or []),
+            rank_shadow=mlog.rank_of(top["year"], shadow_full),
+            shadow_leaderboard_size=len(shadow_full),
+            restricted_top=diagc.get("restricted_top") or [],
+            shadow_top=diagc.get("shadow_top") or [],
+            rank_image_only=None,
+        )
+        match_logger.log_confirmation(check_id, rec)
+    except Exception as exc:
+        print(f"!!! LOG: confirm record failed for {check_id}: {exc}", flush=True)
+
+
+def _evaluate_listing(
+    listing: dict,
+    picture_urls: list[str],
+    restrict_years: set[int] | None,
+    *,
+    command: str,
+    job_id: str,
+    title_years: set[int],
+    title_count: int | None,
+    log_enabled: bool = True,
+) -> dict:
+    """Detect + match a listing's crops, apply the green/auto confirmation gate,
+    evaluate needed buttons, and log per-image match rows + per-confirmation rows
+    PER EVENT (flushed as each image is processed, never buffered to the end).
+
+    A crop counts as an identified button only when its top match is auto-confirmed
+    (overall >= AUTO_RESOLVE_THRESHOLD) or in the green (overall >= GREEN_THRESHOLD,
+    or its #1 leads #2 by >= GREEN_GAP). Among confirmed buttons, amount_needed > 0
+    (with placeholder slogans suppressed) marks a needed lot.
+
+    Returns a summary dict; the caller sends Slack alerts and marks the item seen.
+    """
+    from . import image_proc as _ip
+    from . import clip_matcher as _cm
+
+    item_id = listing["item_id"]
+    mode    = "crawl500" if command == "/crawl500" else "scan"
+    bank    = listing.get("search_era") or ""
+
+    per_photo_cap  = max(config.MAX_CROPS_PER_PHOTO, title_count or 0)
+    listing_budget = max(config.MAX_CROPS_PER_LISTING, title_count or 0)
+
+    best_score_seen  = 0.0
+    photos_processed = 0
+    confirmed:   dict[tuple, dict] = {}   # (year, slogan) -> best confirmed top match
+    needed_hits: dict[tuple, dict] = {}   # (year, slogan) -> enriched needed match
+    log_top_matches: list[dict] = []
+    best_needed: dict | None = None
+    crop_counter = 0
+
+    for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
+        if photo_idx == 1:
+            # Two-stage gating: only pull photos 2+ when photo 1 looked promising.
+            promising = bool(title_years) or best_score_seen >= config.REJECTION_THRESHOLD
+            if not promising:
+                break
+        if listing_budget <= 0:
+            break
+
+        try:
+            image_bytes     = _ip.download_image(photo_url)
+            crops, det_diag = _ip.detect_and_crop(
+                image_bytes, max_crops=per_photo_cap, return_diag=True)
+        except Exception as exc:
+            print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
+            continue
+
+        if crops:
+            crops = crops[:listing_budget]
+            listing_budget -= len(crops)
+        if not crops:
+            continue
+        photos_processed += 1
+
+        try:
+            diagnostics = _cm.match_crops_with_diagnostics(crops, restrict_years=restrict_years)
+        except Exception as exc:
+            print(f"!!! SCAN: match_crops_with_diagnostics failed: {exc}", flush=True)
+            continue
+
+        detection = mlog.build_detection_diag(
+            h=det_diag.get("h") or 0, w=det_diag.get("w") or 0,
+            bg_brightness=det_diag.get("bg_brightness") or 0.0,
+            bg_saturation=det_diag.get("bg_saturation"),
+            bg_is_white=bool(det_diag.get("bg_is_white")),
+            mask_path=det_diag.get("mask_path"),
+            hough_pass1_count=det_diag.get("hough_pass1_count") or 0,
+            hough_retry_count=None,
+            final_count_user=det_diag.get("final_count_user") or len(crops),
+            final_count_noinput=None,
+            user_count=None,
+            detector_used=det_diag.get("detector_used"),
+            n_crops=len(crops),
+            raw_hough=det_diag.get("raw_hough"),
+            circles_rejected=det_diag.get("circles_rejected"),
+            radius_min=det_diag.get("radius_min"), radius_max=det_diag.get("radius_max"),
+            radius_mean=det_diag.get("radius_mean"), radius_std=det_diag.get("radius_std"),
+        )
+
+        image_records: list[dict] = []
+        for diagc in diagnostics:
+            crop_counter += 1
+            check_id   = f"{job_id}:{item_id}:{crop_counter}"
+            candidates = diagc["candidates"]
+            gap        = diagc["gap"]
+
+            # One match_log row per crop, regardless of confirmation outcome.
+            image_records.append(mlog.build_match_record(
+                service="ebayscout", command=command, mode=mode, job_id=job_id,
+                thread_ts=None, channel_id=_channel_id, user_id=None,
+                crop_num=crop_counter, check_id=check_id, detection=detection,
+                bank=bank, restricted_top=diagc["restricted_top"],
+                shadow_top=diagc["shadow_top"], shadow_enabled=diagc["shadow_enabled"],
+            ))
+
+            if not candidates:
+                continue
+            top = candidates[0]
+            best_score_seen = max(best_score_seen, top["overall"])
+            log_top_matches.append(top)
+
+            # GREEN/AUTO gate — only a confirmed top match counts as a button.
+            if not _cm.is_confirmed(top["overall"], gap):
+                continue
+
+            key = (top["year"], top["slogan"])
+            if key not in confirmed or top["overall"] > confirmed[key]["overall"]:
+                confirmed[key] = top
+            if log_enabled:
+                _log_confirmation(job_id, check_id, crop_counter, top, diagc, command)
+
+            # Does this confirmed button satisfy a standing need?
+            price_single, _, _, amount_needed = sheets_client.get_buy_decision(
+                top["year"], top["slogan"], buy_rules
+            )
+            if amount_needed <= 0:
+                continue
+            if is_non_alerting_slogan(top["slogan"], config.NON_ALERTING_SLOGAN_PATTERNS):
+                continue
+            if best_needed is None or top["overall"] > best_needed["overall"]:
+                best_needed = {"year": top["year"], "slogan": top["slogan"],
+                               "overall": top["overall"]}
+            if key not in needed_hits or top["overall"] > needed_hits[key]["overall"]:
+                enriched = dict(top)
+                enriched["max_price_single"] = price_single
+                enriched["amount_needed"]    = amount_needed
+                needed_hits[key] = enriched
+
+        # Flush this image's rows immediately (durability: a later crash/throttle
+        # must not discard rows for images already processed).
+        if log_enabled and match_logger is not None and image_records:
+            match_logger.log_image_crops(job_id, image_records)
+
+    return {
+        "photos_processed": photos_processed,
+        "best_score":       best_score_seen,
+        "confirmed":        list(confirmed.values()),
+        "needed":           list(needed_hits.values()),
+        "log_top_matches":  log_top_matches,
+        "best_needed":      best_needed,
+    }
 
 
 def _run_daily_scan(
@@ -702,17 +989,17 @@ def _run_daily_scan(
         flush=True,
     )
 
-    stat_alerted        = 0
-    stat_low_confidence = 0
-    stat_rejected       = 0
+    stat_alerted              = 0
+    stat_confirmed_not_needed = 0   # has a confirmed (green/auto) button, none needed
+    stat_rejected             = 0   # no crop reached the green/auto confirmation gate
     _listings_since_save = 0
     scan_log_records: list[dict] = []   # one record per processed listing (groundwork data)
     _scanlog_flushed = 0                # how many records already appended to GCS
 
-    from . import image_proc as _ip   # lazy — torch/cv2 imported here if not yet
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
 
     ref_years = _cm.reference_years()  # known years; gates single-title-year restriction
+    job_id = str(uuid.uuid4())         # one logging job id for this scan run
 
     for listing in new_listings:
         item_id = listing["item_id"]
@@ -751,190 +1038,60 @@ def _run_daily_scan(
             else:
                 picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
 
-            # Two-stage photo gating: always score photo 1; only pull the rest
-            # when the listing looks promising (title names a year, or photo 1
-            # already shows button-like signal). Keeps the scan from N× photo
-            # downloads on every junk listing now that we score multiple photos.
-            title_years = title_years_all
+            result = _evaluate_listing(
+                listing, picture_urls, restrict_years,
+                command="/run-scan", job_id=job_id,
+                title_years=title_years_all, title_count=extract_lot_count(title),
+                log_enabled=not dry_run,
+            )
+            best_score_seen  = result["best_score"]
+            photos_processed = result["photos_processed"]
+            confirmed        = result["confirmed"]
+            needed_buttons   = result["needed"]
+            log_top_matches  = result["log_top_matches"]
+            best_needed      = result["best_needed"]
 
-            best_score_seen   = 0.0
-            photos_processed  = 0
-            needed_hits:    dict[tuple, dict] = {}  # (year, slogan) → enriched needed match
-            strong_matched: dict[tuple, dict] = {}  # (year, slogan) → match >= CONFIDENCE
-            log_top_matches: list[dict] = []
-            best_needed: dict | None = None         # top needed-mapped candidate,
-                                                    # even below bar (for tuning)
-
-            # Per-photo crop ceiling = 100, raised if the title states a bigger
-            # lot ("Lot of 250 pins"). Per-listing budget bounds total CLIP cost.
-            title_count   = extract_lot_count(title)
-            per_photo_cap = max(config.MAX_CROPS_PER_PHOTO, title_count or 0)
-            listing_budget = max(config.MAX_CROPS_PER_LISTING, title_count or 0)
-
-            for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
-                if photo_idx == 1:  # decided after photo 1 is scored
-                    promising = bool(title_years) or best_score_seen >= config.REJECTION_THRESHOLD
-                    if not promising:
-                        break
-                if listing_budget <= 0:
-                    break
-
-                try:
-                    image_bytes = _ip.download_image(photo_url)
-                    crops       = _ip.detect_and_crop(image_bytes, max_crops=per_photo_cap)
-                except Exception as exc:
-                    print(f"!!! SCAN: Photo processing failed: {exc}", flush=True)
-                    continue
-
-                if crops:
-                    crops = crops[:listing_budget]
-                    listing_budget -= len(crops)
-
-                if not crops:
-                    continue
-
-                photos_processed += 1
-
-                # One forward pass; keep top-K candidates per crop down to the
-                # rejection floor so a needed button that is the 2nd/3rd guess
-                # on a blended photo is still visible.
-                try:
-                    batch_results = _cm.match_crops_batch(
-                        crops,
-                        threshold=config.REJECTION_THRESHOLD,
-                        top_k=config.NEEDED_MATCH_TOP_K,
-                        restrict_years=restrict_years,
-                    )
-                except Exception as exc:
-                    print(f"!!! SCAN: match_crops_batch failed: {exc}", flush=True)
-                    continue
-
-                for candidates in batch_results:
-                    if not candidates:
-                        continue
-                    best_score_seen = max(best_score_seen, candidates[0]["overall"])
-                    log_top_matches.append(candidates[0])
-
-                    for m in candidates:
-                        key     = (m["year"], m["slogan"])
-                        overall = m["overall"]
-
-                        # Strict matches feed the (optional) undervalued path.
-                        if overall >= config.CONFIDENCE_THRESHOLD and (
-                            key not in strong_matched or overall > strong_matched[key]["overall"]
-                        ):
-                            strong_matched[key] = m
-
-                        # Needed-button presence (recall-biased). Reuse the
-                        # fuzzy sheet lookup; a title-year match lowers the bar.
-                        price_single, _, _, amount_needed = sheets_client.get_buy_decision(
-                            m["year"], m["slogan"], buy_rules
-                        )
-                        if amount_needed <= 0:
-                            continue
-                        # Placeholder slogans (e.g. "Slogan Unknown N") stay in
-                        # the buy logic but must not trigger scan alerts — they
-                        # over-match and inflate lot value.
-                        if is_non_alerting_slogan(m["slogan"], config.NON_ALERTING_SLOGAN_PATTERNS):
-                            continue
-                        # Track the best needed-mapped candidate regardless of
-                        # whether it clears the bar — this is the distribution
-                        # used to tune NEEDED_MATCH_THRESHOLD.
-                        if best_needed is None or overall > best_needed["overall"]:
-                            best_needed = {"year": m["year"], "slogan": m["slogan"],
-                                           "overall": overall}
-                        try:
-                            title_corroborated = int(m["year"]) in title_years
-                        except (ValueError, TypeError):
-                            title_corroborated = False
-                        bar = (config.REJECTION_THRESHOLD if title_corroborated
-                               else config.NEEDED_MATCH_THRESHOLD)
-                        if overall < bar:
-                            continue
-                        if key not in needed_hits or overall > needed_hits[key]["overall"]:
-                            enriched = dict(m)
-                            enriched["max_price_single"] = price_single
-                            enriched["amount_needed"]    = amount_needed
-                            needed_hits[key] = enriched
-
-            if photos_processed == 0 or best_score_seen < config.REJECTION_THRESHOLD:
+            # Rejected = no crop reached the green/auto confirmation gate.
+            if not confirmed:
                 stat_rejected += 1
-                # Greppable title log for tuning EXCLUDED_KEYWORDS over time:
-                # filter Cloud Logging for "TITLE: [rejected".
+                # Greppable title log: filter Cloud Logging for "TITLE: [rejected".
                 print(f">>> TITLE: [rejected {best_score_seen:.2f}] [{seller}] {title}", flush=True)
                 scan_log_records.append(_scan_log_record(
                     listing, photos_processed, best_score_seen, log_top_matches,
                     needed_hit=False, alerted=False, best_needed=best_needed,
                 ))
-                seen_store.mark_seen(item_id, seen)
-                continue
-
-            needed_buttons  = list(needed_hits.values())
-            listing_alerted = False
-
-            if needed_buttons:
-                lot_value = sum(
-                    sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
-                )
-                print(
-                    f">>> TITLE: [needed {best_score_seen:.2f} "
-                    f"{needed_buttons[0]['year']} {needed_buttons[0]['slogan']}] [{seller}] {title}",
-                    flush=True,
-                )
-                if dry_run:
-                    print(f"    [DRY RUN] Would post needed-buttons alert for {item_id}", flush=True)
-                else:
-                    notifier.send_needed_alert(
-                        slack_token=_slack_token,
-                        channel=_channel_id,
-                        listing=listing,
-                        needed_buttons=needed_buttons,
-                        asking_price=asking,
-                        lot_value=lot_value,
+            else:
+                listing_alerted = False
+                if needed_buttons:
+                    lot_value = sum(
+                        sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
                     )
-                listing_alerted = True
-
-            # Optional, off by default: precise undervalued/margin alert. We no
-            # longer trust auto-valuation as the headline (see config).
-            if config.ENABLE_UNDERVALUED_ALERTS and strong_matched:
-                enriched_strong = []
-                for (year, slogan), m in strong_matched.items():
-                    price_single, _, _, amount_needed = sheets_client.get_buy_decision(
-                        year, slogan, buy_rules
+                    print(
+                        f">>> TITLE: [needed {best_score_seen:.2f} "
+                        f"{needed_buttons[0]['year']} {needed_buttons[0]['slogan']}] [{seller}] {title}",
+                        flush=True,
                     )
-                    e = dict(m)
-                    e["max_price_single"] = price_single
-                    e["amount_needed"]    = amount_needed
-                    enriched_strong.append(e)
-                lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_strong)
-                margin    = lot_value - asking
-                if margin > 0:
                     if dry_run:
-                        print(f"    [DRY RUN] Would post undervalued alert for {item_id}", flush=True)
+                        print(f"    [DRY RUN] Would post needed-buttons alert for {item_id}", flush=True)
                     else:
-                        notifier.send_undervalued_alert(
-                            slack_token=_slack_token,
-                            channel=_channel_id,
-                            listing=listing,
-                            matches=enriched_strong,
-                            lot_value=lot_value,
-                            asking_price=asking,
-                            margin=margin,
-                            unmatched_count=0,
+                        notifier.send_needed_alert(
+                            slack_token=_slack_token, channel=_channel_id, listing=listing,
+                            needed_buttons=needed_buttons, asking_price=asking, lot_value=lot_value,
                         )
                     listing_alerted = True
 
-            if listing_alerted:
-                stat_alerted += 1
-            else:
-                stat_low_confidence += 1
-                print(f">>> TITLE: [low-conf {best_score_seen:.2f}] [{seller}] {title}", flush=True)
+                if listing_alerted:
+                    stat_alerted += 1
+                else:
+                    stat_confirmed_not_needed += 1
+                    print(f">>> TITLE: [confirmed-not-needed {best_score_seen:.2f}] "
+                          f"[{seller}] {title}", flush=True)
 
-            scan_log_records.append(_scan_log_record(
-                listing, photos_processed, best_score_seen, log_top_matches,
-                needed_hit=bool(needed_buttons), alerted=listing_alerted,
-                best_needed=best_needed,
-            ))
+                scan_log_records.append(_scan_log_record(
+                    listing, photos_processed, best_score_seen, log_top_matches,
+                    needed_hit=bool(needed_buttons), alerted=listing_alerted,
+                    best_needed=best_needed,
+                ))
 
         except Exception as exc:
             print(f"!!! SCAN: Error processing {item_id}: {exc}", flush=True)
@@ -983,7 +1140,7 @@ def _run_daily_scan(
     if dry_run:
         print(
             f"[DRY RUN] Summary: alerted={stat_alerted}, "
-            f"low_conf={stat_low_confidence}, rejected={stat_rejected}",
+            f"confirmed_not_needed={stat_confirmed_not_needed}, rejected={stat_rejected}",
             flush=True,
         )
     else:
@@ -992,7 +1149,7 @@ def _run_daily_scan(
                 slack_token=_slack_token,
                 channel=_channel_id,
                 alerted=stat_alerted,
-                low_confidence=stat_low_confidence,
+                confirmed_not_needed=stat_confirmed_not_needed,
                 rejected=stat_rejected,
                 ebay_count=ebay_new,
                 etsy_count=etsy_new,
@@ -1008,12 +1165,141 @@ def _run_daily_scan(
 
 
 # ---------------------------------------------------------------------------
+# on-demand2 / crawl500 (called from /internal/crawl500)
+# ---------------------------------------------------------------------------
+
+def _run_crawl500() -> int:
+    """Run the fixed on-demand2 search (config.CRAWL500_QUERIES), cap at 500 lots,
+    NO seller exclusion (apparel-keyword + Clothing-category filters stay on).
+
+    First run (per the GCS marker) may re-scan already-seen lots to reach 500;
+    every run after processes only unseen lots. Every lot's crops are logged per
+    event for automation. Returns the number of lots processed.
+    """
+    from . import ebay_client, seen_items as seen_store
+
+    try:
+        ebay_app_id  = _get_secret("EBAY_APP_ID")
+        ebay_cert_id = _get_secret("EBAY_CERT_ID")
+    except Exception as exc:
+        print(f"!!! CRAWL500: eBay credentials unavailable — aborting: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, "/crawl500: no eBay credentials.")
+        return 0
+
+    first_run = not seen_store.ondemand2_first_run_done()
+    print(f">>> CRAWL500: starting (first_run={first_run}) over "
+          f"{len(config.CRAWL500_QUERIES)} OR-expanded queries.", flush=True)
+
+    # OR-expansion → one <=200 window per (bank x type); NO seller exclusion.
+    try:
+        all_listings = ebay_client.find_all_listings(
+            client_id=ebay_app_id, client_secret=ebay_cert_id,
+            queries=config.CRAWL500_QUERIES,
+            excluded_sellers=[],                       # do not exclude any seller
+            excluded_keywords=config.EXCLUDED_KEYWORDS,  # keep apparel/noise filter
+            max_results=200,
+        )
+    except Exception as exc:
+        print(f"!!! CRAWL500: search failed: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, f"/crawl500 search failed: {exc}")
+        return 0
+
+    all_listings = dedup_listings(all_listings)
+    seen = seen_store.load_seen()
+
+    if first_run:
+        candidate = all_listings                       # may re-scan seen to reach 500
+    else:
+        candidate = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
+    new_listings = candidate[: config.CRAWL500_MAX_LOTS]
+    print(f">>> CRAWL500: {len(all_listings)} unique found; processing "
+          f"{len(new_listings)} (cap {config.CRAWL500_MAX_LOTS}).", flush=True)
+
+    if not new_listings:
+        notifier.send_warning(_slack_token, _channel_id,
+                              "/crawl500: no lots to process this run.")
+        if first_run:
+            seen_store.mark_ondemand2_first_run_done()
+        return 0
+
+    job_id   = str(uuid.uuid4())
+    stat_alerted = stat_confirmed_not_needed = stat_rejected = 0
+    _since_save = 0
+
+    from . import clip_matcher as _cm
+    ref_years = _cm.reference_years()
+
+    for listing in new_listings:
+        item_id = listing["item_id"]
+        asking  = listing.get("current_price", 0.0)
+        title   = listing.get("title", "?")
+        seller  = listing.get("seller", "")
+
+        title_years_all = extract_years(title)
+        title_decades   = extract_decades(title)
+        if title_decades:
+            restrict_years: set[int] | None = title_decades
+        elif len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
+            restrict_years = {next(iter(title_years_all))}
+        else:
+            restrict_years = None
+
+        try:
+            picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
+            if not picture_urls and listing.get("gallery_url"):
+                picture_urls = [listing["gallery_url"]]
+
+            result = _evaluate_listing(
+                listing, picture_urls, restrict_years,
+                command="/crawl500", job_id=job_id,
+                title_years=title_years_all, title_count=extract_lot_count(title),
+            )
+            if not result["confirmed"]:
+                stat_rejected += 1
+            elif result["needed"]:
+                needed_buttons = result["needed"]
+                lot_value = sum(
+                    sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
+                )
+                notifier.send_needed_alert(
+                    slack_token=_slack_token, channel=_channel_id, listing=listing,
+                    needed_buttons=needed_buttons, asking_price=asking, lot_value=lot_value,
+                )
+                stat_alerted += 1
+            else:
+                stat_confirmed_not_needed += 1
+        except Exception as exc:
+            print(f"!!! CRAWL500: error processing {item_id} [{seller}]: {exc}", flush=True)
+            traceback.print_exc()
+
+        seen_store.mark_seen(item_id, seen)
+        _since_save += 1
+        if _since_save >= 50:
+            seen_store.save_seen(seen)
+            _since_save = 0
+
+    seen_store.save_seen(seen)
+    if first_run:
+        seen_store.mark_ondemand2_first_run_done()
+
+    notifier.send_crawl500_summary(
+        slack_token=_slack_token, channel=_channel_id,
+        processed=len(new_listings), alerted=stat_alerted,
+        confirmed_not_needed=stat_confirmed_not_needed, rejected=stat_rejected,
+        first_run=first_run,
+    )
+    print(f">>> CRAWL500: complete — processed={len(new_listings)} alerted={stat_alerted} "
+          f"confirmed_not_needed={stat_confirmed_not_needed} rejected={stat_rejected}.", flush=True)
+    return len(new_listings)
+
+
+# ---------------------------------------------------------------------------
 # Startup (called from gunicorn post_fork hook)
 # ---------------------------------------------------------------------------
 
 def startup() -> None:
-    """Load Google Sheets and CLIP model in the background."""
-    global buy_rules
+    """Load Google Sheets, the match-logging workbook, and CLIP in the background."""
+    global buy_rules, match_logger
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -1022,6 +1308,18 @@ def startup() -> None:
         buy_rules      = sheets_client.load_buy_rules(sheets_json, spreadsheet_id)
     except Exception as exc:
         print(f"!!! STARTUP: Sheets error: {exc}", flush=True)
+
+    # Open the shared match-logging workbook (LOGGER_ID) and build the per-event
+    # SheetLogger. Fail-open: any error disables logging but never blocks the scan.
+    try:
+        sheets_json   = _get_secret("GOOGLE_SHEETS_JSON")
+        logger_id     = _get_secret("LOGGER_ID")
+        gclient       = sheets_client.get_gspread_client(sheets_json)
+        match_ws, confirm_ws = mlog.open_log_sheets(gclient, logger_id)
+        match_logger  = mlog.SheetLogger(match_ws, confirm_ws, service="ebayscout")
+    except Exception as exc:
+        print(f"!!! STARTUP: match-logging init failed (logging disabled): {exc}", flush=True)
+        match_logger = mlog.SheetLogger(None, None, service="ebayscout")
 
     # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
     # may not finish until an HTTP request (a scan) provides CPU — those paths

@@ -1,6 +1,6 @@
 # eBay Button Scout — Python dependencies
-# No Flask, gunicorn, or slack-bolt needed (batch job, not a server).
-# PyTorch CPU-only to keep the image small.
+# Flask + gunicorn + slack-bolt power the daily scan and the /crawl500 slash
+# command. PyTorch CPU-only to keep the image small.
 
 --index-url https://download.pytorch.org/whl/cpu
 
