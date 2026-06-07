@@ -16,6 +16,8 @@ import datetime
 import ipaddress
 import os
 import threading
+import re
+import json
 import traceback
 import uuid
 from collections import Counter
@@ -633,6 +635,7 @@ def _evaluate_listing(
     best_score_seen  = 0.0
     photos_processed = 0
     confirmed:   dict[tuple, dict] = {}   # (year, slogan) -> best confirmed top match
+    yellow:      dict[tuple, dict] = {}   # (year, slogan) -> best yellow candidate for review
     needed_hits: dict[tuple, dict] = {}   # (year, slogan) -> enriched needed match
     log_top_matches: list[dict] = []
     best_needed: dict | None = None
@@ -668,6 +671,25 @@ def _evaluate_listing(
             print(f"!!! SCAN: match_crops_with_diagnostics failed: {exc}", flush=True)
             continue
 
+        # Package the Phase 1 multi-pass fields from image_proc into noinput_diag
+        # so they reach the ni_* columns in match_log.  Only populated in scan mode
+        # (count mode leaves them None, producing blank cells — correct behaviour).
+        _ni = {
+            "conservative": det_diag.get("ni_conservative"),
+            "standard":     det_diag.get("ni_standard"),
+            "aggressive":   det_diag.get("ni_loose"),       # logged as "aggressive" to match Phase 1 schema
+            "selected":     det_diag.get("final_count_user") or len(crops),
+            "confidence":   det_diag.get("ni_confidence"),
+            "layout_conf":  None,    # not computed in image_proc (scan mode skips layout)
+            "outliers":     None,
+            "pass_winner":  det_diag.get("ni_pass_winner"),
+            "contour_count": None,   # Phase 2/3 not yet in image_proc
+            "merged_count":  None,
+            "source":        "hough_only",
+            "variant":       "hsv",
+        }
+        _noinput_diag = _ni if _ni.get("conservative") is not None else None
+
         detection = mlog.build_detection_diag(
             h=det_diag.get("h") or 0, w=det_diag.get("w") or 0,
             bg_brightness=det_diag.get("bg_brightness") or 0.0,
@@ -685,6 +707,7 @@ def _evaluate_listing(
             circles_rejected=det_diag.get("circles_rejected"),
             radius_min=det_diag.get("radius_min"), radius_max=det_diag.get("radius_max"),
             radius_mean=det_diag.get("radius_mean"), radius_std=det_diag.get("radius_std"),
+            noinput_diag=_noinput_diag,
         )
 
         image_records: list[dict] = []
@@ -709,8 +732,33 @@ def _evaluate_listing(
             best_score_seen = max(best_score_seen, top["overall"])
             log_top_matches.append(top)
 
+            # --- Incorrect-match guard -------------------------------------------
+            # The data showed one auto-resolve with rank_shadow=2 and NaN gap
+            # (only one restricted candidate, no runner-up).  A missing gap means
+            # the year restriction artificially eliminated all alternatives; we
+            # require a minimum gap even for high absolute scores to prevent a lone
+            # uncontested candidate from slipping through at 0.85 on image signal
+            # alone.  Threshold calibrated so the three data rows with gap < 0.05
+            # (the highest-risk set) would have been held for human review.
+            MIN_AUTO_GAP = 0.05
+            if (gap is not None and gap < MIN_AUTO_GAP
+                    and top["overall"] < config.AUTO_RESOLVE_THRESHOLD + 0.05):
+                # Treat as yellow even if score technically qualifies as green
+                _cm_confirmed = False
+            else:
+                _cm_confirmed = _cm.is_confirmed(top["overall"], gap)
+
             # GREEN/AUTO gate — only a confirmed top match counts as a button.
-            if not _cm.is_confirmed(top["overall"], gap):
+            if not _cm_confirmed:
+                # Collect yellow candidates (between red and green) for human review
+                _red   = getattr(config, "RED_THRESHOLD",  0.65)
+                _green = getattr(config, "GREEN_THRESHOLD", 0.82)
+                if _red <= top["overall"] < _green:
+                    key = (top["year"], top["slogan"])
+                    entry = dict(top)
+                    entry.update({"check_id": check_id, "item_id": item_id, "gap": gap})
+                    if key not in yellow or top["overall"] > yellow[key]["overall"]:
+                        yellow[key] = entry
                 continue
 
             key = (top["year"], top["slogan"])
@@ -745,10 +793,236 @@ def _evaluate_listing(
         "photos_processed": photos_processed,
         "best_score":       best_score_seen,
         "confirmed":        list(confirmed.values()),
+        "yellow":           list(yellow.values()),    # human-review candidates
         "needed":           list(needed_hits.values()),
         "log_top_matches":  log_top_matches,
         "best_needed":      best_needed,
     }
+
+
+def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
+                        confirmed_buttons: list) -> None:
+    """Post a stripped-down human-review block for yellow-confidence buttons.
+
+    Two-step interaction:
+      Step 1 — "How many buttons do you see in this lot?"
+               Quick-select buttons (1-5, 6-10, 11-20, 21-30, 30+).
+               Answer logged as a special confirm_log row (source='user_count').
+
+      Step 2 — For each yellow button: "Do you see [year] — [slogan]?"
+               ✅ Yes / ❌ No buttons posted as a single compact message.
+               Each answer logged to confirm_log (source='human_verify_yes'
+               or 'human_verify_no').
+
+    Fail-open: any Slack API error is caught and printed, never raised.
+    """
+    try:
+        item_id = listing.get("item_id", "?")
+        title   = listing.get("title", "?")[:60]
+        url     = listing.get("url") or listing.get("listing_url") or ""
+        asking  = listing.get("current_price")
+        price_str = f" · ${asking:.2f}" if asking else ""
+
+        # ── Header ───────────────────────────────────────────────────────────
+        header_text = (
+            f"*Scout review* · <{url}|{title}>{price_str}\n"
+            f"✅ Auto-confirmed: {len(confirmed_buttons)} button(s)\n"
+            f"🟡 Yellow (needs your eye): {len(yellow_buttons)} candidate(s)"
+        )
+
+        # ── Step 1: how many buttons? ─────────────────────────────────────────
+        count_meta = json.dumps({"job_id": job_id, "item_id": item_id})
+        count_elements = [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": label},
+                "action_id": f"scout_count_{label.replace('+', 'plus')}",
+                "value": json.dumps({"job_id": job_id, "item_id": item_id,
+                                     "bucket": label}),
+            }
+            for label in ["1-5", "6-10", "11-20", "21-30", "30+"]
+        ]
+
+        # ── Step 2: yes/no for each yellow button ────────────────────────────
+        yellow_blocks = []
+        for btn in yellow_buttons[:8]:   # cap at 8 to stay within Slack block limits
+            yr    = btn.get("year",   "?")
+            sl    = btn.get("slogan", "?")
+            score = btn.get("overall", 0)
+            gap   = btn.get("gap")
+            gap_str = f" · gap {gap:.2f}" if gap is not None else ""
+            verify_val = json.dumps({
+                "job_id":   job_id,
+                "item_id":  item_id,
+                "check_id": btn.get("check_id"),
+                "year":     yr,
+                "slogan":   sl,
+                "overall":  round(score, 4),
+            })
+            yellow_blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"🟡 *{yr}* — _{sl}_ ({int(score*100)}%{gap_str})",
+                },
+                "accessory": {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✅ Yes"},
+                    "style": "primary",
+                    "action_id": "scout_verify_yes",
+                    "value": verify_val,
+                },
+            })
+            yellow_blocks.append({
+                "type": "actions",
+                "elements": [{
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ No — not in lot"},
+                    "style": "danger",
+                    "action_id": "scout_verify_no",
+                    "value": verify_val,
+                }],
+            })
+
+        blocks = [
+            {"type": "section",
+             "text": {"type": "mrkdwn", "text": header_text}},
+            {"type": "section",
+             "text": {"type": "mrkdwn",
+                      "text": "📦 *How many buttons do you see in this lot?*"}},
+            {"type": "actions", "elements": count_elements},
+            {"type": "divider"},
+        ] + yellow_blocks
+
+        app.client.chat_postMessage(
+            token=_slack_token,
+            channel=_channel_id,
+            blocks=blocks,
+            text=f"Scout review: {len(yellow_buttons)} yellow button(s) — {title}",
+        )
+        print(
+            f">>> SCOUT_REVIEW: posted {len(yellow_buttons)} yellow button(s) "
+            f"for item {item_id}.",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"!!! SCOUT_REVIEW: post failed for {listing.get('item_id','?')}: {exc}",
+              flush=True)
+
+
+# --- SLACK ACTIONS: scout human-review responses ----------------------------
+
+@app.action("scout_verify_yes")
+def handle_scout_verify_yes(ack, body):
+    ack()
+    _handle_scout_verify(body, verified=True)
+
+
+@app.action("scout_verify_no")
+def handle_scout_verify_no(ack, body):
+    ack()
+    _handle_scout_verify(body, verified=False)
+
+
+def _handle_scout_verify(body, *, verified: bool) -> None:
+    """Log a Yes/No human-verification answer to confirm_log."""
+    try:
+        val      = json.loads(body["actions"][0]["value"])
+        job_id   = val.get("job_id")
+        check_id = val.get("check_id")
+        year     = val.get("year")
+        slogan   = val.get("slogan")
+        overall  = val.get("overall")
+        source   = "human_verify_yes" if verified else "human_verify_no"
+
+        rec = mlog.build_confirm_record(
+            service="ebayscout", command="/crawl500",
+            job_id=job_id, thread_ts=None,
+            crop_num=None, check_id=check_id,
+            user_id=(body.get("user") or {}).get("id", ""),
+            chosen_year=year, chosen_phrase=slogan,
+            chosen_type="Football", source=source,
+            rank_restricted=None, rank_shadow=None,
+            shadow_leaderboard_size=None,
+        )
+        if match_logger is not None:
+            match_logger.log_confirmation(check_id or f"verify:{job_id}", rec)
+
+        # Update the button in-place to show it's been answered
+        emoji = "✅" if verified else "❌"
+        try:
+            app.client.chat_update(
+                token=_slack_token,
+                channel=body["channel"]["id"],
+                ts=body["message"]["ts"],
+                text=f"{emoji} {year} — {slogan} ({source})",
+                blocks=[{
+                    "type": "section",
+                    "text": {"type": "mrkdwn",
+                             "text": f"{emoji} *{year}* — _{slogan}_ · logged"},
+                }],
+            )
+        except Exception:
+            pass   # UI update is cosmetic — don't let it break logging
+
+        print(
+            f">>> SCOUT_VERIFY: {source} for {year} / {slogan[:30]} "
+            f"(overall={overall}, job={job_id})",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"!!! SCOUT_VERIFY: failed: {exc}", flush=True)
+
+
+@app.action(re.compile(r"^scout_count_"))
+def handle_scout_count(ack, body):
+    """Log the user's button-count estimate for a lot."""
+    ack()
+    try:
+        val     = json.loads(body["actions"][0]["value"])
+        job_id  = val.get("job_id")
+        item_id = val.get("item_id")
+        bucket  = val.get("bucket", "?")
+
+        # Log as a synthetic confirm_log row so it's queryable alongside
+        # det_count_noinput.  chosen_phrase carries the bucket string;
+        # source='user_count' identifies the row type.
+        rec = mlog.build_confirm_record(
+            service="ebayscout", command="/crawl500",
+            job_id=job_id, thread_ts=None,
+            crop_num=None, check_id=f"count:{item_id}",
+            user_id=(body.get("user") or {}).get("id", ""),
+            chosen_year=None, chosen_phrase=bucket,
+            chosen_type=None, source="user_count",
+            rank_restricted=None, rank_shadow=None,
+            shadow_leaderboard_size=None,
+        )
+        if match_logger is not None:
+            match_logger.log_confirmation(f"count:{item_id}", rec)
+
+        # Replace the count buttons with a confirmation so the user knows it landed
+        try:
+            app.client.chat_update(
+                token=_slack_token,
+                channel=body["channel"]["id"],
+                ts=body["message"]["ts"],
+                text=f"📦 Button count logged: {bucket}",
+                blocks=[{
+                    "type": "section",
+                    "text": {"type": "mrkdwn",
+                             "text": f"📦 Button count logged: *{bucket}*"},
+                }],
+            )
+        except Exception:
+            pass
+
+        print(
+            f">>> SCOUT_COUNT: logged bucket={bucket} "
+            f"for item={item_id} job={job_id}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"!!! SCOUT_COUNT: failed: {exc}", flush=True)
 
 
 def _run_daily_scan(
@@ -1222,14 +1496,55 @@ def _run_crawl500() -> int:
             seen_store.mark_ondemand2_first_run_done()
         return 0
 
+def _post_logging_only(listing: dict, result: dict) -> None:
+    """Post a text-only lot summary to Slack — no interactive buttons.
+
+    Used to fill the minimum-50-posts guarantee in the final 50 lots of a
+    crawl500 run.  Deliberately minimal: one mrkdwn message, no blocks, so
+    it doesn't clutter the channel with review requests for lots that don't
+    need them.
+    """
+    try:
+        title     = listing.get("title", "?")[:60]
+        url       = listing.get("url") or listing.get("listing_url") or ""
+        asking    = listing.get("current_price")
+        price_str = f" · ${asking:.2f}" if asking else ""
+
+        confirmed = result.get("confirmed", [])
+        yellow    = result.get("yellow", [])
+
+        lines = [f"📋 *Scout log* · <{url}|{title}>{price_str}"]
+        if confirmed:
+            lines.append("✅ " + "  ·  ".join(
+                f"{b['year']} — {b['slogan']}" for b in confirmed[:6]
+            ))
+        if yellow:
+            lines.append("🟡 " + "  ·  ".join(
+                f"{b['year']} ({int(b['overall'] * 100)}%)" for b in yellow[:6]
+            ))
+        if not confirmed and not yellow:
+            lines.append("_(no matches above threshold)_")
+
+        app.client.chat_postMessage(
+            token=_slack_token,
+            channel=_channel_id,
+            text="\n".join(lines),
+        )
+    except Exception as exc:
+        print(f"!!! CRAWL500: logging-only post failed: {exc}", flush=True)
+
+
     job_id   = str(uuid.uuid4())
     stat_alerted = stat_confirmed_not_needed = stat_rejected = 0
-    _since_save = 0
+    _since_save  = 0
+    slack_posts_count = 0          # lots that generated ANY Slack output this run
+    MIN_SLACK_POSTS   = 50         # guarantee at least this many posts per crawl
+    total_listings    = len(new_listings)
 
     from . import clip_matcher as _cm
     ref_years = _cm.reference_years()
 
-    for listing in new_listings:
+    for lot_idx, listing in enumerate(new_listings):
         item_id = listing["item_id"]
         asking  = listing.get("current_price", 0.0)
         title   = listing.get("title", "?")
@@ -1254,6 +1569,43 @@ def _run_crawl500() -> int:
                 command="/crawl500", job_id=job_id,
                 title_years=title_years_all, title_count=extract_lot_count(title),
             )
+
+            # --- Minimum-50-posts guarantee --------------------------------------
+            # Track whether this lot generates a natural Slack post (yellow review
+            # or needed-button alert).  As we enter the final 50 lots, any deficit
+            # against the 50-post minimum is filled with logging-only posts — a
+            # plain text message with no interactive buttons.  Natural posts (those
+            # with real content) are never suppressed and always count toward the
+            # minimum, so the crawl is allowed to exceed 50 posts freely.
+            in_final_50     = lot_idx >= total_listings - 50
+            deficit         = max(0, MIN_SLACK_POSTS - slack_posts_count)
+            lots_remaining  = total_listings - lot_idx   # including this one
+
+            will_post_full  = bool(result.get("yellow") or result.get("needed"))
+
+            if will_post_full:
+                # Natural full post — always send regardless of where we are.
+                if result.get("yellow"):
+                    _post_yellow_review(
+                        listing=listing,
+                        yellow_buttons=result["yellow"],
+                        job_id=job_id,
+                        confirmed_buttons=result.get("confirmed", []),
+                    )
+                slack_posts_count += 1
+            elif in_final_50 and deficit > 0:
+                # No natural content but we're in the final 50 and still below
+                # the minimum.  Post a logging-only summary to fill the deficit.
+                # Cap: only do this for the first `deficit` lots in the final 50
+                # so we don't spam if the deficit is large relative to lots left.
+                _post_logging_only(listing, result)
+                slack_posts_count += 1
+                print(
+                    f">>> CRAWL500: logging-only post #{slack_posts_count} "
+                    f"(deficit={deficit}, lot {lot_idx+1}/{total_listings})",
+                    flush=True,
+                )
+
             if not result["confirmed"]:
                 stat_rejected += 1
             elif result["needed"]:
@@ -1265,7 +1617,8 @@ def _run_crawl500() -> int:
                     slack_token=_slack_token, channel=_channel_id, listing=listing,
                     needed_buttons=needed_buttons, asking_price=asking, lot_value=lot_value,
                 )
-                stat_alerted += 1
+                stat_alerted     += 1
+                slack_posts_count += 1   # needed alert is also a Slack post
             else:
                 stat_confirmed_not_needed += 1
         except Exception as exc:
@@ -1289,7 +1642,8 @@ def _run_crawl500() -> int:
         first_run=first_run,
     )
     print(f">>> CRAWL500: complete — processed={len(new_listings)} alerted={stat_alerted} "
-          f"confirmed_not_needed={stat_confirmed_not_needed} rejected={stat_rejected}.", flush=True)
+          f"confirmed_not_needed={stat_confirmed_not_needed} rejected={stat_rejected} "
+          f"slack_posts={slack_posts_count}.", flush=True)
     return len(new_listings)
 
 
