@@ -300,8 +300,9 @@ def handle_crawl500_command(ack, body):
         headers = {"X-Internal-Secret": _INTERNAL_SECRET}
         try:
             # Long read timeout: the run executes synchronously inside this call
-            # so CPU stays allocated for its whole duration (up to the 1800s cap).
-            requests.post(f"{base}/internal/crawl500", headers=headers, timeout=1800)
+            # so CPU stays allocated for its whole duration.  3500s leaves 100s
+            # headroom against Cloud Run's 3600s max request timeout.
+            requests.post(f"{base}/internal/crawl500", headers=headers, timeout=3500)
         except Exception as exc:
             print(f"!!! CRAWL500: internal kick failed: {exc}", flush=True)
             try:
@@ -1564,11 +1565,17 @@ def _post_logging_only(listing: dict, result: dict) -> None:
             if not picture_urls and listing.get("gallery_url"):
                 picture_urls = [listing["gallery_url"]]
 
-            result = _evaluate_listing(
-                listing, picture_urls, restrict_years,
-                command="/crawl500", job_id=job_id,
-                title_years=title_years_all, title_count=extract_lot_count(title),
-            )
+            # _keep_cpu_hot spins a lightweight thread so Cloud Run's scheduler
+            # sees continuous activity during CLIP inference and cv2 work.
+            # Mirrors the same pattern used in buttonmatcher's process_grid.
+            # Without it, the gap between lot downloads gets throttled to ~5 %
+            # CPU when _SERVICE_URL routes through localhost instead of the LB.
+            with _keep_cpu_hot():
+                result = _evaluate_listing(
+                    listing, picture_urls, restrict_years,
+                    command="/crawl500", job_id=job_id,
+                    title_years=title_years_all, title_count=extract_lot_count(title),
+                )
 
             # --- Minimum-50-posts guarantee --------------------------------------
             # Track whether this lot generates a natural Slack post (yellow review
