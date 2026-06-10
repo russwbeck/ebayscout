@@ -1834,7 +1834,9 @@ def _gemini_resolve_yellow(job_id: str, item_id: str, result: dict,
     return promoted
 
 
-def _build_gemini_summary(gemini_res: dict, resolved: list[dict]) -> str:
+def _build_gemini_summary(gemini_res: dict, resolved: list[dict],
+                           confirmed_count: int = 0,
+                           remaining_yellow_count: int = 0) -> str:
     """Build the '🤖 Gemini triage' summary line prepended to the Slack
     yellow-review post (see _post_yellow_review's gemini_summary param)."""
     total   = gemini_res.get("total_button_count", 0)
@@ -1851,6 +1853,12 @@ def _build_gemini_summary(gemini_res: dict, resolved: list[dict]) -> str:
     if resolved:
         resolved_str = "  ·  ".join(f"{b['year']} — {b['slogan']}" for b in resolved)
         lines.append(f"✅ Auto-resolved via Gemini: {resolved_str}")
+    if total and remaining_yellow_count and confirmed_count >= total:
+        lines.append(
+            f"⚠️ Gemini counted only {total} button(s) total and {confirmed_count} "
+            f"already auto-confirmed — the candidate(s) below may be a duplicate "
+            f"detection of the same physical button rather than an additional one."
+        )
     if flagged:
         lines.append("⚠️ Gemini flagged as hard to match: " + "  ·  ".join(flagged))
     return "\n".join(lines)
@@ -1945,7 +1953,11 @@ def _run_crawl10(gemini_api_key: str) -> int:
             resolved = _gemini_resolve_yellow(job_id, item_id, result, gemini_res)
             stat_gemini_resolved += len(resolved)
 
-            gemini_summary = _build_gemini_summary(gemini_res, resolved)
+            gemini_summary = _build_gemini_summary(
+                gemini_res, resolved,
+                confirmed_count=len(result["confirmed"]),
+                remaining_yellow_count=len(result["yellow"]),
+            )
 
             if result.get("yellow") or gemini_summary:
                 _post_yellow_review(
