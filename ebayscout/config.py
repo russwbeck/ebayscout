@@ -42,13 +42,30 @@ BUTTON_ERAS: dict = {
 ENABLE_ERA_DETECTION = True
 ERA_SAMPLE_LIMIT     = 5    # crops encoded to guess the lot era at the preview step
 
-# --- CLIP scoring (match buttonmatcher's constants) ---
+# --- CLIP scoring (UNIFIED with buttonmatcher's live score_slogans) ---
+# overall = 0.5*image + 0.5*text, + (text-0.9)*2.5 boost when text>0.9,
+# *0.7 penalty when text<0.3, + rarity tiebreaker (cap 0.04). Equal weighting
+# matches buttonmatcher so logged leaderboards == live scores; the old 0.7/0.3
+# (and the 0.75-0.90 mid-tier boost) are removed.
 CONFIDENCE_THRESHOLD      = 0.72   # above → confident match, eligible for alerts
 REJECTION_THRESHOLD       = 0.45   # below → clearly not a gameday button
-ALPHA                     = 0.7   # image weight  (matches match_buttons.py)
-BETA                      = 0.3   # text weight   (matches match_buttons.py)
+ALPHA                     = 0.5   # image weight  (unified with buttonmatcher)
+BETA                      = 0.5   # text weight   (unified with buttonmatcher)
 SLOGAN_PENALTY_THRESHOLD  = 0.3   # below this slogan_score → penalise overall
 PENALTY_MULTIPLIER        = 0.7
+
+# --- Human-in-the-loop /crawl500 confirm gate (green/auto) ---
+# A crop auto-confirms (no human review) when its overall clears AUTO_RESOLVE,
+# or is "green" (overall >= GREEN_THRESHOLD, or the #1-#2 gap >= GREEN_GAP).
+# Otherwise overall >= RED_THRESHOLD routes it to a yellow human review; below
+# RED_THRESHOLD it is logging-only. The gap guard (see clip_matcher.is_confirmed
+# and main._evaluate_listing) prevents a lone uncontested candidate from
+# greening on overall alone.
+AUTO_RESOLVE_THRESHOLD    = 0.85
+GREEN_THRESHOLD           = 0.82
+GREEN_GAP                 = 0.12
+RED_THRESHOLD             = 0.65
+MIN_AUTO_GAP              = 0.05   # min #1-#2 overall gap for an auto/green pick
 
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
@@ -94,6 +111,20 @@ IMAGE_MAX_DIM         = 1400     # resize longest side (was 800); better small-b
 HOUGH_RADIUS_SCALES   = (1.0, 0.66, 0.45, 0.30)  # multi-scale sweep, large→small
 HOUGH_MIN_RADIUS_PX   = 9        # floor so we don't chase speckle
 ENCODE_BATCH          = 16       # sub-batch size for CLIP image encoding
+
+# --- /crawl500 (interactive human-in-the-loop crawl) ---
+# A broad eBay crawl whose detected buttons are routed to Slack for human
+# verification (count bucket + per-button ✅/❌), producing the first
+# ground-truth labels a scan can generate (user_count, human_verify_*).
+# CRAWL500_MAX_LOTS caps how many deduped listings one run will process.
+CRAWL500_MAX_LOTS = 500
+CRAWL500_QUERIES  = [
+    "penn state football button",
+    "penn state nittany lions pinback",
+    "penn state gameday button",
+    "psu football pinback button",
+    "penn state beat button",
+]
 
 # --- Undervalued-lot alerts (deferred / opt-in) ---
 # Precise auto-valuation of a whole lot is unreliable without per-button

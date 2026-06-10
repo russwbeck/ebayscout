@@ -8,14 +8,22 @@ buybot/main.py (match_button).  Uses the same GCS files:
     vectors.pt          — image reference embeddings
     text_features.pt    — text embeddings + metadata
 
-Scoring constants match buttonmatcher: ALPHA=0.6, BETA=0.4.
+Scoring is UNIFIED with buttonmatcher's live score_slogans:
+    overall = 0.5*image + 0.5*text
+            + (text-0.9)*2.5   when text > 0.9   (near-certain boost)
+            *= 0.7             when text < 0.3   (weak-text penalty)
+            + rarity tiebreaker (capped at 0.04)
+so logged leaderboards (match_logging.build_leaderboard) equal live scores.
 
 Call init(bucket_name) once per job run before calling match_crop().
 """
 
+import math
 import os
+import re
 import tempfile
 import threading
+from collections import Counter
 from typing import Any
 
 import numpy as np
@@ -25,6 +33,7 @@ from PIL import Image
 from google.cloud import storage
 
 from . import config
+from . import match_logging as mlog
 
 # Pin PyTorch's CPU thread budget so it doesn't over-subscribe the container's
 # vCPUs and trip Cloud Run's throttle heuristic (CLOUD_RUN_CPU_THROTTLE_FIX.md,
@@ -56,6 +65,28 @@ _initialized = False
 _init_lock   = threading.Lock()
 
 _era_means: dict | None = None   # era_label -> unit [D] tensor, built lazily
+
+# --- Rarity tiebreaker (unified with buttonmatcher) ------------------------
+# word_freq is built from the slogan database at init(); rarity_weight gives
+# distinctive words a small bonus to break ties between similarly-scored years.
+# These are also passed to match_logging.build_leaderboard so logged shadow /
+# restricted leaderboards use the exact same scoring as the live matcher.
+word_freq = Counter()
+
+# Generic English stop words only — domain words like 'pitt', 'lion', 'state'
+# are meaningful differentiators and must NOT be suppressed.
+STOPWORDS = {"a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "of", "its", "is"}
+
+
+def tokenize(text):
+    return re.findall(r"\b[a-z0-9]+\b", str(text).lower())
+
+
+def rarity_weight(word):
+    """1/freq² — superlinear boost for truly rare words (freq=1 → 1.0,
+    freq=2 → 0.25, freq=5 → 0.04, freq=10 → 0.01)."""
+    freq = max(word_freq.get(word, 1), 1)
+    return 1.0 / (freq ** 2)
 
 
 def init(bucket_name: str = config.BUCKET_NAME) -> None:
@@ -101,6 +132,14 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             _ref_vectors = cached_vecs["vectors"]
             _ref_labels  = list(cached_vecs["labels"])
             print(f">>> CLIP: Image reference vectors loaded — {len(_ref_labels)} entries.", flush=True)
+
+        # Build the rarity word-frequency table from the slogan database so the
+        # rarity tiebreaker (and logged leaderboards) match buttonmatcher.
+        word_freq.clear()
+        for phrase in _text_phrases:
+            for word in set(tokenize(phrase)) - STOPWORDS:
+                word_freq[word] += 1
+        print(f">>> CLIP: word_freq built — {len(word_freq)} unique words.", flush=True)
 
         _initialized = True
         print(">>> CLIP: Initialization complete.", flush=True)
@@ -251,6 +290,122 @@ def match_crop(
     return results[0] if results else None
 
 
+def is_confirmed(overall: float | None, gap: float | None) -> bool:
+    """Green/auto confirm gate for /crawl500 (mirrors buttonmatcher).
+
+    A crop is "confirmed" (no human review needed) when it is clearly correct:
+    overall >= GREEN_THRESHOLD, OR the #1-#2 overall gap is decisive
+    (>= GREEN_GAP).  A None/NaN gap (e.g. only one candidate) does NOT confirm
+    on gap — the caller's gap guard still applies for auto-resolve.
+    """
+    if overall is None:
+        return False
+    if overall >= config.GREEN_THRESHOLD:
+        return True
+    if gap is not None and not (isinstance(gap, float) and math.isnan(gap)) \
+            and gap >= config.GREEN_GAP:
+        return True
+    return False
+
+
+def match_crops_with_diagnostics(
+    pil_images: list[Image.Image],
+    restrict_years: set[int] | None = None,
+    threshold: float | None = None,
+) -> list[dict]:
+    """Match crops AND produce the per-crop diagnostics /crawl500 logs.
+
+    Mirrors buttonmatcher.match_all_crops' shadow/restricted leaderboard logic.
+    For each crop returns:
+        candidates     : up to top-3 live match dicts (restricted to
+                         restrict_years when given), best first
+        gap            : overall(#1) - overall(#2), or None if < 2 candidates
+        restricted_top : trim_top(10) of the restricted leaderboard
+        shadow_top     : trim_top(10) of the UNRESTRICTED leaderboard
+                         (empty when the shadow pass is disabled)
+        shadow_enabled : bool
+    Leaderboards use match_logging.build_leaderboard with this module's
+    normalize/tokenize/rarity functions, so logged scores == live scores.
+    """
+    if threshold is None:
+        threshold = config.NEEDED_MATCH_THRESHOLD
+    if not _initialized:
+        raise RuntimeError(
+            "clip_matcher.init() must be called before match_crops_with_diagnostics()."
+        )
+    if not pil_images:
+        return []
+
+    shadow_on = mlog.shadow_pass_enabled()
+    restricted_allowed = (
+        {str(y) for y in restrict_years} if restrict_years else None
+    )
+
+    out: list[dict] = []
+    batch = max(1, getattr(config, "ENCODE_BATCH", 16))
+    for start in range(0, len(pil_images), batch):
+        chunk = pil_images[start:start + batch]
+        tensors = torch.stack([_preprocess(img) for img in chunk]).to(_device)
+        with torch.inference_mode():
+            vecs = _model.encode_image(tensors).float()
+        vecs = vecs / vecs.norm(dim=-1, keepdim=True)
+
+        for vec in vecs:
+            vec = vec.unsqueeze(0)
+            image_sims = (vec @ _ref_vectors.T).cpu().numpy()[0]
+            text_sims  = (vec @ _text_features.T).cpu().numpy()[0]
+
+            ranked = _ranked_matches(image_sims, text_sims, restrict_years)
+            candidates = [_format_match(r) for r in ranked[:3]]
+            gap = (
+                candidates[0]["overall"] - candidates[1]["overall"]
+                if len(candidates) >= 2 else None
+            )
+
+            # Per-year best image similarity over ALL years (leaderboard input).
+            year_image_scores: dict[str, float] = {}
+            for i, label in enumerate(_ref_labels):
+                y = _label_year(label)
+                if y is None:
+                    continue
+                ys = str(y)
+                s = float(image_sims[i])
+                if ys not in year_image_scores or s > year_image_scores[ys]:
+                    year_image_scores[ys] = s
+
+            lb_kwargs = dict(
+                text_sims=np.asarray(text_sims, dtype=np.float32),
+                year_scores=year_image_scores,
+                text_years=_text_years,
+                text_phrases=_text_phrases,
+                text_types=_text_types,
+                normalize_fn=_normalize_slogan,
+                tokenize_fn=tokenize,
+                rarity_fn=rarity_weight,
+                stopwords=STOPWORDS,
+            )
+            restricted = mlog.build_leaderboard(
+                allowed_years=restricted_allowed, **lb_kwargs
+            )
+            restricted_top = mlog.trim_top(restricted, 10)
+            if shadow_on:
+                shadow_top = mlog.trim_top(
+                    mlog.build_leaderboard(allowed_years=None, **lb_kwargs), 10
+                )
+            else:
+                shadow_top = []
+
+            out.append({
+                "candidates":     candidates,
+                "gap":            gap,
+                "restricted_top": restricted_top,
+                "shadow_top":     shadow_top,
+                "shadow_enabled": shadow_on,
+            })
+        del tensors, vecs
+    return out
+
+
 def _ranked_matches(
     image_sims: np.ndarray,
     text_sims:  np.ndarray,
@@ -390,15 +545,23 @@ def _score_slogans(
         slogan_score = _normalize_slogan(best_raw)
         overall      = (config.ALPHA * image_score) + (config.BETA * slogan_score)
 
-        # Boost for near-certain text match (>90%) — ramps fast
+        # Extra push for a near-certain text match (>90%) — empirically reliable.
         if slogan_score > 0.9:
             overall += (slogan_score - 0.9) * 2.5
-        # Moderate boost for strong-but-not-certain text match (75–90%)
-        elif slogan_score > 0.75:
-            overall += (slogan_score - 0.75) * 1.2
-        # Penalty for very weak text match
+        # Penalise very weak text matches. (No 0.75-0.90 mid-tier — unified with
+        # buttonmatcher so logged leaderboards equal live scores.)
         if slogan_score < config.SLOGAN_PENALTY_THRESHOLD:
             overall *= config.PENALTY_MULTIPLIER
+
+        # Small rarity tiebreaker (capped at 0.04): distinctive slogans get a
+        # tiny bonus to break ties between years with similar overall scores.
+        _words = set(tokenize(best_phrase)) - STOPWORDS
+        if _words:
+            _rarity_bonus = min(
+                0.04 * sum(rarity_weight(w) for w in _words) / len(_words),
+                0.04,
+            )
+            overall = overall + _rarity_bonus
 
         results.append({
             "year":         year,
