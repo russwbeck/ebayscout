@@ -742,8 +742,13 @@ def _evaluate_listing(
             # alone.  Threshold calibrated so the three data rows with gap < 0.05
             # (the highest-risk set) would have been held for human review.
             MIN_AUTO_GAP = 0.05
-            if (gap is not None and gap < MIN_AUTO_GAP
-                    and top["overall"] < config.AUTO_RESOLVE_THRESHOLD + 0.05):
+            # A MISSING gap (None) or NaN is the lone-uncontested-candidate case
+            # the comment above describes — the year restriction left no runner-up.
+            # `gap != gap` is True only for NaN; treat both as a bad gap so a lone
+            # 0.85 can no longer auto-confirm (the previous `gap is not None`
+            # condition skipped the guard exactly when gap was missing).
+            _gap_bad = gap is None or gap != gap or gap < MIN_AUTO_GAP
+            if _gap_bad and top["overall"] < config.AUTO_RESOLVE_THRESHOLD + 0.05:
                 # Treat as yellow even if score technically qualifies as green
                 _cm_confirmed = False
             else:
@@ -751,10 +756,11 @@ def _evaluate_listing(
 
             # GREEN/AUTO gate — only a confirmed top match counts as a button.
             if not _cm_confirmed:
-                # Collect yellow candidates (between red and green) for human review
-                _red   = getattr(config, "RED_THRESHOLD",  0.65)
-                _green = getattr(config, "GREEN_THRESHOLD", 0.82)
-                if _red <= top["overall"] < _green:
+                # Any non-confirmed candidate at/above RED goes to human review —
+                # including a guard-demoted >= GREEN one, which the old
+                # `_red <= overall < _green` window silently dropped.
+                _red = getattr(config, "RED_THRESHOLD", 0.65)
+                if top["overall"] >= _red:
                     key = (top["year"], top["slogan"])
                     entry = dict(top)
                     entry.update({"check_id": check_id, "item_id": item_id, "gap": gap})
