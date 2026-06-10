@@ -13,6 +13,7 @@ Interaction flow:
 
 import contextlib
 import datetime
+import json
 import threading
 import traceback
 from collections import Counter
@@ -1020,7 +1021,7 @@ def _run_daily_scan(
 
 def startup() -> None:
     """Load Google Sheets and CLIP model in the background."""
-    global buy_rules
+    global buy_rules, match_logger
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -1029,6 +1030,27 @@ def startup() -> None:
         buy_rules      = sheets_client.load_buy_rules(sheets_json, spreadsheet_id)
     except Exception as exc:
         print(f"!!! STARTUP: Sheets error: {exc}", flush=True)
+
+    # Attach the structured-logging tabs to the DEDICATED logging workbook
+    # (LOGGER_ID secret), separate from the buy-rules sheet.  Fail-open: if this
+    # errors, match_logger stays disabled and the scan / crawl run normally.
+    try:
+        import gspread
+        from google.oauth2 import service_account
+        _creds_info = json.loads(_get_secret("GOOGLE_SHEETS_JSON"))
+        _creds = service_account.Credentials.from_service_account_info(
+            _creds_info
+        ).with_scopes(["https://www.googleapis.com/auth/spreadsheets"])
+        _gc = gspread.authorize(_creds)
+        print(f">>> STARTUP: logging service account = "
+              f"{_creds_info.get('client_email', 'UNKNOWN')}", flush=True)
+        _mws, _cws = mlog.open_log_sheets(_gc, _get_secret("LOGGER_ID"))
+        match_logger = SheetLogger(_mws, _cws, service="ebayscout")
+        print(f">>> STARTUP: match logging "
+              f"{'enabled' if match_logger.enabled else 'DISABLED'} "
+              f"(LOGGER_ID workbook).", flush=True)
+    except Exception as exc:
+        print(f"!!! STARTUP: match logging setup failed: {exc}", flush=True)
 
     # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
     # may not finish until an HTTP request (a scan) provides CPU — those paths
