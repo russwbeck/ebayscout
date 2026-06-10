@@ -335,8 +335,8 @@ def build_detection_diag(
         "expected_radius": _i(expected_radius),
         "mask_components": _i(mask_components),
         # Priority 4: whole-image quality signals.
-        "edge_density": _f(edge_density),
-        "brightness_std": _f(brightness_std, 1),
+        "edge_density": _f(edge_density, 4),
+        "brightness_std": _f(brightness_std, 2),
         # Phase 1: unguided multi-pass diagnostics.  None when shadow pass is
         # disabled or count_circles_unguided hasn't been updated yet.
         "noinput_diag": noinput_diag or None,

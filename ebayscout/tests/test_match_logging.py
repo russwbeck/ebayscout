@@ -302,7 +302,7 @@ def test_localization_quality_fields_present_and_flattened():
         radius_min=58, radius_max=64, radius_mean=61.2, radius_std=1.8,
         buttons_per_megapixel=25.0, expected_radius=61, mask_components=14,
         border_removed=3, fill_removed=7, overlap_removed=2,
-        edge_density=0.1234, brightness_std=42.7,
+        edge_density=0.12345, brightness_std=42.756,
     )
     assert diag["radius_std"] == 1.8
     assert diag["mask_components"] == 14
@@ -310,8 +310,8 @@ def test_localization_quality_fields_present_and_flattened():
     assert diag["border_removed"] == 3
     assert diag["fill_removed"] == 7
     assert diag["overlap_removed"] == 2
-    assert diag["edge_density"] == 0.123
-    assert diag["brightness_std"] == 42.7
+    assert diag["edge_density"] == 0.1235     # rounded to 4 dp
+    assert diag["brightness_std"] == 42.76    # rounded to 2 dp
 
     rec = ml.build_match_record(
         service="s", command="/c", mode="inventory", job_id="j", thread_ts="t",
@@ -325,8 +325,8 @@ def test_localization_quality_fields_present_and_flattened():
     assert row[ml.MATCH_HEADER.index("det_rejection_rate")] == 0.387
     assert row[ml.MATCH_HEADER.index("det_border_removed")] == 3
     assert row[ml.MATCH_HEADER.index("det_overlap_removed")] == 2
-    assert row[ml.MATCH_HEADER.index("det_edge_density")] == 0.123
-    assert row[ml.MATCH_HEADER.index("det_brightness_std")] == 42.7
+    assert row[ml.MATCH_HEADER.index("det_edge_density")] == 0.1235
+    assert row[ml.MATCH_HEADER.index("det_brightness_std")] == 42.76
 
 
 def test_localization_quality_fields_default_blank():
