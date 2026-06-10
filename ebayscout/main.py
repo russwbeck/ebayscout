@@ -904,7 +904,7 @@ def _evaluate_listing(
 
 
 def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
-                        confirmed_buttons: list,
+                        confirmed_buttons: list, command: str,
                         gemini_summary: str | None = None) -> None:
     """Post a stripped-down human-review block for yellow-confidence buttons.
 
@@ -941,14 +941,13 @@ def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
             header_text = f"{gemini_summary}\n\n{header_text}"
 
         # ── Step 1: how many buttons? ─────────────────────────────────────────
-        count_meta = json.dumps({"job_id": job_id, "item_id": item_id})
         count_elements = [
             {
                 "type": "button",
                 "text": {"type": "plain_text", "text": label},
                 "action_id": f"scout_count_{label.replace('+', 'plus')}",
                 "value": json.dumps({"job_id": job_id, "item_id": item_id,
-                                     "bucket": label}),
+                                     "bucket": label, "command": command}),
             }
             for label in ["1-5", "6-10", "11-20", "21-30", "30+"]
         ]
@@ -968,6 +967,7 @@ def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
                 "year":     yr,
                 "slogan":   sl,
                 "overall":  round(score, 4),
+                "command":  command,
             })
             yellow_blocks.append({
                 "type": "section",
@@ -1043,10 +1043,11 @@ def _handle_scout_verify(body, *, verified: bool) -> None:
         year     = val.get("year")
         slogan   = val.get("slogan")
         overall  = val.get("overall")
+        command  = val.get("command", "/crawl500")
         source   = "human_verify_yes" if verified else "human_verify_no"
 
         rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl500",
+            service="ebayscout", command=command,
             job_id=job_id, thread_ts=None,
             crop_num=None, check_id=check_id,
             user_id=(body.get("user") or {}).get("id", ""),
@@ -1093,12 +1094,13 @@ def handle_scout_count(ack, body):
         job_id  = val.get("job_id")
         item_id = val.get("item_id")
         bucket  = val.get("bucket", "?")
+        command = val.get("command", "/crawl500")
 
         # Log as a synthetic confirm_log row so it's queryable alongside
         # det_count_noinput.  chosen_phrase carries the bucket string;
         # source='user_count' identifies the row type.
         rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl500",
+            service="ebayscout", command=command,
             job_id=job_id, thread_ts=None,
             crop_num=None, check_id=f"count:{item_id}",
             user_id=(body.get("user") or {}).get("id", ""),
@@ -1707,6 +1709,7 @@ def _post_logging_only(listing: dict, result: dict) -> None:
                         yellow_buttons=result["yellow"],
                         job_id=job_id,
                         confirmed_buttons=result.get("confirmed", []),
+                        command="/crawl500",
                     )
                 slack_posts_count += 1
             elif in_final_50 and deficit > 0:
@@ -1965,6 +1968,7 @@ def _run_crawl10(gemini_api_key: str) -> int:
                     yellow_buttons=result["yellow"],
                     job_id=job_id,
                     confirmed_buttons=result.get("confirmed", []),
+                    command="/crawl10",
                     gemini_summary=gemini_summary,
                 )
 
