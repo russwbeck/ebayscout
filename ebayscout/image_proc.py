@@ -11,13 +11,31 @@ CLIP preprocess pipeline.
 
 import math
 import io
+import os
 import requests
 import cv2
 import numpy as np
 from PIL import Image
 
 from . import config
+from . import detect_mask as dmask
 from .utils import sweep_radii
+
+
+def _bg_diff_enabled():
+    """Colour-vs-background mask is on by default; EBAYSCOUT_BG_DIFF=0 disables
+    it (instant rollback to the blue/white colour mask without a redeploy)."""
+    return os.environ.get("EBAYSCOUT_BG_DIFF", "1").strip() not in (
+        "0", "false", "False", "",
+    )
+
+
+def _blob_buster_enabled():
+    """Distance-transform splitting of touching buttons is on by default;
+    EBAYSCOUT_BLOB_BUSTER=0 disables it (instant rollback without redeploy)."""
+    return os.environ.get("EBAYSCOUT_BLOB_BUSTER", "1").strip() not in (
+        "0", "false", "False", "",
+    )
 
 
 def download_image(url: str, timeout: int = 15) -> bytes:
@@ -211,10 +229,58 @@ def detect_and_crop(
         )
         _fill_threshold = 0.55
 
+    # --- Colour-vs-background mask (catches non-blue buttons) ----------------
+    # The blue/white ranges miss maroon/green buttons and anything on a solid
+    # coloured backdrop — the cause of the 0% exact rate on white backgrounds
+    # (~60% of crops), where the blue-only mask doesn't contain the button. On a
+    # UNIFORM background, also flag pixels whose Lab colour is far from the
+    # sampled background and UNION them in (union → recall only goes up). Gated
+    # to uniform backgrounds so textured wood/quilt doesn't flood the mask.
+    # Kill-switch: EBAYSCOUT_BG_DIFF=0.
+    _bg_diff_used = False
+    if _bg_diff_enabled():
+        try:
+            _lab = cv2.cvtColor(img_noglare, cv2.COLOR_BGR2LAB)
+            _lab_border = np.concatenate([
+                _lab[:_bw, :].reshape(-1, 3),
+                _lab[h - _bw:, :].reshape(-1, 3),
+                _lab[:, :_bw].reshape(-1, 3),
+                _lab[:, w - _bw:].reshape(-1, 3),
+            ]).astype(np.float32)
+            _bg_lab    = np.median(_lab_border, axis=0)
+            _bg_spread = float(np.mean(np.std(_lab_border, axis=0)))
+            if dmask.should_use_bg_diff(_bg_spread):
+                _thr  = dmask.bg_diff_threshold(_bg_spread)
+                _dist = np.linalg.norm(_lab.astype(np.float32) - _bg_lab, axis=2)
+                _bgm  = (_dist > _thr).astype(np.uint8) * 255
+                mask  = cv2.bitwise_or(mask, _bgm)
+                _bg_diff_used = True
+            print(f">>> IMAGE: bg-diff spread={_bg_spread:.1f} "
+                  f"(<= {dmask.BG_DIFF_MAX_SPREAD} ⇒ uniform) → "
+                  f"{'APPLIED' if _bg_diff_used else 'skipped (textured bg)'}",
+                  flush=True)
+        except Exception as _bd_err:
+            print(f">>> IMAGE: bg-diff mask failed ({_bd_err}); colour mask only.",
+                  flush=True)
+    diag["mask_path"] = dmask.mask_path_label(diag.get("mask_path", ""), _bg_diff_used)
+
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     gray = cv2.GaussianBlur(mask, (9, 9), 2)
+
+    # --- Mask connected-component count (cheap localization-quality signal) ---
+    # components >> count → mask fragmenting buttons; << count → buttons merged.
+    _mask_components = None
+    try:
+        _n_lbl, _, _stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        _min_area = max(1, int(h * w * 0.001))
+        _mask_components = int(sum(
+            1 for _i in range(1, _n_lbl) if _stats[_i, cv2.CC_STAT_AREA] >= _min_area
+        ))
+    except Exception as _cc_err:
+        print(f">>> IMAGE: connectedComponents failed: {_cc_err}", flush=True)
+    diag["mask_components"] = _mask_components
 
     # --- Hough circle detection ---
     # Three param2 values run in parallel for scan mode (conservative/standard/loose).
@@ -391,6 +457,24 @@ def detect_and_crop(
                 if 0.7 * median_r < r < 1.3 * median_r
             ]
 
+        # --- Blob-buster: split touching buttons that merged in the mask ------
+        # When detection comes up short AND the mask has fewer components than
+        # buttons (the blob-merge signature), add a distance-transform circle at
+        # each merged button's centre. In scan mode `expected` is only the
+        # rows*cols hint, so this is largely dormant; it fires mainly in count
+        # mode. Kill-switch: EBAYSCOUT_BLOB_BUSTER=0.
+        if (_blob_buster_enabled() and cleaned
+                and len(cleaned) < expected
+                and (_mask_components or 0) < expected):
+            _min_r = int(base_r * 0.7)
+            _max_r = int(base_r * 1.3)
+            _dt = _distance_peak_proposals(mask, base_r, _min_r, _max_r, _margin, h, w)
+            _before = len(cleaned)
+            cleaned = _merge_circle_sets(cleaned, _dt, _fill_threshold, mask)[:cap]
+            print(f">>> IMAGE: blob-buster (components={_mask_components} < "
+                  f"expected={expected}): {_before} +{len(cleaned) - _before} "
+                  f"of {len(_dt)} distance-peaks → {len(cleaned)}", flush=True)
+
         print(
             f">>> IMAGE: Hough circles — mode: {'scan' if scan_mode else 'count'}, "
             f"filtered: {len(filtered)}, cleaned: {len(cleaned)}, cap: {cap}",
@@ -462,3 +546,55 @@ def _bgr_to_pil(crops_bgr: list[np.ndarray]) -> list[Image.Image]:
         except Exception as exc:
             print(f"!!! IMAGE: Failed to convert crop: {exc}", flush=True)
     return result
+
+
+# --- Blob-buster helpers (ported verbatim from buttonmatcher/main.py) -------
+
+def _merge_circle_sets(primary, secondary, fill_threshold, mask):
+    """Merge two (x, y, r) circle lists, keeping all primary circles and adding
+    secondary circles not already covered by a primary circle (and passing the
+    fill-ratio check)."""
+    merged = list(primary)
+    for (sx, sy, sr) in secondary:
+        if any(
+            math.hypot(sx - mx, sy - my) < min(sr, mr) * 0.7
+            for mx, my, mr in merged
+        ):
+            continue
+        cm = np.zeros(mask.shape, dtype=np.uint8)
+        cv2.circle(cm, (sx, sy), sr, 255, -1)
+        blue = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=cm))
+        if blue / max(1.0, math.pi * sr * sr) < fill_threshold:
+            continue
+        merged.append((sx, sy, sr))
+    return merged
+
+
+def _distance_peak_proposals(mask, expected_r, min_r, max_r, margin, h, w):
+    """Propose a circle at each distance-transform peak of the mask (blob-buster).
+
+    Separates touching buttons merged into one mask blob. Returns (x, y, r)
+    tuples (may be empty), same format as Hough output.
+    """
+    try:
+        dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    except Exception as _dt_err:
+        print(f">>> IMAGE: distanceTransform failed ({_dt_err}); no blob-buster.",
+              flush=True)
+        return []
+    core_thresh = max(1.0, 0.55 * expected_r)
+    cores = (dist >= core_thresh).astype(np.uint8)
+    if cv2.countNonZero(cores) == 0:
+        return []
+    _n, _labels, _stats, _centroids = cv2.connectedComponentsWithStats(cores, connectivity=8)
+    candidates = []
+    for i in range(1, _n):
+        cx, cy = _centroids[i]
+        cx, cy = int(round(cx)), int(round(cy))
+        if not (0 <= cy < h and 0 <= cx < w):
+            continue
+        r = dmask.clamp_radius(float(dist[cy, cx]), min_r, max_r)
+        candidates.append((cx, cy, r))
+    kept = dmask.select_peaks(candidates, min_separation=expected_r * 1.5)
+    return [(x, y, r) for (x, y, r) in kept
+            if margin < x < w - margin and margin < y < h - margin]
