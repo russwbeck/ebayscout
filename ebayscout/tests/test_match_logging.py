@@ -85,16 +85,55 @@ def test_leaderboard_matches_int_keyed_year_scores():
     assert lb[0]["image_score"] == 1.0
 
 
+def _expected_unified(img, text_sim, phrase):
+    """Recompute the unified score the way build_leaderboard / score_slogans do:
+    0.5/0.5 blend + near-certain-text boost + weak-text penalty + rarity bonus."""
+    norm_text = _normalize(text_sim)
+    o = 0.5 * img + 0.5 * norm_text
+    if norm_text > 0.9:
+        o += (norm_text - 0.9) * 2.5
+    if norm_text < 0.3:
+        o *= 0.7
+    words = set(_tokenize(phrase)) - set(STOPWORDS)
+    if words:
+        o = min(1.0, o + min(0.04 * sum(_rarity(w) for w in words) / len(words), 0.04))
+    return round(o, 5)
+
+
 def test_overall_formula_matches_live_pipeline():
+    # Mid-range text (norm 0.5 → no boost, no penalty) exercises the 0.5/0.5 blend.
+    img, text_sim, phrase = 0.60, 0.25, "Unique Slogan Words"
     lb = ml.build_leaderboard(
-        [0.35], {"1980": 1.0}, ["1980"], ["Unique Slogan Words"], ["Football"],
+        [text_sim], {"1980": img}, ["1980"], [phrase], ["Football"],
         normalize_fn=_normalize, tokenize_fn=_tokenize, rarity_fn=_rarity,
         stopwords=STOPWORDS,
     )
-    r = lb[0]
-    norm_text = _normalize(0.35)  # == 1.0
-    expected = min(1.0, 0.7 * 1.0 + 0.3 * norm_text + 0.04)
-    assert math.isclose(r["overall"], round(expected, 5), abs_tol=1e-6)
+    assert math.isclose(lb[0]["overall"], _expected_unified(img, text_sim, phrase),
+                        abs_tol=1e-6)
+
+
+def test_overall_formula_applies_near_certain_text_boost():
+    # text_sim 0.35 → norm 1.0 (>0.9) triggers the +(norm-0.9)*2.5 boost.
+    img, text_sim, phrase = 0.40, 0.35, "Unique Slogan Words"
+    lb = ml.build_leaderboard(
+        [text_sim], {"1980": img}, ["1980"], [phrase], ["Football"],
+        normalize_fn=_normalize, tokenize_fn=_tokenize, rarity_fn=_rarity,
+        stopwords=STOPWORDS,
+    )
+    assert math.isclose(lb[0]["overall"], _expected_unified(img, text_sim, phrase),
+                        abs_tol=1e-6)
+
+
+def test_overall_formula_applies_weak_text_penalty():
+    # text_sim 0.18 → norm 0.15 (<0.3) triggers the *0.7 penalty.
+    img, text_sim, phrase = 0.50, 0.18, "Unique Slogan Words"
+    lb = ml.build_leaderboard(
+        [text_sim], {"1980": img}, ["1980"], [phrase], ["Football"],
+        normalize_fn=_normalize, tokenize_fn=_tokenize, rarity_fn=_rarity,
+        stopwords=STOPWORDS,
+    )
+    assert math.isclose(lb[0]["overall"], _expected_unified(img, text_sim, phrase),
+                        abs_tol=1e-6)
 
 
 # --- rank_of -----------------------------------------------------------------
@@ -185,6 +224,41 @@ def test_confirm_record_logs_typed_slogan():
     assert row[ml.CONFIRM_HEADER.index("typed_slogan")] == "panthers pitfall"
 
 
+def test_confirm_record_preserves_originals_and_typed_top():
+    # Bug 3: a typed-slogan round must NOT clobber the match-time top-10s. The
+    # original restricted_top/shadow_top are preserved; typed results go to a
+    # separate typed_top column.
+    orig_restricted = [{"year": "1995", "phrase": "A", "overall": 0.8}]
+    orig_shadow = [{"year": "1995", "phrase": "A", "overall": 0.7}]
+    typed = [{"year": "1990", "phrase": "B", "overall": 0.9}]
+    rec = ml.build_confirm_record(
+        service="buttonmatcher", command="/sort", job_id=None, thread_ts="t",
+        crop_num=3, check_id="k", user_id="u", chosen_year=1990,
+        chosen_phrase="B", chosen_type="Football", source="typed_search",
+        rank_restricted=4, rank_shadow=2, shadow_leaderboard_size=40,
+        typed_slogan="b slogan", restricted_top=orig_restricted,
+        shadow_top=orig_shadow, typed_top=typed,
+    )
+    assert rec["restricted_top"] == orig_restricted     # originals intact
+    assert rec["shadow_top"] == orig_shadow
+    assert rec["typed_top"] == typed
+    assert "typed_top_json" in ml.CONFIRM_HEADER
+    row = ml.flatten_confirm_record(rec)
+    assert len(row) == len(ml.CONFIRM_HEADER)
+    assert json.loads(row[ml.CONFIRM_HEADER.index("typed_top_json")])[0]["year"] == "1990"
+    assert json.loads(row[ml.CONFIRM_HEADER.index("restricted_top_json")])[0]["year"] == "1995"
+
+
+def test_confirm_record_typed_top_defaults_empty():
+    rec = ml.build_confirm_record(
+        service="s", command="/sort", job_id=None, thread_ts="t", crop_num=1,
+        check_id="k", user_id="u", chosen_year=1990, chosen_phrase="X",
+        chosen_type="Football", source="pick", rank_restricted=1, rank_shadow=1,
+        shadow_leaderboard_size=10,
+    )
+    assert rec["typed_top"] == []
+
+
 # --- flatteners --------------------------------------------------------------
 
 def test_flatten_match_row_matches_header_width():
@@ -207,6 +281,59 @@ def test_flatten_match_row_matches_header_width():
     assert json.loads(row[ml.MATCH_HEADER.index("restricted_top_json")])[0]["year"] == "1990"
     # None retry rendered as empty string
     assert row[ml.MATCH_HEADER.index("det_hough_retry")] == ""
+
+
+def test_localization_quality_fields_present_and_flattened():
+    # The quality fields are joinable in the Sheet (not just the print line).
+    for col in ("det_raw_hough", "det_circles_rejected", "det_rejection_rate",
+                "det_radius_min", "det_radius_max", "det_radius_mean",
+                "det_radius_std", "det_buttons_per_megapixel",
+                "det_expected_radius", "det_mask_components"):
+        assert col in ml.MATCH_HEADER, col
+
+    diag = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=31, hough_retry_count=12, final_count_user=12,
+        final_count_noinput=19, user_count=12, detector_used="hough", n_crops=12,
+        raw_hough=31, circles_rejected=12, rejection_rate=0.387,
+        radius_min=58, radius_max=64, radius_mean=61.2, radius_std=1.8,
+        buttons_per_megapixel=25.0, expected_radius=61, mask_components=14,
+    )
+    assert diag["radius_std"] == 1.8
+    assert diag["mask_components"] == 14
+    assert diag["expected_radius"] == 61
+
+    rec = ml.build_match_record(
+        service="s", command="/c", mode="inventory", job_id="j", thread_ts="t",
+        channel_id="ch", user_id="u", crop_num=1, check_id="k", detection=diag,
+        bank="mellon", restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    assert row[ml.MATCH_HEADER.index("det_radius_std")] == 1.8
+    assert row[ml.MATCH_HEADER.index("det_mask_components")] == 14
+    assert row[ml.MATCH_HEADER.index("det_rejection_rate")] == 0.387
+
+
+def test_localization_quality_fields_default_blank():
+    # Projection path / callers that don't supply them → blank cells, never crash.
+    diag = ml.build_detection_diag(
+        h=1, w=1, bg_brightness=10, bg_is_white=False, mask_path="blue_or_white",
+        hough_pass1_count=0, hough_retry_count=None, final_count_user=0,
+        final_count_noinput=None, user_count=None, detector_used="grid", n_crops=12,
+        mask_components=7,   # still available on the projection path
+    )
+    assert diag["radius_std"] is None
+    assert diag["raw_hough"] is None
+    assert diag["mask_components"] == 7
+    rec = ml.build_match_record(
+        service="s", command="/c", mode="inventory", job_id="j", thread_ts="t",
+        channel_id="ch", user_id="u", crop_num=1, check_id="k", detection=diag,
+        bank="all", restricted_top=[], shadow_top=[], shadow_enabled=False,
+    )
+    row = ml.flatten_match_record(rec)
+    assert row[ml.MATCH_HEADER.index("det_radius_std")] == ""
+    assert row[ml.MATCH_HEADER.index("det_mask_components")] == 7
 
 
 def test_detection_diag_includes_bg_saturation():
@@ -282,6 +409,34 @@ def test_flatten_confirm_row_matches_header_width():
     row = ml.flatten_confirm_record(rec)
     assert len(row) == len(ml.CONFIRM_HEADER)
     assert row[ml.CONFIRM_HEADER.index("rank_shadow")] == ""  # None → ""
+
+
+def test_confirm_record_logs_rank_image_only():
+    # The apples-to-apples "before" baseline for the slogan-id experiment.
+    assert "rank_image_only" in ml.CONFIRM_HEADER
+    rec = ml.build_confirm_record(
+        service="buttonmatcher", command="/sort", job_id="j", thread_ts="t",
+        crop_num=1, check_id="k", user_id="u", chosen_year=1976,
+        chosen_phrase="Batter The Bucks", chosen_type="Football", source="pick",
+        rank_restricted=7, rank_shadow=15, shadow_leaderboard_size=54,
+        rank_image_only=9,
+    )
+    assert rec["rank_image_only"] == 9
+    row = ml.flatten_confirm_record(rec)
+    assert len(row) == len(ml.CONFIRM_HEADER)
+    assert row[ml.CONFIRM_HEADER.index("rank_image_only")] == 9
+
+
+def test_confirm_record_rank_image_only_defaults_none():
+    rec = ml.build_confirm_record(
+        service="s", command="/c", job_id="j", thread_ts="t", crop_num=1,
+        check_id="k", user_id="u", chosen_year=1990, chosen_phrase="X",
+        chosen_type="Football", source="pick", rank_restricted=1, rank_shadow=1,
+        shadow_leaderboard_size=10,
+    )
+    assert rec["rank_image_only"] is None
+    row = ml.flatten_confirm_record(rec)
+    assert row[ml.CONFIRM_HEADER.index("rank_image_only")] == ""  # None → blank
 
 
 # --- SheetLogger -------------------------------------------------------------

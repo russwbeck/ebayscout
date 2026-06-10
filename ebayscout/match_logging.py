@@ -92,10 +92,14 @@ def build_leaderboard(
 ):
     """Score *every* year and return them ranked best-first.
 
-    This mirrors the live ``overall = 0.7*image + 0.3*text (+rarity)`` formula
-    but, unlike ``score_slogans``, does NOT restrict the candidate pool to the
-    dual-signal top-6.  That makes it suitable for the counterfactual question
-    "with no limitations, where would the right answer rank?".
+    This mirrors the live ``score_slogans`` formula EXACTLY —
+    ``overall = 0.5*image + 0.5*text``, plus the near-certain-text boost
+    (``+(text-0.9)*2.5`` when text>0.9), the weak-text penalty (``*0.7`` when
+    text<0.3), and the rarity tiebreaker (capped at 0.04) — but, unlike
+    ``score_slogans``, does NOT restrict the candidate pool to the dual-signal
+    top-6.  That makes it suitable for the counterfactual question "with no
+    limitations, where would the right answer rank?" while guaranteeing logged
+    leaderboard scores equal the live ones (same weights, boost and penalty).
 
     Parameters
     ----------
@@ -131,7 +135,12 @@ def build_leaderboard(
     for yr, (best_text, phrase, ty) in best_by_year.items():
         img_score = float(year_scores.get(yr, year_scores.get(_maybe_int(yr), 0.0)))
         norm_text = float(normalize_fn(best_text))
-        overall = 0.7 * img_score + 0.3 * norm_text
+        # Mirror score_slogans EXACTLY so logged leaderboards == live scores.
+        overall = 0.5 * img_score + 0.5 * norm_text
+        if norm_text > 0.9:
+            overall += (norm_text - 0.9) * 2.5
+        if norm_text < 0.3:
+            overall *= 0.7
         words = set(tokenize_fn(phrase)) - set(stopwords)
         if words:
             bonus = min(0.04 * sum(rarity_fn(w) for w in words) / len(words), 0.04)
@@ -212,6 +221,17 @@ def build_detection_diag(
     detector_used,
     n_crops,
     bg_saturation=None,
+    noinput_diag=None,
+    raw_hough=None,
+    circles_rejected=None,
+    rejection_rate=None,
+    radius_min=None,
+    radius_max=None,
+    radius_mean=None,
+    radius_std=None,
+    buttons_per_megapixel=None,
+    expected_radius=None,
+    mask_components=None,
 ):
     """Detection diagnostics block.
 
@@ -222,10 +242,45 @@ def build_detection_diag(
 
     ``bg_brightness`` / ``bg_saturation`` / ``bg_is_white`` / ``mask_path`` are
     "what the background sampler saw" — logged so we can correlate the sampled
-    background against how many circles Hough finds.  The unguided count is NOT
-    analyzed beyond counting (that would waste compute); we only want to see
-    what it sees.
+    background against how many circles Hough finds.
+
+    Localization-quality fields (promoted from the DETECT_TELEMETRY print line so
+    they're joinable to confirmation outcomes in the Sheet):
+        raw_hough          int   total raw Hough output before any filtering
+        circles_rejected   int   discarded by margin + fill_ratio + dedup
+        rejection_rate     float rejected / raw_hough (high → noisy mask)
+        radius_min/max/mean/std  cleaned-circle radius spread (high std → the
+                                 crops are size-inconsistent → likely mis-located)
+        buttons_per_megapixel    layout density
+        expected_radius    int   radius the count IMPLIED (vs the radius actually
+                                 found above — if they track, count↔radius are
+                                 interchangeable and the count can be derived)
+        mask_components    int   connected components in the HSV mask; compare to
+                                 the count: ≫ → mask is fragmenting buttons,
+                                 ≪ → buttons merged.  Works on the projection
+                                 fallback path too (where radius stats are null).
+
+    ``noinput_diag`` is an optional dict produced by ``count_circles_unguided``
+    (Phase 1).  When provided it is stored under the key ``noinput_diag`` and
+    its fields are also flattened into the Sheet row via ``flatten_match_record``.
+    Callers that don't pass it receive None — all ni_* Sheet columns will be blank.
+
+    Expected keys in ``noinput_diag`` (all optional — missing → blank cell):
+        conservative  int   candidate count from tight Hough pass (high param2)
+        standard      int   candidate count from normal Hough pass
+        aggressive    int   candidate count from loose Hough pass (low param2)
+        selected      int   count chosen by the scoring function
+        confidence    float composite quality score of the winning set (0–1)
+        layout_conf   float fraction of selected circles fitting the inferred grid
+        outliers      int   circles that didn't fit any inferred row or column
+        pass_winner   str   "conservative" | "standard" | "aggressive"
     """
+    def _i(v):
+        return None if v is None else int(v)
+
+    def _f(v, nd=3):
+        return None if v is None else round(float(v), nd)
+
     return {
         "h": int(h),
         "w": int(w),
@@ -233,13 +288,33 @@ def build_detection_diag(
         "bg_saturation": (None if bg_saturation is None else round(float(bg_saturation), 2)),
         "bg_is_white": bool(bg_is_white),
         "mask_path": mask_path,                       # "blue_only" | "blue_or_white"
+                                                      #   (+ "+bgdiff" when the
+                                                      #   colour-vs-background mask
+                                                      #   also fired on a uniform bg)
         "hough_pass1_count": int(hough_pass1_count),
         "hough_retry_count": (None if hough_retry_count is None else int(hough_retry_count)),
         "final_count_user": int(final_count_user),
         "final_count_noinput": (None if final_count_noinput is None else int(final_count_noinput)),
         "user_count": (None if user_count in (None, "") else int(user_count)),
         "detector_used": detector_used,               # "hough" | "grid"
+                                                      #   (+ "+blob" when the
+                                                      #   blob-buster split touching
+                                                      #   buttons on the hough path)
         "n_crops": int(n_crops),
+        # Localization-quality fields (joinable in the Sheet).
+        "raw_hough": _i(raw_hough),
+        "circles_rejected": _i(circles_rejected),
+        "rejection_rate": _f(rejection_rate),
+        "radius_min": _i(radius_min),
+        "radius_max": _i(radius_max),
+        "radius_mean": _f(radius_mean, 1),
+        "radius_std": _f(radius_std, 1),
+        "buttons_per_megapixel": _f(buttons_per_megapixel, 1),
+        "expected_radius": _i(expected_radius),
+        "mask_components": _i(mask_components),
+        # Phase 1: unguided multi-pass diagnostics.  None when shadow pass is
+        # disabled or count_circles_unguided hasn't been updated yet.
+        "noinput_diag": noinput_diag or None,
     }
 
 
@@ -297,18 +372,32 @@ def build_confirm_record(
     rank_restricted,
     rank_shadow,
     shadow_leaderboard_size,
+    restricted_top=None,
+    shadow_top=None,
     typed_slogan=None,
+    typed_top=None,
+    rank_image_only=None,
 ):
     """One record per user confirmation, written when the human picks an answer.
 
     ``rank_shadow`` is the key signal: the rank of the confirmed year in the
     *unrestricted* leaderboard.
 
+    ``rank_image_only`` is the rank of the confirmed year by PURE image
+    similarity (no text/rarity blend).  It is the apples-to-apples "before"
+    baseline for the year-label-vs-slogan-id reference experiment: a confirmed
+    answer that ranks well by image alone needs no help; one that ranks deep
+    (e.g. crop 1 = 7) is exactly what slogan-level references aim to fix.
+
     ``typed_slogan`` captures the raw text the user typed (when they corrected a
     bad/missing match by typing a slogan), kept separate from ``chosen_phrase``
     (the database slogan they ultimately confirmed).  It is logged for EVERY
     typed path — typed-search picks, missed-button picks, and skips after a
     typed search — so we can study what humans type vs. what the matcher offered.
+
+    ``restricted_top`` / ``shadow_top`` are the full top-10 leaderboards at
+    match time, included here so over-scoring can be analysed without joining
+    to match_log.
     """
     return {
         "schema": SCHEMA_CONFIRM,
@@ -328,7 +417,17 @@ def build_confirm_record(
                                           # typed_search|missed_button|skip|skip_after_type
         "rank_restricted": rank_restricted,
         "rank_shadow": rank_shadow,
+        "rank_image_only": rank_image_only,
         "shadow_leaderboard_size": shadow_leaderboard_size,
+        # restricted_top / shadow_top are the ORIGINAL match-time top-10
+        # leaderboards.  They are preserved across typed-slogan / missed-button /
+        # Dussellbot rounds so we can always see where the answer ranked first.
+        "restricted_top": restricted_top or [],
+        "shadow_top": shadow_top or [],
+        # typed_top holds the results the user saw AFTER typing a slogan (the
+        # typed-search / missed-button / Dussellbot re-rank), kept separate so it
+        # never overwrites the originals above.
+        "typed_top": typed_top or [],
     }
 
 
@@ -340,6 +439,19 @@ MATCH_HEADER = [
     "det_h", "det_w", "det_bg_brightness", "det_bg_saturation", "det_bg_is_white",
     "det_mask_path", "det_hough_pass1", "det_hough_retry", "det_count_user",
     "det_count_noinput", "det_user_count", "det_detector_used", "det_n_crops",
+    # Localization-quality fields (joinable to outcomes)
+    "det_raw_hough", "det_circles_rejected", "det_rejection_rate",
+    "det_radius_min", "det_radius_max", "det_radius_mean", "det_radius_std",
+    "det_buttons_per_megapixel", "det_expected_radius", "det_mask_components",
+    # Phase 1 — unguided multi-pass fields (ni = "no-input")
+    "ni_conservative", "ni_standard", "ni_aggressive",
+    "ni_selected", "ni_confidence", "ni_layout_conf", "ni_outliers",
+    "ni_pass_winner",
+    # Phase 2 — contour fallback fields
+    "ni_contour_count", "ni_merged_count", "ni_source",
+    # Phase 3 — CLAHE/LAB preprocessing variant
+    "ni_variant",
+    # existing tail columns
     "bank", "restricted_top_json", "shadow_enabled", "shadow_top_json",
 ]
 
@@ -347,6 +459,8 @@ CONFIRM_HEADER = [
     "ts", "service", "command", "job_id", "thread_ts", "crop_num", "check_id",
     "user_id", "chosen_year", "chosen_phrase", "chosen_type", "typed_slogan",
     "source", "rank_restricted", "rank_shadow", "shadow_leaderboard_size",
+    "restricted_top_json", "shadow_top_json", "typed_top_json",
+    "rank_image_only",
 ]
 
 
@@ -360,18 +474,44 @@ def _cell(v):
 
 
 def flatten_match_record(rec):
-    d = rec.get("detection", {}) or {}
+    d  = rec.get("detection", {}) or {}
+    ni = d.get("noinput_diag") or {}   # Phase 1 sub-dict — empty dict → all blanks
     return [
+        # --- identity / job ---
         _cell(rec.get("ts")), _cell(rec.get("service")), _cell(rec.get("command")),
         _cell(rec.get("mode")), _cell(rec.get("job_id")), _cell(rec.get("thread_ts")),
         _cell(rec.get("channel_id")), _cell(rec.get("user_id")), _cell(rec.get("crop_num")),
         _cell(rec.get("check_id")),
+        # --- detection (guided / user-supplied) ---
         _cell(d.get("h")), _cell(d.get("w")), _cell(d.get("bg_brightness")),
         _cell(d.get("bg_saturation")),
         _cell(d.get("bg_is_white")), _cell(d.get("mask_path")),
         _cell(d.get("hough_pass1_count")), _cell(d.get("hough_retry_count")),
         _cell(d.get("final_count_user")), _cell(d.get("final_count_noinput")),
         _cell(d.get("user_count")), _cell(d.get("detector_used")), _cell(d.get("n_crops")),
+        # --- localization-quality fields ---
+        _cell(d.get("raw_hough")), _cell(d.get("circles_rejected")),
+        _cell(d.get("rejection_rate")),
+        _cell(d.get("radius_min")), _cell(d.get("radius_max")),
+        _cell(d.get("radius_mean")), _cell(d.get("radius_std")),
+        _cell(d.get("buttons_per_megapixel")), _cell(d.get("expected_radius")),
+        _cell(d.get("mask_components")),
+        # --- Phase 1: unguided multi-pass diagnostics ---
+        _cell(ni.get("conservative")),
+        _cell(ni.get("standard")),
+        _cell(ni.get("aggressive")),
+        _cell(ni.get("selected")),
+        _cell(ni.get("confidence")),
+        _cell(ni.get("layout_conf")),
+        _cell(ni.get("outliers")),
+        _cell(ni.get("pass_winner")),
+        # --- Phase 2: contour fallback diagnostics ---
+        _cell(ni.get("contour_count")),
+        _cell(ni.get("merged_count")),
+        _cell(ni.get("source")),
+        # --- Phase 3: CLAHE/LAB preprocessing variant ---
+        _cell(ni.get("variant")),
+        # --- match / shadow ---
         _cell(rec.get("bank")),
         json.dumps(rec.get("restricted_top") or [], default=str),
         _cell(rec.get("shadow_enabled")),
@@ -388,6 +528,10 @@ def flatten_confirm_record(rec):
         _cell(rec.get("typed_slogan")), _cell(rec.get("source")),
         _cell(rec.get("rank_restricted")), _cell(rec.get("rank_shadow")),
         _cell(rec.get("shadow_leaderboard_size")),
+        json.dumps(rec.get("restricted_top") or [], default=str),
+        json.dumps(rec.get("shadow_top") or [], default=str),
+        json.dumps(rec.get("typed_top") or [], default=str),
+        _cell(rec.get("rank_image_only")),
     ]
 
 
