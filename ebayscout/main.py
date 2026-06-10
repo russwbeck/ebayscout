@@ -708,6 +708,13 @@ def _evaluate_listing(
             circles_rejected=det_diag.get("circles_rejected"),
             radius_min=det_diag.get("radius_min"), radius_max=det_diag.get("radius_max"),
             radius_mean=det_diag.get("radius_mean"), radius_std=det_diag.get("radius_std"),
+            mask_components=det_diag.get("mask_components"),
+            # Priority 5 (per-stage breakdown) + Priority 4 (whole-image quality)
+            border_removed=det_diag.get("border_removed"),
+            fill_removed=det_diag.get("fill_removed"),
+            overlap_removed=det_diag.get("overlap_removed"),
+            edge_density=det_diag.get("edge_density"),
+            brightness_std=det_diag.get("brightness_std"),
             noinput_diag=_noinput_diag,
         )
 
