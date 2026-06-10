@@ -841,3 +841,13 @@ def count_circles_unguided(image_bgr):
     except Exception as e:
         print(f">>> IMAGE: count_circles_unguided failed: {e}", flush=True)
         return None, None
+
+
+def count_circles_unguided_from_bytes(image_bytes: bytes):
+    """Decode raw image bytes and run count_circles_unguided (keeps cv2 here so
+    callers don't need it).  Returns (selected_count, noinput_diag) or (None, None)."""
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        return None, None
+    return count_circles_unguided(bgr)

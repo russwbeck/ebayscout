@@ -14,17 +14,26 @@ Interaction flow:
 import contextlib
 import datetime
 import json
+import math
+import os
+import re
 import threading
+import time
 import traceback
+import uuid
 from collections import Counter
 
+import requests
 from flask import Flask, request, jsonify
 from google.cloud import secretmanager
+from slack_bolt import App
+from slack_bolt.adapter.flask import SlackRequestHandler
 
 from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
+from . import ebay_client
 from . import match_logging as mlog
 from .match_logging import SheetLogger
 from .utils import (
@@ -57,8 +66,16 @@ def _get_secret(secret_id: str) -> str:
 
 print(">>> INIT: Fetching Slack secrets...", flush=True)
 _slack_token    = _get_secret("EBAY_BOT_TOKEN")
+_signing_secret = _get_secret("SIGNING_SECRET_ES")
 _channel_id     = _get_secret("CHANNEL_ID_EBAY")
 print(">>> INIT: Slack secrets loaded.", flush=True)
+
+# ---------------------------------------------------------------------------
+# Slack Bolt app — powers the interactive /crawl500 human-in-the-loop review.
+# Slash command + interactivity payloads are routed through POST /slack/events.
+# ---------------------------------------------------------------------------
+bolt_app = App(token=_slack_token, signing_secret=_signing_secret)
+handler  = SlackRequestHandler(bolt_app)
 
 # ---------------------------------------------------------------------------
 # Global state (populated by startup())
@@ -71,6 +88,19 @@ vectors_loaded: bool = False
 # Disabled until startup() attaches the log tabs.  All writes fail-open so
 # logging can never break /run-scan.  Shared byte-identical match_logging module.
 match_logger = SheetLogger(None, None, service="ebayscout")
+
+# Interactive /crawl500 review state (in-memory; lost on container restart, like
+# buybot's pending_* sessions). Keyed by check_id → the context an action handler
+# needs to write a confirmation record when the human clicks a button.
+#   pending_crawl_reviews[check_id] = {
+#       "job_id", "crop_num", "channel_id", "thread_ts", "candidates",
+#       "restricted_top", "shadow_top", "listing_url", "title",
+#   }
+pending_crawl_reviews: dict = {}
+
+# Held for the duration of a /crawl500 run so an overlapping trigger can't start
+# a second concurrent crawl.
+_crawl_lock = threading.Lock()
 
 # Held for the duration of a daily scan so an overlapping trigger can't start
 # a second concurrent run.
@@ -141,6 +171,84 @@ def _ensure_clip_loaded() -> bool:
 # ---------------------------------------------------------------------------
 
 flask_app = Flask(__name__)
+
+
+@flask_app.route("/slack/events", methods=["POST"])
+def slack_events():
+    """Single Slack ingress: slash commands + interactivity (button) payloads.
+
+    Configure the /crawl500 slash command Request URL AND the Interactivity
+    Request URL in the Slack app to point here.
+    """
+    return handler.handle(request)
+
+
+def _self_base_url() -> str:
+    """This service's own public base URL (for the in-flight CPU self-request)."""
+    return os.environ.get("SERVICE_BASE_URL", config.SERVICE_BASE_URL).rstrip("/")
+
+
+@bolt_app.command("/crawl500")
+def handle_crawl500(ack, command, client):
+    """Kick off the interactive crawl. Ack within Slack's 3s window, then fire a
+    self-request to /internal/crawl500 so the heavy work runs inside a live HTTP
+    request (Cloud Run keeps CPU allocated only during request handling)."""
+    ack()
+    channel_id = command.get("channel_id") or _channel_id
+    user_id    = command.get("user_id", "")
+    text       = (command.get("text") or "").strip()
+    try:
+        max_lots = int(text) if text else config.CRAWL500_MAX_LOTS
+    except ValueError:
+        max_lots = config.CRAWL500_MAX_LOTS
+    max_lots = max(1, min(max_lots, config.CRAWL500_MAX_LOTS))
+
+    try:
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"🚀 Starting /crawl500 (up to {max_lots} lots). "
+                 f"I'll post needed-button candidates here for review as I go.",
+        )
+    except Exception as exc:
+        print(f"!!! CRAWL500: ack post failed: {exc}", flush=True)
+
+    payload = {"channel_id": channel_id, "user_id": user_id, "max_lots": max_lots}
+    try:
+        requests.post(f"{_self_base_url()}/internal/crawl500", json=payload, timeout=5)
+    except requests.exceptions.ReadTimeout:
+        # Expected: the internal endpoint runs the long crawl synchronously.
+        pass
+    except Exception as exc:
+        print(f"!!! CRAWL500: failed to dispatch internal crawl: {exc}", flush=True)
+        try:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"❌ Could not start the crawl: {exc}",
+            )
+        except Exception:
+            pass
+
+
+@flask_app.route("/internal/crawl500", methods=["POST"])
+def internal_crawl500():
+    """Run the crawl synchronously inside this request (in-flight CPU pattern).
+    Called only by this service itself (handle_crawl500)."""
+    data       = request.get_json(silent=True) or {}
+    channel_id = data.get("channel_id") or _channel_id
+    user_id    = data.get("user_id", "")
+    max_lots   = int(data.get("max_lots", config.CRAWL500_MAX_LOTS))
+
+    if not vectors_loaded and not _ensure_clip_loaded():
+        return jsonify({"status": "clip init failed"}), 500
+
+    if not _crawl_lock.acquire(blocking=False):
+        return jsonify({"status": "already running"}), 409
+    try:
+        with _keep_cpu_hot():
+            summary = _run_crawl500(channel_id, user_id, max_lots)
+    finally:
+        _crawl_lock.release()
+    return jsonify({"status": "crawl complete", **summary}), 200
 
 
 @flask_app.route("/run-scan", methods=["POST"])
@@ -1013,6 +1121,396 @@ def _run_daily_scan(
               f"(re-run the same chunk call to continue; 0 = backlog exhausted).", flush=True)
     print(">>> SCAN: Daily scan complete.", flush=True)
     return _chunk_remaining
+
+
+# ===========================================================================
+# Interactive /crawl500 — human-in-the-loop crawl
+#
+# A broad eBay crawl whose needed-button candidates are routed to Slack for human
+# verification (per-button ✅/❌ + a count bucket), producing the first
+# ground-truth labels a scan can generate (human_verify_*, user_count → logged to
+# confirm_log).  Every crop is logged to match_log via match_crops_with_diagnostics.
+# Confirmed (green/auto, passing the gap guard) candidates auto-record; the
+# uncertain band (>= RED) is where human labels are requested.
+# ===========================================================================
+
+_COUNT_BUCKETS = ["1", "2-5", "6-20", "20+"]
+
+
+def _restrict_years_for(listing: dict, ref_years: set[int]) -> set[int] | None:
+    """Years the matcher may consider for a listing (mirrors _run_daily_scan)."""
+    title = listing.get("title", "?")
+    title_years_all = extract_years(title)
+    title_decades   = extract_decades(title)
+    search_year     = listing.get("search_year")
+    search_era      = listing.get("search_era")
+    if search_year:
+        return {int(search_year)} | title_decades
+    if search_era:
+        return era_year_set(search_era, config.BUTTON_ERAS) or None
+    if title_decades:
+        return title_decades
+    if len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
+        return {next(iter(title_years_all))}
+    return None
+
+
+def _log_confirmation(ctx: dict, source: str, *, chosen: bool = True,
+                      user_id: str = "", typed_slogan: str | None = None) -> None:
+    """Write one confirm_log row joined to a crop's match_log row by check_id."""
+    try:
+        restricted = ctx.get("restricted_top") or []
+        shadow     = ctx.get("shadow_top") or []
+        year       = ctx.get("year")
+        rec = mlog.build_confirm_record(
+            service="ebayscout", command="/crawl500", job_id=ctx.get("job_id"),
+            thread_ts=ctx.get("thread_ts"), crop_num=ctx.get("crop_num"),
+            check_id=ctx.get("check_id"), user_id=user_id,
+            chosen_year=(year if chosen else None),
+            chosen_phrase=(ctx.get("slogan") if chosen else None),
+            chosen_type="Football",
+            source=source,
+            rank_restricted=mlog.rank_of(year, restricted) if chosen else None,
+            rank_shadow=mlog.rank_of(year, shadow) if chosen else None,
+            shadow_leaderboard_size=len(shadow),
+            restricted_top=restricted, shadow_top=shadow,
+            typed_slogan=typed_slogan,
+        )
+        match_logger.log_confirmation(ctx.get("check_id"), rec)
+    except Exception as exc:
+        print(f">>> CRAWL500: confirm log failed: {exc}", flush=True)
+
+
+def _post_yellow_review(listing: dict, best: dict, channel_id: str) -> None:
+    """Post an interactive needed-button review: per-button ✅/❌ + a count bucket.
+    Registers the context under best['check_id'] so the action handlers can log."""
+    title       = listing.get("title", "?")
+    listing_url = listing.get("listing_url") or listing.get("gallery_url") or ""
+    asking      = listing.get("current_price", 0.0)
+    check_id    = best["check_id"]
+
+    title_txt = title if len(title) <= 80 else title[:77] + "…"
+    header = (
+        f"🟡 *Needed-button candidate — please verify*\n"
+        f"*<{listing_url}|{title_txt}>*\n"
+        f"Asking: *${asking:.2f}*  |  Best match: *{best['year']} {best['slogan']}* "
+        f"(score {best['overall']:.2f})"
+    )
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+        {"type": "actions", "elements": [
+            {"type": "button", "text": {"type": "plain_text", "text": "✅ Correct"},
+             "style": "primary", "action_id": "scout_verify_yes", "value": check_id},
+            {"type": "button", "text": {"type": "plain_text", "text": "❌ Wrong / not this"},
+             "action_id": "scout_verify_no", "value": check_id},
+        ]},
+        {"type": "section", "text": {"type": "mrkdwn",
+            "text": "How many buttons are in this lot?"}},
+        {"type": "actions", "elements": [
+            {"type": "button", "text": {"type": "plain_text", "text": b},
+             "action_id": f"scout_count_{i}", "value": f"{check_id}|{b}"}
+            for i, b in enumerate(_COUNT_BUCKETS)
+        ]},
+    ]
+    try:
+        resp = bolt_app.client.chat_postMessage(
+            channel=channel_id, blocks=blocks, text=header)
+        thread_ts = resp.get("ts")
+    except Exception as exc:
+        print(f">>> CRAWL500: yellow review post failed: {exc}", flush=True)
+        thread_ts = None
+
+    ctx = dict(best)
+    ctx["channel_id"] = channel_id
+    ctx["thread_ts"]  = thread_ts
+    ctx["listing_url"] = listing_url
+    ctx["title"] = title
+    pending_crawl_reviews[check_id] = ctx
+
+
+def _evaluate_listing(listing, restrict_years, ebay_creds, channel_id,
+                      command="/crawl500", dry_run=False) -> dict:
+    """Detect + match one listing, log every crop, and route the best needed-button
+    candidate to auto-confirm / yellow review / logging-only."""
+    from . import image_proc as _ip
+    from . import clip_matcher as _cm
+
+    ebay_app_id, ebay_cert_id = ebay_creds
+    item_id = listing["item_id"]
+    title   = listing.get("title", "?")
+    asking  = listing.get("current_price", 0.0)
+    bank    = listing.get("search_era") or "all"
+
+    # Picture URLs — same sourcing as the daily scan.
+    if item_id.startswith("etsy_"):
+        picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
+    elif ebay_app_id and ebay_cert_id:
+        picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
+        if not picture_urls and listing.get("gallery_url"):
+            picture_urls = [listing["gallery_url"]]
+    else:
+        picture_urls = [listing["gallery_url"]] if listing.get("gallery_url") else []
+    if not picture_urls:
+        return {"status": "no_photos"}
+
+    title_years   = extract_years(title)
+    title_count   = extract_lot_count(title)
+    per_photo_cap = max(config.MAX_CROPS_PER_PHOTO, title_count or 0)
+    listing_budget = max(config.MAX_CROPS_PER_LISTING, title_count or 0)
+
+    job_id      = f"crawl500:{item_id}:{int(time.time())}"
+    all_records = []
+    crop_counter = 0
+    best: dict | None = None
+    best_score_seen = 0.0
+    shadow_on = match_logger.enabled and mlog.shadow_pass_enabled()
+
+    for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
+        if photo_idx == 1:
+            promising = bool(title_years) or best_score_seen >= config.REJECTION_THRESHOLD
+            if not promising:
+                break
+        if listing_budget <= 0:
+            break
+        try:
+            image_bytes = _ip.download_image(photo_url)
+            diag: dict = {}
+            crops = _ip.detect_and_crop(image_bytes, max_crops=per_photo_cap, diag_out=diag)
+        except Exception as exc:
+            print(f"!!! CRAWL500: photo processing failed: {exc}", flush=True)
+            continue
+        if not crops:
+            continue
+        crops = crops[:listing_budget]
+        listing_budget -= len(crops)
+
+        ni_count = ni_diag = None
+        if shadow_on:
+            try:
+                ni_count, ni_diag = _ip.count_circles_unguided_from_bytes(image_bytes)
+            except Exception as _de:
+                print(f">>> CRAWL500: unguided detect failed: {_de}", flush=True)
+
+        try:
+            diags = _cm.match_crops_with_diagnostics(crops, restrict_years=restrict_years)
+        except Exception as exc:
+            print(f"!!! CRAWL500: match failed: {exc}", flush=True)
+            continue
+
+        detection = mlog.build_detection_diag(
+            h=diag.get("h", 0), w=diag.get("w", 0),
+            bg_brightness=diag.get("bg_brightness", 0.0),
+            bg_is_white=diag.get("bg_is_white", False),
+            mask_path=diag.get("mask_path", ""),
+            hough_pass1_count=len(crops), hough_retry_count=None,
+            final_count_user=len(crops), final_count_noinput=ni_count,
+            user_count=None, detector_used="hough", n_crops=len(crops),
+            bg_saturation=diag.get("bg_saturation"),
+            mask_components=diag.get("mask_components"),
+            noinput_diag=ni_diag,
+        )
+
+        for d in diags:
+            crop_counter += 1
+            check_id = uuid.uuid4().hex[:12]
+            all_records.append(mlog.build_match_record(
+                service="ebayscout", command=command, mode="crawl500",
+                job_id=job_id, thread_ts=None, channel_id=channel_id, user_id="",
+                crop_num=crop_counter, check_id=check_id, detection=detection,
+                bank=bank, restricted_top=d["restricted_top"],
+                shadow_top=d["shadow_top"], shadow_enabled=d["shadow_enabled"],
+            ))
+            cands = d["candidates"]
+            if not cands:
+                continue
+            top     = cands[0]
+            overall = top["overall"]
+            best_score_seen = max(best_score_seen, overall)
+
+            price_single, _, _, amount_needed = sheets_client.get_buy_decision(
+                top["year"], top["slogan"], buy_rules)
+            if amount_needed <= 0:
+                continue
+            if is_non_alerting_slogan(top["slogan"], config.NON_ALERTING_SLOGAN_PATTERNS):
+                continue
+            if best is None or overall > best["overall"]:
+                best = {
+                    "year": top["year"], "slogan": top["slogan"], "overall": overall,
+                    "gap": d["gap"], "crop_num": crop_counter, "check_id": check_id,
+                    "job_id": job_id, "price": price_single, "amount": amount_needed,
+                    "restricted_top": d["restricted_top"], "shadow_top": d["shadow_top"],
+                }
+
+    match_logger.log_image_crops(job_id, all_records)
+
+    if best is None:
+        return {"status": "no_needed", "best_score": best_score_seen}
+
+    overall = best["overall"]
+    gap     = best["gap"]
+    confirmed = _cm.is_confirmed(overall, gap)
+    # Gap guard: a None/NaN or thin #1-#2 gap must NOT auto-confirm (the lone
+    # uncontested candidate that greened at 0.85 was the documented bug).
+    gap_bad = gap is None or (isinstance(gap, float) and math.isnan(gap)) \
+        or gap < config.MIN_AUTO_GAP
+    if confirmed and gap_bad:
+        confirmed = False
+
+    if confirmed:
+        # High-confidence + decisive gap → auto-record, no human needed.
+        if not dry_run:
+            _log_confirmation(best, source="auto", chosen=True)
+            try:
+                notifier.send_needed_alert(
+                    slack_token=_slack_token, channel=channel_id, listing=listing,
+                    needed_buttons=[{
+                        "year": best["year"], "slogan": best["slogan"],
+                        "overall": overall, "max_price_single": best["price"],
+                        "amount_needed": best["amount"],
+                    }],
+                    asking_price=asking,
+                    lot_value=sheets_client.parse_price(best["price"]),
+                )
+            except Exception as exc:
+                print(f">>> CRAWL500: auto alert failed: {exc}", flush=True)
+        return {"status": "auto_confirmed", "needed": True, "best_score": overall}
+
+    # Guard-demoted (was green/auto) OR uncertain band → ask the human. Any needed
+    # candidate at/above RED is worth a human label, regardless of upper band.
+    if overall >= config.RED_THRESHOLD:
+        if not dry_run:
+            _post_yellow_review(listing, best, channel_id)
+        return {"status": "yellow_review", "needed": True, "best_score": overall}
+
+    return {"status": "logging_only", "needed": True, "best_score": overall}
+
+
+def _run_crawl500(channel_id: str, user_id: str, max_lots: int) -> dict:
+    """Source a broad set of listings, evaluate each, and post a summary.
+    Returns counters for the JSON response."""
+    from . import clip_matcher as _cm
+
+    try:
+        ebay_app_id  = _get_secret("EBAY_APP_ID")
+        ebay_cert_id = _get_secret("EBAY_CERT_ID")
+    except Exception as exc:
+        print(f"!!! CRAWL500: eBay credentials unavailable: {exc}", flush=True)
+        try:
+            bolt_app.client.chat_postMessage(
+                channel=channel_id, text="❌ /crawl500 needs eBay credentials.")
+        except Exception:
+            pass
+        return {"sourced": 0, "evaluated": 0}
+
+    listings: list[dict] = []
+    try:
+        listings.extend(ebay_client.find_all_listings(
+            client_id=ebay_app_id, client_secret=ebay_cert_id,
+            queries=config.CRAWL500_QUERIES,
+            excluded_sellers=config.EXCLUDED_SELLERS,
+            max_results=config.EBAY_MAX_RESULTS,
+        ))
+        listings.extend(ebay_client.find_all_listings(
+            client_id=ebay_app_id, client_secret=ebay_cert_id,
+            queries=config.PSU_SEARCH_QUERIES,
+            excluded_sellers=config.EXCLUDED_SELLERS,
+            max_results=config.EBAY_MAX_RESULTS,
+            category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+        ))
+    except Exception as exc:
+        print(f"!!! CRAWL500: eBay query failed: {exc}", flush=True)
+
+    listings = dedup_listings(listings)[:max_lots]
+    print(f">>> CRAWL500: evaluating {len(listings)} deduped listings "
+          f"(cap {max_lots}).", flush=True)
+
+    ref_years = _cm.reference_years()
+    counters = Counter()
+    posted = 0
+    for listing in listings:
+        try:
+            restrict_years = _restrict_years_for(listing, ref_years)
+            res = _evaluate_listing(
+                listing, restrict_years, (ebay_app_id, ebay_cert_id), channel_id)
+            counters[res.get("status", "error")] += 1
+            if res.get("status") == "yellow_review":
+                posted += 1
+        except Exception as exc:
+            counters["error"] += 1
+            print(f"!!! CRAWL500: error on {listing.get('item_id')}: {exc}", flush=True)
+            traceback.print_exc()
+
+    summary = (
+        f"✅ /crawl500 done — evaluated *{len(listings)}* lots.\n"
+        f"• 🟡 posted for review: *{posted}*\n"
+        f"• 🟢 auto-confirmed: *{counters.get('auto_confirmed', 0)}*\n"
+        f"• logged-only (below review bar): *{counters.get('logging_only', 0)}*\n"
+        f"• no needed candidate: *{counters.get('no_needed', 0)}*"
+    )
+    try:
+        bolt_app.client.chat_postMessage(channel=channel_id, text=summary)
+    except Exception as exc:
+        print(f">>> CRAWL500: summary post failed: {exc}", flush=True)
+
+    return {"sourced": len(listings), "evaluated": len(listings),
+            "posted_for_review": posted, **dict(counters)}
+
+
+# --- Interactive action handlers (per-button ✅/❌ + count bucket) ----------
+
+@bolt_app.action("scout_verify_yes")
+def handle_verify_yes(ack, body, action, client):
+    ack()
+    check_id = action.get("value")
+    ctx = pending_crawl_reviews.get(check_id)
+    user_id = (body.get("user") or {}).get("id", "")
+    if not ctx:
+        return
+    _log_confirmation(ctx, source="human_verify_yes", chosen=True, user_id=user_id)
+    try:
+        client.chat_postMessage(
+            channel=ctx["channel_id"], thread_ts=ctx.get("thread_ts"),
+            text=f"✅ Recorded: *{ctx['year']} {ctx['slogan']}* confirmed by <@{user_id}>. Thanks!")
+    except Exception as exc:
+        print(f">>> CRAWL500: verify_yes ack failed: {exc}", flush=True)
+
+
+@bolt_app.action("scout_verify_no")
+def handle_verify_no(ack, body, action, client):
+    ack()
+    check_id = action.get("value")
+    ctx = pending_crawl_reviews.get(check_id)
+    user_id = (body.get("user") or {}).get("id", "")
+    if not ctx:
+        return
+    _log_confirmation(ctx, source="human_verify_no", chosen=False, user_id=user_id)
+    try:
+        client.chat_postMessage(
+            channel=ctx["channel_id"], thread_ts=ctx.get("thread_ts"),
+            text=f"❌ Recorded: not a *{ctx['year']} {ctx['slogan']}* (per <@{user_id}>). Thanks!")
+    except Exception as exc:
+        print(f">>> CRAWL500: verify_no ack failed: {exc}", flush=True)
+
+
+@bolt_app.action(re.compile(r"scout_count_\d+"))
+def handle_count_bucket(ack, body, action, client):
+    ack()
+    raw = action.get("value", "")
+    check_id, _, bucket = raw.partition("|")
+    ctx = pending_crawl_reviews.get(check_id)
+    user_id = (body.get("user") or {}).get("id", "")
+    if not ctx:
+        return
+    # Log the human button count as a confirmation row (source carries the count;
+    # joinable to the crop's match_log row by check_id).
+    _log_confirmation(ctx, source=f"human_count:{bucket}", chosen=True,
+                      user_id=user_id, typed_slogan=bucket)
+    try:
+        client.chat_postMessage(
+            channel=ctx["channel_id"], thread_ts=ctx.get("thread_ts"),
+            text=f"🔢 Recorded count *{bucket}* (per <@{user_id}>). Thanks!")
+    except Exception as exc:
+        print(f">>> CRAWL500: count ack failed: {exc}", flush=True)
 
 
 # ---------------------------------------------------------------------------
