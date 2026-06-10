@@ -140,6 +140,12 @@ def detect_and_crop(
         "raw_hough": None, "circles_rejected": None,
         "radius_min": None, "radius_max": None,
         "radius_mean": None, "radius_std": None,
+        "mask_components": None,
+        # Priority 5: per-stage filter breakdown. In scan mode these describe the
+        # WINNING pass (the one that produced the crops); None in count mode.
+        "border_removed": None, "fill_removed": None, "overlap_removed": None,
+        # Priority 4: whole-image quality (computed on img_noglare).
+        "edge_density": None, "brightness_std": None,
         # Phase 1: multi-pass fields (scan mode only; None in count mode)
         "ni_conservative": None, "ni_standard": None, "ni_loose": None,
         "ni_pass_winner": None, "ni_confidence": None,
@@ -212,6 +218,17 @@ def detect_and_crop(
     diag["bg_saturation"] = _bg_mean_s
     diag["bg_is_white"]   = bool(_white_bg)
     diag["mask_path"]     = "blue_only" if _white_bg else "blue_or_white"
+
+    # Priority 4 — whole-image quality on img_noglare (not the border sample).
+    # edge_density: how busy is the background; brightness_std: whole-image contrast.
+    try:
+        _p4_gray = cv2.cvtColor(img_noglare, cv2.COLOR_BGR2GRAY)
+        _p4_canny = cv2.Canny(_p4_gray, 50, 150)
+        diag["edge_density"] = float(np.count_nonzero(_p4_canny)) / max(1, _p4_canny.size)
+        _p4_hsv = cv2.cvtColor(img_noglare, cv2.COLOR_BGR2HSV)
+        diag["brightness_std"] = float(np.std(_p4_hsv[:, :, 2]))
+    except Exception as _p4_err:
+        print(f">>> IMAGE: Priority-4 metrics failed ({_p4_err}).", flush=True)
 
     # --- HSV colour mask ---
     hsv        = cv2.cvtColor(img_noglare, cv2.COLOR_BGR2HSV)
@@ -313,8 +330,10 @@ def detect_and_crop(
     if scan_mode:
         # Run each pass across all radius scales, filter + dedup per pass,
         # then score and select the winner.
-        def _run_pass(p2: int) -> tuple[int, list]:
-            """Returns (raw_count, filtered_circles) for one param2 value."""
+        def _run_pass(p2: int):
+            """Returns (raw_count, border_removed, fill_removed, overlap_removed,
+            filtered_circles) for one param2 value. The three removed-counts sum
+            to raw_count - len(filtered) (the per-stage breakdown for this pass)."""
             all_raw: list = []
             radii_local = sweep_radii(
                 base_r, config.HOUGH_RADIUS_SCALES, config.HOUGH_MIN_RADIUS_PX
@@ -328,39 +347,51 @@ def detect_and_crop(
                 (x, y, r) for (x, y, r) in all_raw
                 if _margin < x < w - _margin and _margin < y < h - _margin
             ]
+            border_removed = len(all_raw) - len(cand)
+            fill_removed = 0
+            overlap_removed = 0
             filtered: list = []
             for (x, y, r) in sorted(cand, key=lambda c: c[2], reverse=True):
                 cm = np.zeros(mask.shape, dtype=np.uint8)
                 cv2.circle(cm, (x, y), r, 255, -1)
                 blue = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=cm))
                 if blue / max(1.0, math.pi * r * r) < _fill_threshold:
+                    fill_removed += 1
                     continue
                 if not any(
                     np.hypot(x - fx, y - fy) < min(r, fr) * 0.7
                     for fx, fy, fr in filtered
                 ):
                     filtered.append((x, y, r))
-            return len(all_raw), filtered
+                else:
+                    overlap_removed += 1
+            return len(all_raw), border_removed, fill_removed, overlap_removed, filtered
 
-        pass_results: dict[str, tuple[int, list]] = {}
+        # Each pass result: (raw, border_removed, fill_removed, overlap_removed, filtered)
+        pass_results: dict[str, tuple] = {}
         for label, p2 in _SCAN_PASSES:
             pass_results[label] = _run_pass(p2)
 
         pass_scores = {
-            label: _score_solution(circ, mask, _fill_threshold, h, w)
-            for label, (_, circ) in pass_results.items()
+            label: _score_solution(res[4], mask, _fill_threshold, h, w)
+            for label, res in pass_results.items()
         }
         winner_label = max(pass_scores, key=lambda k: pass_scores[k])
-        raw_total    = sum(n for n, _ in pass_results.values())
-        circles_list = pass_results[winner_label][1]   # already filtered
+        raw_total    = sum(res[0] for res in pass_results.values())
+        _winner      = pass_results[winner_label]
+        circles_list = _winner[4]   # already filtered
 
         diag["raw_hough"]         = raw_total
         diag["hough_pass1_count"] = raw_total
-        diag["ni_conservative"]   = len(pass_results["conservative"][1])
-        diag["ni_standard"]       = len(pass_results["standard"][1])
-        diag["ni_loose"]          = len(pass_results["loose"][1])
+        diag["ni_conservative"]   = len(pass_results["conservative"][4])
+        diag["ni_standard"]       = len(pass_results["standard"][4])
+        diag["ni_loose"]          = len(pass_results["loose"][4])
         diag["ni_pass_winner"]    = winner_label
         diag["ni_confidence"]     = pass_scores[winner_label]
+        # Priority 5 — per-stage breakdown for the WINNING pass (the crops kept).
+        diag["border_removed"]    = int(_winner[1])
+        diag["fill_removed"]      = int(_winner[2])
+        diag["overlap_removed"]   = int(_winner[3])
 
         print(
             f">>> IMAGE_PROC: scan passes — "
