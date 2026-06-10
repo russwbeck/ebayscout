@@ -251,6 +251,17 @@ CRAWL500_QUERIES: list[str] = [
 # Produces 3 banks x 4 button-types = 12 queries.
 CRAWL500_MAX_LOTS = 500   # hard ceiling on lots processed per /crawl500 run
 
+# --- on-demand (/crawl10) search -------------------------------------------
+# Small, fixed-size test crawl: a single search, capped at 10 lots, with a
+# Gemini Flash triage pass added on top of the normal green/auto gate (see
+# gemini_triage.py + _run_crawl10). NO seller exclusion, same noise filters
+# as /crawl500. Does not touch seen_items.json — repeatable test harness.
+CRAWL10_QUERY    = "Penn State bank button"
+CRAWL10_MAX_LOTS = 10
+
+# --- Gemini triage (/crawl10) -----------------------------------------------
+GEMINI_MODEL = "gemini-2.5-flash"
+
 # --- Year-augmented deep-crawl terms (on-demand /run-scan?year_crawl=1) ---
 # Base terms that get a year appended (e.g. "Penn State button 1982") for each
 # needed year. "Central Counties Bank" is omitted — it's yearless and covered by

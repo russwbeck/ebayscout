@@ -22,6 +22,9 @@ google-cloud-secret-manager==2.27.0
 google-cloud-storage==3.10.1
 google-auth==2.50.0
 
+# Gemini (image triage for /crawl10)
+google-genai==1.5.0
+
 # Google Sheets
 gspread==6.2.1
 

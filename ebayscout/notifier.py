@@ -262,6 +262,38 @@ def send_crawl500_summary(
     _post_message(slack_token, channel, "\n".join(lines))
 
 
+def send_crawl10_summary(
+    slack_token: str,
+    channel: str,
+    processed: int,
+    alerted: int,
+    confirmed_not_needed: int,
+    rejected: int,
+    gemini_resolved: int,
+) -> None:
+    """Post a single end-of-run summary for a /crawl10 Gemini-triage test run."""
+    lines = [
+        f"🔎 *crawl10 complete* — processed *{processed}* lot{'s' if processed != 1 else ''}.",
+    ]
+    if alerted:
+        lines.append(f"⭐ {alerted} needed-button candidate{'s' if alerted != 1 else ''} to review")
+    else:
+        lines.append("⭐ No needed-button candidates this run")
+    if confirmed_not_needed:
+        lines.append(
+            f"🟢 {confirmed_not_needed} confirmed gameday button"
+            f"{'s' if confirmed_not_needed != 1 else ''}  (auto/green, not a needed year)"
+        )
+    if rejected:
+        lines.append(f"🗑️ {rejected} not confirmed  (no auto/green match)")
+    if gemini_resolved:
+        lines.append(
+            f"🤖 {gemini_resolved} candidate{'s' if gemini_resolved != 1 else ''} "
+            f"auto-resolved via Gemini triage"
+        )
+    _post_message(slack_token, channel, "\n".join(lines))
+
+
 def send_warning(slack_token: str, channel: str, message: str) -> None:
     """Post a plain-text operational warning to the scout channel."""
     _post_message(slack_token, channel, f"⚠️ *ebayscout warning*: {message}")

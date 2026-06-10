@@ -32,6 +32,7 @@ from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
+from . import gemini_triage
 from . import match_logging as mlog
 from .utils import (
     extract_years,
@@ -351,6 +352,73 @@ def internal_crawl500():
     return jsonify({"status": "crawl500 complete", "processed": processed}), 200
 
 
+@app.command("/crawl10")
+def handle_crawl10_command(ack, body):
+    """Small (10-lot) test crawl over the fixed "Penn State bank button" search.
+
+    Adds a Gemini Flash triage pass per lot on top of the normal green/auto
+    gate (see _run_crawl10): logs Gemini's button-count estimate and
+    auto-resolves yellow candidates whose slogan Gemini also detected.
+
+    Slack requires an ack within 3s, so we ack immediately and kick the run
+    via /internal/crawl10 through the load balancer (fresh CPU-funded request).
+    """
+    ack("🔎 Starting `/crawl10` — searching up to 10 lots with Gemini triage, "
+        "this runs in the background and will post results to the channel.")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            requests.post(f"{base}/internal/crawl10", headers=headers, timeout=3500)
+        except Exception as exc:
+            print(f"!!! CRAWL10: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"/crawl10 failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
+@flask_app.route("/internal/crawl10", methods=["POST"])
+def internal_crawl10():
+    """Run the /crawl10 search synchronously in this request so Cloud Run keeps
+    CPU allocated for the whole run. Auth: per-startup X-Internal-Secret header,
+    or a localhost caller (local dev). Mirrors /internal/crawl500."""
+    provided     = request.headers.get("X-Internal-Secret", "")
+    from_localhost = _is_localhost(request.remote_addr)
+    if provided != _INTERNAL_SECRET and not from_localhost:
+        return jsonify({"status": "forbidden"}), 403
+
+    if not vectors_loaded and not _ensure_clip_loaded():
+        return jsonify({"status": "clip init failed"}), 500
+
+    global buy_rules
+    if not buy_rules:
+        try:
+            buy_rules = sheets_client.load_buy_rules(
+                _get_secret("GOOGLE_SHEETS_JSON"), _get_secret("SPREADSHEET_ID"))
+        except Exception as exc:
+            print(f"!!! CRAWL10: buy_rules reload failed: {exc}", flush=True)
+
+    try:
+        gemini_api_key = _get_secret("GEMINI_API")
+    except Exception as exc:
+        print(f"!!! CRAWL10: GEMINI_API secret unavailable — aborting: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, "/crawl10: no GEMINI_API secret.")
+        return jsonify({"status": "no gemini secret"}), 500
+
+    if not _scan_lock.acquire(blocking=False):
+        return jsonify({"status": "already running"}), 409
+    try:
+        processed = _run_crawl10(gemini_api_key)
+    finally:
+        _scan_lock.release()
+    return jsonify({"status": "crawl10 complete", "processed": processed}), 200
+
+
 @flask_app.route("/test-clip", methods=["GET"])
 def test_clip():
     """
@@ -601,6 +669,24 @@ def _log_confirmation(job_id: str, check_id: str, crop_num: int,
         print(f"!!! LOG: confirm record failed for {check_id}: {exc}", flush=True)
 
 
+def _check_needed_hit(top: dict, buy_rules: dict) -> dict | None:
+    """If `top` (a confirmed year/slogan match) satisfies a standing need
+    (amount_needed > 0, and not a placeholder/non-alerting slogan), return an
+    enriched copy with max_price_single + amount_needed; otherwise None.
+    """
+    price_single, _, _, amount_needed = sheets_client.get_buy_decision(
+        top["year"], top["slogan"], buy_rules
+    )
+    if amount_needed <= 0:
+        return None
+    if is_non_alerting_slogan(top["slogan"], config.NON_ALERTING_SLOGAN_PATTERNS):
+        return None
+    enriched = dict(top)
+    enriched["max_price_single"] = price_single
+    enriched["amount_needed"]    = amount_needed
+    return enriched
+
+
 def _evaluate_listing(
     listing: dict,
     picture_urls: list[str],
@@ -611,6 +697,7 @@ def _evaluate_listing(
     title_years: set[int],
     title_count: int | None,
     log_enabled: bool = True,
+    return_first_image: bool = False,
 ) -> dict:
     """Detect + match a listing's crops, apply the green/auto confirmation gate,
     evaluate needed buttons, and log per-image match rows + per-confirmation rows
@@ -620,6 +707,11 @@ def _evaluate_listing(
     (overall >= AUTO_RESOLVE_THRESHOLD) or in the green (overall >= GREEN_THRESHOLD,
     or its #1 leads #2 by >= GREEN_GAP). Among confirmed buttons, amount_needed > 0
     (with placeholder slogans suppressed) marks a needed lot.
+
+    When return_first_image is True, the result also includes
+    "first_image_bytes" — the raw bytes of photo 0 (or None if it couldn't be
+    downloaded) — for callers that want to run additional analysis on the
+    primary lot photo (e.g. /crawl10's Gemini triage).
 
     Returns a summary dict; the caller sends Slack alerts and marks the item seen.
     """
@@ -640,6 +732,7 @@ def _evaluate_listing(
     needed_hits: dict[tuple, dict] = {}   # (year, slogan) -> enriched needed match
     log_top_matches: list[dict] = []
     best_needed: dict | None = None
+    first_image_bytes: bytes | None = None
     crop_counter = 0
 
     for photo_idx, photo_url in enumerate(picture_urls[: config.MAX_PHOTOS_PER_LISTING]):
@@ -653,6 +746,8 @@ def _evaluate_listing(
 
         try:
             image_bytes     = _ip.download_image(photo_url)
+            if return_first_image and photo_idx == 0:
+                first_image_bytes = image_bytes
             crops, det_diag = _ip.detect_and_crop(
                 image_bytes, max_crops=per_photo_cap, return_diag=True)
         except Exception as exc:
@@ -782,20 +877,13 @@ def _evaluate_listing(
                 _log_confirmation(job_id, check_id, crop_counter, top, diagc, command)
 
             # Does this confirmed button satisfy a standing need?
-            price_single, _, _, amount_needed = sheets_client.get_buy_decision(
-                top["year"], top["slogan"], buy_rules
-            )
-            if amount_needed <= 0:
-                continue
-            if is_non_alerting_slogan(top["slogan"], config.NON_ALERTING_SLOGAN_PATTERNS):
+            enriched = _check_needed_hit(top, buy_rules)
+            if enriched is None:
                 continue
             if best_needed is None or top["overall"] > best_needed["overall"]:
                 best_needed = {"year": top["year"], "slogan": top["slogan"],
                                "overall": top["overall"]}
             if key not in needed_hits or top["overall"] > needed_hits[key]["overall"]:
-                enriched = dict(top)
-                enriched["max_price_single"] = price_single
-                enriched["amount_needed"]    = amount_needed
                 needed_hits[key] = enriched
 
         # Flush this image's rows immediately (durability: a later crash/throttle
@@ -811,11 +899,13 @@ def _evaluate_listing(
         "needed":           list(needed_hits.values()),
         "log_top_matches":  log_top_matches,
         "best_needed":      best_needed,
+        "first_image_bytes": first_image_bytes,
     }
 
 
 def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
-                        confirmed_buttons: list) -> None:
+                        confirmed_buttons: list,
+                        gemini_summary: str | None = None) -> None:
     """Post a stripped-down human-review block for yellow-confidence buttons.
 
     Two-step interaction:
@@ -827,6 +917,10 @@ def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
                ✅ Yes / ❌ No buttons posted as a single compact message.
                Each answer logged to confirm_log (source='human_verify_yes'
                or 'human_verify_no').
+
+    gemini_summary, if provided (set by /crawl10's Gemini triage step), is
+    prepended to the header as an informational line — it does NOT skip or
+    replace the human Yes/No review for whatever remains in yellow_buttons.
 
     Fail-open: any Slack API error is caught and printed, never raised.
     """
@@ -843,6 +937,8 @@ def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
             f"✅ Auto-confirmed: {len(confirmed_buttons)} button(s)\n"
             f"🟡 Yellow (needs your eye): {len(yellow_buttons)} candidate(s)"
         )
+        if gemini_summary:
+            header_text = f"{gemini_summary}\n\n{header_text}"
 
         # ── Step 1: how many buttons? ─────────────────────────────────────────
         count_meta = json.dumps({"job_id": job_id, "item_id": item_id})
@@ -1664,6 +1760,229 @@ def _post_logging_only(listing: dict, result: dict) -> None:
     print(f">>> CRAWL500: complete — processed={len(new_listings)} alerted={stat_alerted} "
           f"confirmed_not_needed={stat_confirmed_not_needed} rejected={stat_rejected} "
           f"slack_posts={slack_posts_count}.", flush=True)
+    return len(new_listings)
+
+
+def _log_gemini_count(job_id: str, item_id: str, total_button_count: int) -> None:
+    """Log Gemini's button-count estimate as its own confirm_log row.
+
+    source='gemini_count' — distinct from the human 'user_count' bucket
+    (scout_count_* handlers) so the two stay separately queryable.
+    """
+    if match_logger is None:
+        return
+    check_id = f"gemini_count:{item_id}"
+    try:
+        rec = mlog.build_confirm_record(
+            service="ebayscout", command="/crawl10", job_id=job_id, thread_ts=None,
+            crop_num=None, check_id=check_id, user_id=None,
+            chosen_year=None, chosen_phrase=str(total_button_count),
+            chosen_type=None, source="gemini_count",
+            rank_restricted=None, rank_shadow=None, shadow_leaderboard_size=None,
+        )
+        match_logger.log_confirmation(check_id, rec)
+    except Exception as exc:
+        print(f"!!! CRAWL10: gemini_count log failed for {item_id}: {exc}", flush=True)
+
+
+def _gemini_resolve_yellow(job_id: str, item_id: str, result: dict,
+                           gemini_res: dict) -> list[dict]:
+    """Promote yellow candidates whose slogan Gemini also detected.
+
+    Mutates result['yellow']/['confirmed']/['needed'] in place. Each promoted
+    candidate is logged to confirm_log as source='gemini_verify_yes' — kept
+    distinct from the human 'human_verify_yes' (scout_verify_yes handler) so
+    Gemini-vs-human accuracy can be compared and the calibration ground-truth
+    stays uncorrupted. Returns the list of promoted candidates.
+    """
+    detected = gemini_res.get("detected_slogans") or []
+    if not detected:
+        return []
+
+    remaining_yellow: list[dict] = []
+    promoted: list[dict] = []
+    for btn in result["yellow"]:
+        if any(gemini_triage.slogans_match(btn["slogan"], s) for s in detected):
+            promoted.append(btn)
+        else:
+            remaining_yellow.append(btn)
+
+    if not promoted:
+        return []
+
+    result["yellow"] = remaining_yellow
+    for btn in promoted:
+        result["confirmed"].append(btn)
+        if match_logger is not None:
+            try:
+                rec = mlog.build_confirm_record(
+                    service="ebayscout", command="/crawl10", job_id=job_id, thread_ts=None,
+                    crop_num=None, check_id=btn.get("check_id"), user_id=None,
+                    chosen_year=btn["year"], chosen_phrase=btn["slogan"],
+                    chosen_type="Football", source="gemini_verify_yes",
+                    rank_restricted=None, rank_shadow=None, shadow_leaderboard_size=None,
+                )
+                match_logger.log_confirmation(btn.get("check_id"), rec)
+            except Exception as exc:
+                print(f"!!! CRAWL10: gemini_verify_yes log failed for {item_id}: {exc}",
+                      flush=True)
+
+        enriched = _check_needed_hit(btn, buy_rules)
+        if enriched is not None:
+            result["needed"].append(enriched)
+
+    return promoted
+
+
+def _build_gemini_summary(gemini_res: dict, resolved: list[dict]) -> str:
+    """Build the '🤖 Gemini triage' summary line prepended to the Slack
+    yellow-review post (see _post_yellow_review's gemini_summary param)."""
+    total   = gemini_res.get("total_button_count", 0)
+    blue    = gemini_res.get("blue_background_count", 0)
+    white   = gemini_res.get("white_background_count", 0)
+    flagged = gemini_res.get("flagged_problem_slogans") or []
+
+    if not total and not resolved and not flagged:
+        return ""
+
+    lines = []
+    if total:
+        lines.append(f"🤖 *Gemini triage*: {total} button(s) ({blue} blue, {white} white)")
+    if resolved:
+        resolved_str = "  ·  ".join(f"{b['year']} — {b['slogan']}" for b in resolved)
+        lines.append(f"✅ Auto-resolved via Gemini: {resolved_str}")
+    if flagged:
+        lines.append("⚠️ Gemini flagged as hard to match: " + "  ·  ".join(flagged))
+    return "\n".join(lines)
+
+
+def _run_crawl10(gemini_api_key: str) -> int:
+    """Run the fixed /crawl10 search (config.CRAWL10_QUERY), cap at 10 lots,
+    NO seller exclusion (apparel-keyword + Clothing-category filters stay on).
+
+    Adds a Gemini Flash triage pass per lot on the primary photo: logs the
+    button-count estimate (source='gemini_count') and auto-resolves yellow
+    candidates whose slogan Gemini also detected (source='gemini_verify_yes').
+
+    Does NOT touch seen_items.json — /crawl10 is a repeatable test harness
+    over the same ~10 lots across iterations of the Gemini prompt. Returns the
+    number of lots processed.
+    """
+    from . import ebay_client, clip_matcher as _cm
+
+    try:
+        ebay_app_id  = _get_secret("EBAY_APP_ID")
+        ebay_cert_id = _get_secret("EBAY_CERT_ID")
+    except Exception as exc:
+        print(f"!!! CRAWL10: eBay credentials unavailable — aborting: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, "/crawl10: no eBay credentials.")
+        return 0
+
+    print(f">>> CRAWL10: starting — query={config.CRAWL10_QUERY!r}.", flush=True)
+
+    try:
+        all_listings = ebay_client.find_all_listings(
+            client_id=ebay_app_id, client_secret=ebay_cert_id,
+            queries=[config.CRAWL10_QUERY],
+            excluded_sellers=[],                       # do not exclude any seller
+            excluded_keywords=config.EXCLUDED_KEYWORDS,  # keep apparel/noise filter
+            max_results=200,
+        )
+    except Exception as exc:
+        print(f"!!! CRAWL10: search failed: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, f"/crawl10 search failed: {exc}")
+        return 0
+
+    new_listings = dedup_listings(all_listings)[: config.CRAWL10_MAX_LOTS]
+    print(f">>> CRAWL10: {len(all_listings)} unique found; processing "
+          f"{len(new_listings)} (cap {config.CRAWL10_MAX_LOTS}).", flush=True)
+
+    if not new_listings:
+        notifier.send_warning(_slack_token, _channel_id,
+                              "/crawl10: no lots to process this run.")
+        return 0
+
+    job_id = str(uuid.uuid4())
+    stat_alerted = stat_confirmed_not_needed = stat_rejected = stat_gemini_resolved = 0
+    ref_years = _cm.reference_years()
+
+    for listing in new_listings:
+        item_id = listing["item_id"]
+        asking  = listing.get("current_price", 0.0)
+        title   = listing.get("title", "?")
+        seller  = listing.get("seller", "")
+
+        title_years_all = extract_years(title)
+        title_decades   = extract_decades(title)
+        if title_decades:
+            restrict_years: set[int] | None = title_decades
+        elif len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
+            restrict_years = {next(iter(title_years_all))}
+        else:
+            restrict_years = None
+
+        try:
+            picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
+            if not picture_urls and listing.get("gallery_url"):
+                picture_urls = [listing["gallery_url"]]
+
+            with _keep_cpu_hot():
+                result = _evaluate_listing(
+                    listing, picture_urls, restrict_years,
+                    command="/crawl10", job_id=job_id,
+                    title_years=title_years_all, title_count=extract_lot_count(title),
+                    return_first_image=True,
+                )
+
+            gemini_res = dict(gemini_triage.EMPTY_RESULT)
+            if result.get("first_image_bytes"):
+                print(">>> CRAWL10: running Gemini triage on primary photo...", flush=True)
+                gemini_res = gemini_triage.analyze_lot_with_gemini(
+                    result["first_image_bytes"], gemini_api_key)
+
+            _log_gemini_count(job_id, item_id, gemini_res["total_button_count"])
+
+            resolved = _gemini_resolve_yellow(job_id, item_id, result, gemini_res)
+            stat_gemini_resolved += len(resolved)
+
+            gemini_summary = _build_gemini_summary(gemini_res, resolved)
+
+            if result.get("yellow") or gemini_summary:
+                _post_yellow_review(
+                    listing=listing,
+                    yellow_buttons=result["yellow"],
+                    job_id=job_id,
+                    confirmed_buttons=result.get("confirmed", []),
+                    gemini_summary=gemini_summary,
+                )
+
+            if not result["confirmed"]:
+                stat_rejected += 1
+            elif result["needed"]:
+                needed_buttons = result["needed"]
+                lot_value = sum(
+                    sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
+                )
+                notifier.send_needed_alert(
+                    slack_token=_slack_token, channel=_channel_id, listing=listing,
+                    needed_buttons=needed_buttons, asking_price=asking, lot_value=lot_value,
+                )
+                stat_alerted += 1
+            else:
+                stat_confirmed_not_needed += 1
+        except Exception as exc:
+            print(f"!!! CRAWL10: error processing {item_id} [{seller}]: {exc}", flush=True)
+            traceback.print_exc()
+
+    notifier.send_crawl10_summary(
+        slack_token=_slack_token, channel=_channel_id,
+        processed=len(new_listings), alerted=stat_alerted,
+        confirmed_not_needed=stat_confirmed_not_needed, rejected=stat_rejected,
+        gemini_resolved=stat_gemini_resolved,
+    )
+    print(f">>> CRAWL10: complete — processed={len(new_listings)} alerted={stat_alerted} "
+          f"confirmed_not_needed={stat_confirmed_not_needed} rejected={stat_rejected} "
+          f"gemini_resolved={stat_gemini_resolved}.", flush=True)
     return len(new_listings)
 
 
