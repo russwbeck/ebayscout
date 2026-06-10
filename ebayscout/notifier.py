@@ -105,7 +105,7 @@ def send_needed_alert(
     )
 
     header_text = (
-        f"⭐ *Possible needed button — review with `/scout`*\n"
+        f"⭐ *Possible needed button — review the photos*\n"
         f"*<{listing_url}|{_truncate(title, 80)}>*\n"
         f"Asking: *${asking_price:.2f}*  |  {value_note}"
     )
@@ -162,7 +162,7 @@ def send_scan_summary(
     if alerted:
         lines.append(
             f"⭐ {alerted} needed-button candidate{'s' if alerted != 1 else ''}"
-            f" to review with /scout"
+            f" to review"
         )
     else:
         lines.append("⭐ No needed-button candidates today")

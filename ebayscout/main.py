@@ -4,32 +4,20 @@ ebayscout/main.py
 Flask + Slack Bolt service for ebayscout.
 
 Handles:
-  POST /slack/events  — file_shared events + message replies
   POST /run-scan      — daily eBay scan (called by Cloud Scheduler)
   GET  /health        — startup health check
 
-Two interaction flows:
-  1. Automated daily scan  : Cloud Scheduler → POST /run-scan
-  2. Manual image upload   : user uploads photo → bot asks for price & source
-                             → user replies → bot posts lot analysis in-thread
+Interaction flow:
+  Automated daily scan : Cloud Scheduler → POST /run-scan
 """
 
 import contextlib
 import datetime
-import io
-import json
-import os
-import re
-import secrets
 import threading
-import time
 import traceback
 from collections import Counter
 
 from flask import Flask, request, jsonify
-from slack_bolt import App
-from slack_bolt.adapter.flask import SlackRequestHandler
-from slack_sdk import WebClient
 from google.cloud import secretmanager
 
 from . import config
@@ -39,15 +27,11 @@ from . import etsy_client
 from . import match_logging as mlog
 from .match_logging import SheetLogger
 from .utils import (
-    parse_price_source,
-    format_manual_result,
     extract_years,
     extract_decades,
     needed_years,
     build_year_queries,
     era_year_set,
-    parse_confirmation,
-    other_era,
     is_non_alerting_slogan,
     extract_lot_count,
     dedup_listings,
@@ -59,9 +43,8 @@ from .utils import (
 # They are imported inside startup() and the scan/analysis functions.
 
 # ---------------------------------------------------------------------------
-# Secrets — fetched at module load so the Slack App can be created immediately
-# (mirrors buybot's pattern; gunicorn imports the module in the master process
-#  before forking, so these calls happen once)
+# Secrets — fetched at module load (gunicorn imports the module in the master
+# process before forking, so these calls happen once)
 # ---------------------------------------------------------------------------
 
 def _get_secret(secret_id: str) -> str:
@@ -73,16 +56,8 @@ def _get_secret(secret_id: str) -> str:
 
 print(">>> INIT: Fetching Slack secrets...", flush=True)
 _slack_token    = _get_secret("EBAY_BOT_TOKEN")
-_signing_secret = _get_secret("SIGNING_SECRET_ES")
 _channel_id     = _get_secret("CHANNEL_ID_EBAY")
 print(">>> INIT: Slack secrets loaded.", flush=True)
-
-# ---------------------------------------------------------------------------
-# Slack Bolt app
-# ---------------------------------------------------------------------------
-
-bolt_app = App(token=_slack_token, signing_secret=_signing_secret)
-handler  = SlackRequestHandler(bolt_app)
 
 # ---------------------------------------------------------------------------
 # Global state (populated by startup())
@@ -93,31 +68,12 @@ vectors_loaded: bool = False
 
 # --- STRUCTURED LOGGING (advanced match/detection analytics) ---
 # Disabled until startup() attaches the log tabs.  All writes fail-open so
-# logging can never break /scout.  Shared byte-identical match_logging module.
+# logging can never break /run-scan.  Shared byte-identical match_logging module.
 match_logger = SheetLogger(None, None, service="ebayscout")
-
-# pending_scans[user_id] = {file_url, channel_id, thread_ts}
-# Keyed by user so simultaneous uploads from different people work independently
-pending_scans: dict = {}
 
 # Held for the duration of a daily scan so an overlapping trigger can't start
 # a second concurrent run.
 _scan_lock = threading.Lock()
-
-# Guards a wake-up (synchronous CLIP load) so concurrent slash-command /
-# file-upload triggers don't each spawn a loader thread. clip_matcher.init()
-# is itself lock-guarded and idempotent, but this avoids N redundant threads
-# (and N "waking up" log lines) while a load is already in flight.
-_wake_lock      = threading.Lock()
-_wake_in_flight = False
-
-# Per-instance secret guarding the internal manual-analysis endpoint. The Slack
-# event handler fires a self-HTTP-POST to /internal/manual-analysis so the heavy
-# CLIP work runs inside an in-flight request (Cloud Run keeps CPU allocated for
-# the request's duration) instead of a background thread (throttled to ~0%).
-# Caller and handler share this process (workers=1, --max-instances=1), so the
-# token always matches for legit self-calls and is unguessable to outsiders.
-_INTERNAL_TOKEN = secrets.token_urlsafe(32)
 
 
 @contextlib.contextmanager
@@ -161,8 +117,7 @@ def _ensure_clip_loaded() -> bool:
     Safe to call from any thread: clip_matcher.init() is lock-guarded and a
     no-op once initialized.  Wrapped in _keep_cpu_hot() so it survives Cloud
     Run's CPU throttling when called from a post-ack/post-response background
-    thread.  This is the single load path shared by /run-scan, /test-clip, the
-    /scout slash command, and the manual upload flow.
+    thread.  This is the single load path shared by /run-scan and /test-clip.
     """
     global vectors_loaded
     if vectors_loaded:
@@ -180,743 +135,11 @@ def _ensure_clip_loaded() -> bool:
             return False
 
 
-def _wake_and_notify(
-    client,
-    channel_id: str,
-    thread_ts:  str | None,
-    on_ready_text: str,
-) -> None:
-    """
-    Load CLIP in this (background) thread, deduplicating concurrent wakes, then
-    post a confirmation.  Intended as the target of threading.Thread(...).start().
-
-    Only the first concurrent caller actually loads; a second simultaneous wake
-    returns quietly (the in-flight load owns the confirmation message) so the
-    channel doesn't get duplicate "ready" posts.
-    """
-    global _wake_in_flight
-
-    if vectors_loaded:
-        client.chat_postMessage(
-            channel=channel_id, thread_ts=thread_ts,
-            text="✅ eBay Scout is already awake and ready.",
-        )
-        return
-
-    with _wake_lock:
-        already = _wake_in_flight
-        if not already:
-            _wake_in_flight = True
-
-    if already:
-        print(">>> WAKE: load already in flight — skipping duplicate.", flush=True)
-        return
-
-    try:
-        ok = _ensure_clip_loaded()
-    finally:
-        with _wake_lock:
-            _wake_in_flight = False
-
-    if ok:
-        client.chat_postMessage(channel=channel_id, thread_ts=thread_ts,
-                                text=on_ready_text)
-    else:
-        client.chat_postMessage(
-            channel=channel_id, thread_ts=thread_ts,
-            text="❌ eBay Scout failed to wake up — check the logs and try again.",
-        )
-
-
-# ---------------------------------------------------------------------------
-# Slack event: file uploaded to the scout channel
-# ---------------------------------------------------------------------------
-
-@bolt_app.event("file_shared")
-def handle_file_shared(event, client):
-    """
-    Fires when a user uploads a file.  Store the file URL and ask for
-    asking price + source as a single threaded reply.
-    """
-    file_id    = event.get("file_id")
-    user_id    = event.get("user_id")
-    channel_id = event.get("channel_id")
-    event_ts   = event.get("event_ts")
-
-    if not file_id or not user_id:
-        return
-
-    try:
-        file_info = client.files_info(file=file_id)
-        file_data = file_info["file"]
-    except Exception as exc:
-        print(f"!!! FILE: Could not fetch file info: {exc}", flush=True)
-        return
-
-    # Only process image files
-    mimetype = file_data.get("mimetype", "")
-    if not mimetype.startswith("image/"):
-        return
-
-    file_url = file_data.get("url_private")
-    if not file_url:
-        return
-
-    pending_scans[user_id] = {
-        "stage":      "await_price",
-        "file_url":   file_url,
-        "channel_id": channel_id,
-        "thread_ts":  event_ts,
-    }
-
-    if not vectors_loaded:
-        # Self-heal: keep the pending scan and kick off a background wake.  The
-        # user's price reply lands in handle_message and runs the analysis once
-        # CLIP is ready (_run_manual_analysis force-loads as a backstop).  This
-        # replaces the old dead-end that deleted the scan and looped "still
-        # loading" forever on a cold, CPU-throttled container.
-        client.chat_postMessage(
-            channel=channel_id,
-            thread_ts=event_ts,
-            text=(
-                "⏳ Waking up eBay Scout (~60s). I've saved your photo — reply "
-                "in this thread with the asking price and source and I'll "
-                "analyze it as soon as I'm ready:\n"
-                "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`\n"
-                "For lots with many buttons, add the count:\n"
-                "`$25.00 | Facebook Marketplace | 35`"
-            ),
-        )
-        threading.Thread(
-            target=_wake_and_notify,
-            args=(client, channel_id, event_ts,
-                  "✅ eBay Scout is awake — reply with the price/source now "
-                  "if you haven't already."),
-            daemon=True,
-        ).start()
-        return
-
-    client.chat_postMessage(
-        channel=channel_id,
-        thread_ts=event_ts,
-        text=(
-            "Got it! Reply in this thread with the asking price and where it's from:\n"
-            "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`\n"
-            "For lots with many buttons, add the count:\n"
-            "`$25.00 | Facebook Marketplace | 35`"
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Slack event: message reply (price | source input)
-# ---------------------------------------------------------------------------
-
-@bolt_app.event("message")
-def handle_message(event, client):
-    """
-    Two-stage manual flow, keyed on pending_scans[user_id]["stage"]:
-      await_price   → user sends "$price | source [| count]"; kick off a preview
-                      (detect count + guess era) and move to await_confirm.
-      previewing    → ignore stray replies while the preview runs.
-      await_confirm → user replies `go` / a count / an era / both; run the match
-                      with the confirmed count + era restriction.
-    """
-    user_id = event.get("user")
-    text    = (event.get("text") or "").strip()
-
-    if not user_id or event.get("bot_id") or event.get("subtype") == "file_share":
-        return
-    if user_id not in pending_scans:
-        return
-
-    scan  = pending_scans[user_id]
-    stage = scan.get("stage", "await_price")
-
-    if stage == "previewing":
-        return  # preview in progress; ignore until it posts the confirm prompt
-
-    # ----------------------------------------------------------------- confirm
-    if stage == "await_confirm":
-        count_override, era_override = parse_confirmation(text)
-        final_count = count_override if count_override is not None else scan.get("detected_count")
-        era_label   = era_override   if era_override   is not None else scan.get("era_guess")
-        restrict    = sorted(era_year_set(era_label, config.BUTTON_ERAS)) if era_label else []
-        overrode_era = era_override is not None and era_override != scan.get("era_guess")
-        print(
-            f">>> ERA: user confirm era={era_label or 'all'}"
-            f"{' OVERRIDE' if overrode_era else ''} (guess={scan.get('era_guess')}) "
-            f"count={final_count} (detected={scan.get('detected_count')})",
-            flush=True,
-        )
-        del pending_scans[user_id]
-        threading.Thread(
-            target=_dispatch_internal,
-            args=({
-                "mode":          "full",
-                "file_url":      scan["file_url"],
-                "channel_id":    scan["channel_id"],
-                "thread_ts":     scan["thread_ts"],
-                "asking_price":  scan["asking_price"],
-                "source":        scan["source"],
-                "button_count":  final_count,
-                "restrict_years": restrict,
-                "era_label":     era_label,
-                "era_ranked":    scan.get("era_ranked", []),
-            },),
-            daemon=False,
-        ).start()
-        return
-
-    # --------------------------------------------------------------- await_price
-    asking_price, source, button_count = parse_price_source(text)
-    if asking_price is None:
-        client.chat_postMessage(
-            channel=scan["channel_id"],
-            thread_ts=scan["thread_ts"],
-            text=(
-                "Couldn't parse that — please reply with:\n"
-                "`$XX.XX | Source`   e.g. `$25.00 | Facebook Marketplace`\n"
-                "If it's a lot with many buttons, add the count:\n"
-                "`$25.00 | Facebook Marketplace | 35`"
-            ),
-        )
-        return
-
-    # Move to "previewing" so stray replies are ignored until the preview posts
-    # its confirm prompt (which overwrites the state with stage=await_confirm).
-    pending_scans[user_id] = {**scan, "stage": "previewing"}
-    threading.Thread(
-        target=_dispatch_internal,
-        args=({
-            "mode":         "preview",
-            "file_url":     scan["file_url"],
-            "channel_id":   scan["channel_id"],
-            "thread_ts":    scan["thread_ts"],
-            "user_id":      user_id,
-            "asking_price": asking_price,
-            "source":       source,
-            "count_hint":   button_count,
-        },),
-        daemon=False,
-    ).start()
-
-
-def _dispatch_internal(payload: dict) -> None:
-    """
-    POST `payload` to this service's own /internal/manual-analysis endpoint so
-    the heavy work runs inside an in-flight HTTP request (full CPU on Cloud Run)
-    rather than a throttled background thread. Must use the external HTTPS URL —
-    a localhost call bypasses the load balancer and does NOT prevent throttling
-    (CLOUD_RUN_CPU_THROTTLE_FIX.md).
-
-    Inline fallback runs ONLY when the work definitely did not start (couldn't
-    reach the server, or a non-200 rejection). On a read timeout the server-side
-    work is still running, so we must NOT re-run it — that would double-post.
-    """
-    import requests as req
-
-    # Brief pause so the Slack-ack request releases its gunicorn worker first.
-    time.sleep(0.3)
-
-    try:
-        resp = req.post(
-            f"{config.SERVICE_BASE_URL}/internal/manual-analysis",
-            json=payload,
-            headers={"X-Internal-Token": _INTERNAL_TOKEN},
-            timeout=1790,   # < Cloud Run --timeout=1800, ~10s headroom
-        )
-    except (req.exceptions.ConnectionError, req.exceptions.ConnectTimeout) as exc:
-        print(f"!!! MANUAL: could not reach internal endpoint ({exc}) — running inline.", flush=True)
-        _run_internal(payload)
-        return
-    except Exception as exc:
-        print(f"!!! MANUAL: internal dispatch read ended early ({exc}); "
-              f"server-side work is still running — not retrying.", flush=True)
-        return
-
-    if resp.status_code != 200:
-        print(f"!!! MANUAL: internal dispatch returned {resp.status_code} — running inline.", flush=True)
-        _run_internal(payload)
-
-
-def _run_internal(data: dict) -> None:
-    """Dispatch an internal payload to the preview or full pipeline."""
-    if data.get("mode") == "preview":
-        _run_manual_preview(
-            file_url=data["file_url"],
-            channel_id=data["channel_id"],
-            thread_ts=data["thread_ts"],
-            user_id=data["user_id"],
-            asking_price=float(data["asking_price"]),
-            source=data.get("source", "Unknown"),
-            count_hint=data.get("count_hint"),
-        )
-    else:
-        restrict = set(data["restrict_years"]) if data.get("restrict_years") else None
-        _run_manual_analysis(
-            file_url=data["file_url"],
-            channel_id=data["channel_id"],
-            thread_ts=data["thread_ts"],
-            asking_price=float(data["asking_price"]),
-            source=data.get("source", "Unknown"),
-            button_count=data.get("button_count"),
-            restrict_years=restrict,
-            era_label=data.get("era_label"),
-            era_ranked=data.get("era_ranked", []),
-            feedback_round=bool(data.get("feedback_round")),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Slash command: /scout — wake the bot for manual mode
-# ---------------------------------------------------------------------------
-
-@bolt_app.command("/scout")
-def handle_scout_wake(ack, command, client):
-    """
-    Force a synchronous CLIP load so manual uploads work on a cold (CPU-
-    throttled) Cloud Run container.
-
-    Slack requires the command to be acknowledged within 3 s, but CLIP load
-    takes 30-60 s.  So: ack immediately with a "waking up" message, then load
-    in a background thread (wrapped in _keep_cpu_hot via _wake_and_notify) and
-    post a "ready" confirmation when done.
-    """
-    channel_id = command.get("channel_id")
-
-    if vectors_loaded:
-        ack("✅ eBay Scout is already awake — upload a photo any time.")
-        return
-
-    ack("⏳ Waking up eBay Scout… this takes about 60 seconds. "
-        "I'll post here when it's ready.")
-
-    threading.Thread(
-        target=_wake_and_notify,
-        args=(client, channel_id, None,
-              "✅ eBay Scout is awake. Upload your photo now."),
-        daemon=True,
-    ).start()
-
-
-# ---------------------------------------------------------------------------
-# Manual analysis pipeline
-# ---------------------------------------------------------------------------
-
-def _download_slack_image(file_url: str):
-    """Download a Slack file_private URL with the bot token. Returns bytes or None."""
-    try:
-        import requests as req
-        resp = req.get(
-            file_url,
-            headers={"Authorization": f"Bearer {_slack_token}"},
-            timeout=20,
-        )
-        resp.raise_for_status()
-        return resp.content
-    except Exception as exc:
-        print(f"!!! MANUAL: Failed to download uploaded image: {exc}", flush=True)
-        return None
-
-
-def _run_manual_preview(
-    file_url:     str,
-    channel_id:   str,
-    thread_ts:    str,
-    user_id:      str,
-    asking_price: float,
-    source:       str,
-    count_hint:   int | None = None,
-) -> None:
-    """
-    Stage 1 of the manual flow: detect the button count and guess the lot era,
-    then post a confirmation prompt and park the request in `await_confirm`.
-    Runs inside the internal request (full CPU). Heavily logs era detection.
-    """
-    client = WebClient(token=_slack_token)
-
-    def _reply(text: str) -> None:
-        client.chat_postMessage(channel=channel_id, thread_ts=thread_ts, text=text, mrkdwn=True)
-
-    with _keep_cpu_hot():
-        if not _ensure_clip_loaded():
-            _reply("❌ eBay Scout is still waking up — try replying again in ~30s.")
-            pending_scans.pop(user_id, None)
-            return
-
-        image_bytes = _download_slack_image(file_url)
-        if image_bytes is None:
-            _reply("❌ Couldn't download the image — please try uploading again.")
-            pending_scans.pop(user_id, None)
-            return
-
-        try:
-            from . import image_proc as _ip
-            crops = _ip.detect_and_crop(image_bytes, button_count=count_hint)
-        except Exception as exc:
-            print(f"!!! MANUAL: preview detect_and_crop failed: {exc}", flush=True)
-            _reply("❌ Couldn't detect buttons in that image.")
-            pending_scans.pop(user_id, None)
-            return
-
-        if not crops:
-            _reply("No buttons detected in the image. Try a clearer or closer shot.")
-            pending_scans.pop(user_id, None)
-            return
-
-        count = len(crops)
-        from . import clip_matcher as _cm
-        try:
-            era_guess, detail = _cm.guess_lot_era(crops)
-        except Exception as exc:
-            print(f"!!! MANUAL: era guess failed: {exc}", flush=True)
-            era_guess, detail = None, {}
-
-        # Eras ranked by vote (best first) — used to offer "the other era" later.
-        era_ranked = [e for e, _ in sorted(
-            detail.get("votes", {}).items(), key=lambda kv: kv[1], reverse=True)]
-
-        # Heavy, greppable era logging — filter Cloud Logging for "ERA:".
-        print(
-            f">>> ERA: preview guess={era_guess} votes={detail.get('votes')} "
-            f"ranked={era_ranked} sampled={detail.get('sampled')}/{detail.get('total')} "
-            f"detected_count={count} price=${asking_price:.2f} src={source}",
-            flush=True,
-        )
-        for i, pc in enumerate(detail.get("per_crop", [])):
-            print(f">>> ERA: preview crop {i} -> {pc['pick']} {pc['scores']}", flush=True)
-
-        pending_scans[user_id] = {
-            "stage":          "await_confirm",
-            "file_url":       file_url,
-            "channel_id":     channel_id,
-            "thread_ts":      thread_ts,
-            "asking_price":   asking_price,
-            "source":         source,
-            "detected_count": count,
-            "era_guess":      era_guess,
-            "era_ranked":     era_ranked,
-        }
-
-        era_txt = f"*{era_guess}*" if era_guess else "_uncertain_"
-        _reply(
-            f"📸 Found *{count}* buttons. Era looks like {era_txt}.\n"
-            f"Reply *`go`* to analyze, or correct it — a count, an era "
-            f"(`CCB` / `Mellon` / `Citizens` / `all`), or both (e.g. `mellon 42`)."
-        )
-
-
-def _run_manual_analysis(
-    file_url:     str,
-    channel_id:   str,
-    thread_ts:    str,
-    asking_price: float,
-    source:       str,
-    button_count: int | None = None,
-    restrict_years: set[int] | None = None,
-    era_label:    str | None = None,
-    era_ranked:   list | None = None,
-    feedback_round: bool = False,
-) -> None:
-    """
-    Stage 2: download, detect, match (optionally year/era-restricted), post the
-    lot analysis. When an era was applied (and this isn't itself a re-run), also
-    posts a "Did I identify the era correctly? Yes/No" prompt — No re-runs with
-    the other era; Yes just records positive feedback.
-
-    Intended to run inside the /internal/manual-analysis HTTP request (not a
-    background thread) so Cloud Run keeps full CPU allocated for the CLIP encode
-    — a background thread is throttled to ~0% (see CLAUDE.md / DECISIONS.md #5).
-    """
-    client = WebClient(token=_slack_token)
-
-    def _reply(text: str) -> None:
-        client.chat_postMessage(
-            channel=channel_id, thread_ts=thread_ts, text=text, mrkdwn=True
-        )
-
-    with _keep_cpu_hot():
-        # Backstop: if the user replied before the background wake finished,
-        # force-load CLIP here (idempotent) so match_crops_batch never runs
-        # against an uninitialized model.
-        if not _ensure_clip_loaded():
-            _reply("❌ eBay Scout is still waking up — try replying again in ~30s.")
-            return
-
-        image_bytes = _download_slack_image(file_url)
-        if image_bytes is None:
-            _reply("❌ Couldn't download the image — please try uploading again.")
-            return
-
-        # Detect button crops
-        try:
-            from . import image_proc as _ip   # lazy import
-            crops = _ip.detect_and_crop(image_bytes, button_count=button_count)
-        except Exception as exc:
-            print(f"!!! MANUAL: detect_and_crop failed: {exc}", flush=True)
-            _reply("❌ Couldn't detect buttons in that image.")
-            return
-
-        if not crops:
-            _reply("No buttons detected in the image. Try a clearer or closer shot.")
-            return
-
-        _restrict_txt = ("none" if not restrict_years
-                         else f"{min(restrict_years)}-{max(restrict_years)}")
-        print(
-            f">>> ERA: manual match era={era_label or 'all'} restrict={_restrict_txt} "
-            f"count={button_count} crops={len(crops)}",
-            flush=True,
-        )
-
-        # Match each crop
-        matched: dict[tuple, dict] = {}   # (year, slogan) → enriched match
-        unmatched_count = 0
-
-        from . import clip_matcher as _cm   # lazy import (already loaded if CLIP ready)
-        try:
-            batch_results = _cm.match_crops_batch(crops, restrict_years=restrict_years)
-        except Exception as exc:
-            print(f"!!! MANUAL: match_crops_batch error: {exc}", flush=True)
-            batch_results = [None] * len(crops)
-
-        for match in batch_results:
-            if match is None:
-                unmatched_count += 1
-            else:
-                key = (match["year"], match["slogan"])
-                if key not in matched or match["overall"] > matched[key]["overall"]:
-                    matched[key] = match
-
-        # ------------------------------------------------------------
-        # STRUCTURED LOGGING: counterfactual ("shadow") pass + detection diag.
-        # The user supplies a button count + era restriction; the restricted
-        # result above is what drives the valuation.  Here we additionally run
-        # the SAME crops fully unrestricted (no era/year filter) and log, per
-        # crop, the restricted vs unrestricted best match — plus an unguided
-        # ("no user input") detection count — so we can learn how to close the
-        # gap and automate the era/count limitations away.  Entirely fail-open.
-        # ------------------------------------------------------------
-        try:
-            if match_logger.enabled and mlog.shadow_pass_enabled():
-                # Unguided detection baseline: re-run segmentation with NO count
-                # hint (scan-mode multi-scale sweep) and compare the crop count.
-                _noinput_n = None
-                try:
-                    _noinput_crops = _ip.detect_and_crop(image_bytes, button_count=None)
-                    _noinput_n = len(_noinput_crops)
-                except Exception as _de:
-                    print(f">>> MATCH_LOG: unguided detect failed: {_de}", flush=True)
-
-                # Shadow match: identical crops, no year restriction.
-                try:
-                    shadow_results = _cm.match_crops_batch(crops, restrict_years=None)
-                except Exception as _se:
-                    print(f">>> MATCH_LOG: shadow match failed: {_se}", flush=True)
-                    shadow_results = [None] * len(crops)
-
-                try:
-                    _pw, _ph = Image.open(io.BytesIO(image_bytes)).size
-                except Exception:
-                    _pw = _ph = 0
-
-                _detection = mlog.build_detection_diag(
-                    h=_ph, w=_pw, bg_brightness=0.0, bg_is_white=False, mask_path="",
-                    hough_pass1_count=len(crops), hough_retry_count=None,
-                    final_count_user=len(crops), final_count_noinput=_noinput_n,
-                    user_count=button_count, detector_used="hough", n_crops=len(crops),
-                )
-                _job_id = f"{thread_ts}:{int(time.time())}"
-                _records = []
-                for _i, (_r_match, _s_match) in enumerate(zip(batch_results, shadow_results), 1):
-                    _restricted_top = ([mlog.trim_top([_r_match], 1)[0]] if _r_match else [])
-                    _shadow_top     = ([mlog.trim_top([_s_match], 1)[0]] if _s_match else [])
-                    _records.append(mlog.build_match_record(
-                        service="ebayscout", command="/scout", mode="scout",
-                        job_id=_job_id, thread_ts=thread_ts, channel_id=channel_id,
-                        user_id="", crop_num=_i, check_id=None, detection=_detection,
-                        bank=(era_label or "all"),
-                        restricted_top=_restricted_top, shadow_top=_shadow_top,
-                        shadow_enabled=True,
-                    ))
-                match_logger.log_image_crops(_job_id, _records)
-                print(
-                    f">>> MATCH_LOG: /scout logged {len(_records)} crops "
-                    f"(guided={len(crops)}, unguided={_noinput_n}, "
-                    f"restrict={_restrict_txt}).", flush=True,
-                )
-        except Exception as _mlog_e:
-            print(f">>> MATCH_LOG: /scout logging failed: {_mlog_e}", flush=True)
-
-        # Enrich with price data
-        enriched_matches = []
-        for (year, slogan), match in matched.items():
-            price_single, price_year, notes, amount_needed = sheets_client.get_buy_decision(
-                year, slogan, buy_rules
-            )
-            enriched = dict(match)
-            enriched["max_price_single"] = price_single
-            enriched["amount_needed"]    = amount_needed
-            enriched_matches.append(enriched)
-
-        # Calculate totals
-        lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in enriched_matches)
-        margin    = lot_value - asking_price
-        needed    = [m for m in enriched_matches if m["amount_needed"] > 0]
-
-        # Format and post result
-        _reply(format_manual_result(
-            source=source,
-            asking_price=asking_price,
-            matches=enriched_matches,
-            lot_value=lot_value,
-            margin=margin,
-            needed=needed,
-            unmatched_count=unmatched_count,
-        ))
-
-        # Era feedback prompt — only when a specific era was applied and this
-        # isn't already a re-run (avoids loops). Posted as a separate message so
-        # the (possibly long) analysis text isn't constrained by block limits.
-        if era_label and era_label.lower() != "all" and not feedback_round:
-            alt_era = other_era(era_label, era_ranked or [], config.BUTTON_ERAS)
-            _post_era_feedback(client, channel_id, thread_ts, {
-                "file_url":     file_url,
-                "channel_id":   channel_id,
-                "thread_ts":    thread_ts,
-                "asking_price": asking_price,
-                "source":       source,
-                "button_count": button_count,
-                "era_used":     era_label,
-                "alt_era":      alt_era,
-            })
-
-
-def _post_era_feedback(client, channel_id: str, thread_ts: str, ctx: dict) -> None:
-    """Post the 'Did I identify the era correctly?' Yes/No prompt."""
-    value = json.dumps(ctx)
-    elements = [{
-        "type": "button",
-        "text": {"type": "plain_text", "text": "✅ Yes"},
-        "action_id": "era_feedback_yes",
-        "value": value,
-    }]
-    if ctx.get("alt_era"):
-        elements.append({
-            "type": "button",
-            "text": {"type": "plain_text", "text": f"❌ No — try {ctx['alt_era']}"},
-            "action_id": "era_feedback_no",
-            "style": "danger",
-            "value": value,
-        })
-    client.chat_postMessage(
-        channel=channel_id,
-        thread_ts=thread_ts,
-        text=f"Did I identify the era correctly? (used *{ctx['era_used']}*)",
-        blocks=[
-            {"type": "section",
-             "text": {"type": "mrkdwn",
-                      "text": f"Did I identify the era correctly? (used *{ctx['era_used']}*)"}},
-            {"type": "actions", "elements": elements},
-        ],
-    )
-
-
-@bolt_app.action("era_feedback_yes")
-def handle_era_feedback_yes(ack, body, action, client):
-    """User confirmed the era — record positive labelled feedback, no re-run."""
-    ack()
-    try:
-        ctx = json.loads(action.get("value") or "{}")
-    except Exception:
-        ctx = {}
-    print(f">>> ERA: feedback CORRECT era={ctx.get('era_used')} "
-          f"src={ctx.get('source')} count={ctx.get('button_count')}", flush=True)
-    _resolve_feedback_message(body, client, f"✅ Era confirmed: *{ctx.get('era_used')}* — thanks!")
-
-
-@bolt_app.action("era_feedback_no")
-def handle_era_feedback_no(ack, body, action, client):
-    """User said the era was wrong — re-run the analysis with the other era."""
-    ack()
-    try:
-        ctx = json.loads(action.get("value") or "{}")
-    except Exception:
-        ctx = {}
-    alt = ctx.get("alt_era")
-    print(f">>> ERA: feedback WRONG era={ctx.get('era_used')} -> re-running as {alt} "
-          f"src={ctx.get('source')} count={ctx.get('button_count')}", flush=True)
-    if not alt:
-        _resolve_feedback_message(body, client, "⚠️ No other era to try — reply with one (`mellon` / `citizens` / `all`).")
-        return
-    _resolve_feedback_message(body, client, f"🔁 Re-running as *{alt}*…")
-    threading.Thread(
-        target=_dispatch_internal,
-        args=({
-            "mode":          "full",
-            "file_url":      ctx["file_url"],
-            "channel_id":    ctx["channel_id"],
-            "thread_ts":     ctx["thread_ts"],
-            "asking_price":  ctx["asking_price"],
-            "source":        ctx.get("source", "Unknown"),
-            "button_count":  ctx.get("button_count"),
-            "restrict_years": sorted(era_year_set(alt, config.BUTTON_ERAS)),
-            "era_label":     alt,
-            "era_ranked":    [],
-            "feedback_round": True,   # the re-run won't post another Yes/No
-        },),
-        daemon=False,
-    ).start()
-
-
-def _resolve_feedback_message(body, client, text: str) -> None:
-    """Replace the Yes/No prompt with a resolution note (removes the buttons)."""
-    try:
-        container = body.get("container", {}) or {}
-        channel = (body.get("channel", {}) or {}).get("id") or container.get("channel_id")
-        ts = container.get("message_ts")
-        if channel and ts:
-            client.chat_update(channel=channel, ts=ts, text=text, blocks=[
-                {"type": "section", "text": {"type": "mrkdwn", "text": text}}])
-    except Exception as exc:
-        print(f"!!! ERA: could not update feedback message: {exc}", flush=True)
-
-
 # ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
 
 flask_app = Flask(__name__)
-
-
-@flask_app.route("/slack/events", methods=["POST"])
-def slack_events():
-    return handler.handle(request)
-
-
-@flask_app.route("/internal/manual-analysis", methods=["POST"])
-def internal_manual_analysis():
-    """
-    Run a manual lot analysis synchronously, inside this request, so Cloud Run
-    keeps CPU allocated for the full CLIP encode (the fix for the ~minutes-long
-    throttled analyses we saw from the old background-thread approach).
-
-    Called only by this service itself (_dispatch_manual_analysis) and guarded
-    by a per-instance token so the publicly-reachable route can't be abused.
-    """
-    if request.headers.get("X-Internal-Token") != _INTERNAL_TOKEN:
-        return "forbidden", 403
-
-    data = request.get_json(silent=True) or {}
-    try:
-        _run_internal(data)
-    except Exception as exc:
-        print(f"!!! MANUAL: internal {data.get('mode', 'full')} failed: {exc}", flush=True)
-        traceback.print_exc()
-        return jsonify({"status": "error", "error": str(exc)}), 500
-
-    return jsonify({"status": "ok"}), 200
 
 
 @flask_app.route("/run-scan", methods=["POST"])
@@ -1617,8 +840,8 @@ def _run_daily_scan(
                         if amount_needed <= 0:
                             continue
                         # Placeholder slogans (e.g. "Slogan Unknown N") stay in
-                        # the buy logic / /scout valuation but must not trigger
-                        # scan alerts — they over-match and inflate lot value.
+                        # the buy logic but must not trigger scan alerts — they
+                        # over-match and inflate lot value.
                         if is_non_alerting_slogan(m["slogan"], config.NON_ALERTING_SLOGAN_PATTERNS):
                             continue
                         # Track the best needed-mapped candidate regardless of
@@ -1797,7 +1020,7 @@ def _run_daily_scan(
 
 def startup() -> None:
     """Load Google Sheets and CLIP model in the background."""
-    global buy_rules, match_logger
+    global buy_rules
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -1807,28 +1030,9 @@ def startup() -> None:
     except Exception as exc:
         print(f"!!! STARTUP: Sheets error: {exc}", flush=True)
 
-    # Attach the structured-logging tabs to the DEDICATED logging workbook
-    # (LOGGER_ID secret), separate from the buy-rules sheet.  Fail-open: if this
-    # errors, match_logger stays disabled and /scout runs normally.
-    try:
-        import gspread
-        from google.oauth2 import service_account
-        _creds_info = json.loads(_get_secret("GOOGLE_SHEETS_JSON"))
-        _creds = service_account.Credentials.from_service_account_info(
-            _creds_info
-        ).with_scopes(["https://www.googleapis.com/auth/spreadsheets"])
-        _gc = gspread.authorize(_creds)
-        print(f">>> STARTUP: logging service account = {_creds_info.get('client_email', 'UNKNOWN')}", flush=True)
-        _mws, _cws = mlog.open_log_sheets(_gc, _get_secret("LOGGER_ID"))
-        match_logger = SheetLogger(_mws, _cws, service="ebayscout")
-        print(f">>> STARTUP: match logging {'enabled' if match_logger.enabled else 'DISABLED'} "
-              f"(LOGGER_ID workbook).", flush=True)
-    except Exception as exc:
-        print(f"!!! STARTUP: match logging setup failed: {exc}", flush=True)
-
     # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
-    # may not finish until an HTTP request (a scan, /scout, or an upload)
-    # provides CPU — those paths all call _ensure_clip_loaded() to force it.
+    # may not finish until an HTTP request (a scan) provides CPU — those paths
+    # call _ensure_clip_loaded() to force it.
     threading.Thread(target=_ensure_clip_loaded, daemon=True).start()
 
 
