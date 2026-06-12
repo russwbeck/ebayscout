@@ -239,6 +239,10 @@ def build_detection_diag(
     # Priority 4: whole-image quality signals
     edge_density=None,
     brightness_std=None,
+    # Where the count/grid came from: "user" (default) | "auto" |
+    # "auto_overridden" | "suggest" — the live precision monitor for the
+    # auto-detection rollout is the auto_overridden rate.
+    count_source=None,
 ):
     """Detection diagnostics block.
 
@@ -340,6 +344,7 @@ def build_detection_diag(
         # Phase 1: unguided multi-pass diagnostics.  None when shadow pass is
         # disabled or count_circles_unguided hasn't been updated yet.
         "noinput_diag": noinput_diag or None,
+        "count_source": count_source,
     }
 
 
@@ -359,8 +364,14 @@ def build_match_record(
     restricted_top,
     shadow_top,
     shadow_enabled,
+    rerank_top=None,
 ):
-    """One record per crop, written at detection/match time."""
+    """One record per crop, written at detection/match time.
+
+    ``rerank_top`` (optional) holds the two-level reference re-rank scores
+    (year_score / sid_score / rerank_delta per offered candidate) when the
+    BUTTONMATCHER_RERANK path ran for this crop.
+    """
     return {
         "schema": SCHEMA_MATCH,
         "ts": _now_iso(),
@@ -378,6 +389,7 @@ def build_match_record(
         "restricted_top": restricted_top,
         "shadow_enabled": bool(shadow_enabled),
         "shadow_top": shadow_top,
+        "rerank_top": rerank_top or [],
     }
 
 
@@ -402,6 +414,7 @@ def build_confirm_record(
     typed_slogan=None,
     typed_top=None,
     rank_image_only=None,
+    rank_rerank=None,
 ):
     """One record per user confirmation, written when the human picks an answer.
 
@@ -443,6 +456,7 @@ def build_confirm_record(
         "rank_restricted": rank_restricted,
         "rank_shadow": rank_shadow,
         "rank_image_only": rank_image_only,
+        "rank_rerank": rank_rerank,
         "shadow_leaderboard_size": shadow_leaderboard_size,
         # restricted_top / shadow_top are the ORIGINAL match-time top-10
         # leaderboards.  They are preserved across typed-slogan / missed-button /
@@ -482,6 +496,15 @@ MATCH_HEADER = [
     "ni_variant",
     # existing tail columns
     "bank", "restricted_top_json", "shadow_enabled", "shadow_top_json",
+    # --- Appended columns (operator must extend the header row of existing
+    # tabs by hand — _ensure_tab only writes headers to EMPTY tabs) ---
+    # Mask parity + scale-first unguided detection
+    "ni_bgdiff", "ni_r_est", "ni_scale_conf", "ni_scale_path",
+    "ni_est_rows", "ni_est_cols", "ni_gate",
+    # Where the count/grid came from: user | auto | auto_overridden | suggest
+    "count_source",
+    # Two-level reference re-rank scores for the offered candidates
+    "rerank_json",
 ]
 
 CONFIRM_HEADER = [
@@ -490,6 +513,9 @@ CONFIRM_HEADER = [
     "source", "rank_restricted", "rank_shadow", "shadow_leaderboard_size",
     "restricted_top_json", "shadow_top_json", "typed_top_json",
     "rank_image_only",
+    # --- Appended columns (extend existing tab headers by hand) ---
+    # Rank of the confirmed year in the unrestricted+rerank leaderboard
+    "rank_rerank",
 ]
 
 
@@ -550,6 +576,17 @@ def flatten_match_record(rec):
         json.dumps(rec.get("restricted_top") or [], default=str),
         _cell(rec.get("shadow_enabled")),
         json.dumps(rec.get("shadow_top") or [], default=str),
+        # --- appended: mask parity + scale-first unguided detection ---
+        _cell(ni.get("bgdiff")),
+        _cell(ni.get("r_est")),
+        _cell(ni.get("scale_conf")),
+        _cell(ni.get("scale_path")),
+        _cell(ni.get("est_rows")),
+        _cell(ni.get("est_cols")),
+        _cell(ni.get("gate")),
+        # --- appended: count provenance + re-rank scores ---
+        _cell(d.get("count_source")),
+        json.dumps(rec.get("rerank_top") or [], default=str),
     ]
 
 
@@ -566,6 +603,7 @@ def flatten_confirm_record(rec):
         json.dumps(rec.get("shadow_top") or [], default=str),
         json.dumps(rec.get("typed_top") or [], default=str),
         _cell(rec.get("rank_image_only")),
+        _cell(rec.get("rank_rerank")),
     ]
 
 
