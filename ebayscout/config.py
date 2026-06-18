@@ -61,6 +61,12 @@ GREEN_THRESHOLD           = 0.82   # solo-score green: 0 wrong above this in dat
 GREEN_GAP                 = 0.12   # a #1 leading #2 by this much earns green too
 RED_THRESHOLD             = 0.65   # below this = low confidence (35% wrong in data)
 
+# Always-on entry-level reference-photo visual check (buttonmatcher's REF_CHECK
+# step): for each candidate, nudge `overall` by REF_CHECK_WEIGHT * (the crop's max
+# similarity to THAT entry's reference photos), then re-sort. Mirrors
+# buttonmatcher/main.py REF_CHECK_WEIGHT.
+REF_CHECK_WEIGHT          = 0.15
+
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
 
@@ -252,15 +258,36 @@ CRAWL500_QUERIES: list[str] = [
 CRAWL500_MAX_LOTS = 500   # hard ceiling on lots processed per /crawl500 run
 
 # --- on-demand (/crawl10) search -------------------------------------------
-# Small, fixed-size test crawl: a single search, capped at 10 lots, with a
-# Gemini Flash triage pass added on top of the normal green/auto gate (see
-# gemini_triage.py + _run_crawl10). NO seller exclusion, same noise filters
-# as /crawl500. Does not touch seen_items.json — repeatable test harness.
+# Small, fixed-size test crawl: a single search, capped at 10 lots. Each lot's
+# PRIMARY photo is pushed into the Gemini pipeline (Drive watcher → Gem → GCS);
+# results return asynchronously to /pipeline/notify (see _run_crawl10 +
+# process_pipeline_lot). NO seller exclusion, same noise filters as /crawl500.
+# Does not touch seen_items.json — repeatable test harness.
 CRAWL10_QUERY    = "Penn State bank button"
 CRAWL10_MAX_LOTS = 10
 
-# --- Gemini triage (/crawl10) -----------------------------------------------
-GEMINI_MODEL = "gemini-2.5-flash"
+# --- Gemini → GCS pipeline (Drive watcher → Gem → GCS → /pipeline/notify) -----
+# Google Drive folder the external watcher polls; /crawl10 uploads primary lot
+# photos here. Set DRIVE_FOLDER_ID in the deploy env. The Drive service-account
+# key is stored in Secret Manager as DRIVE_SA_JSON (scope drive.file; the folder
+# must be shared with the SA's email).
+DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
+# Filename/object-name prefix that routes pipeline outputs to ebayscout (vs
+# buttonmatcher) — both services share the bucket's pipeline/output/ prefix.
+PIPELINE_OBJECT_PREFIX = "ebayscout__"
+# GCS prefix where the Gem writes <f>.png + <f>.png.response.json.
+PIPELINE_OUTPUT_PREFIX = "pipeline/output/"
+# Per-lot correlation context written at upload, read when the async result
+# returns (one small JSON blob per key; survives cold start).
+PENDING_CONTEXT_PREFIX = "ebay_scout/pending/"
+# Temp holding area for auto-confirmed crops awaiting the Yes/No reference vote.
+PIPELINE_CROPS_PREFIX  = "ebay_scout/pipeline_crops/"
+# Shared reference staging area buttonmatcher's /reference flow consumes. On a
+# Yes vote ebayscout copies crop FILES here (it never writes vectors.pt).
+REFERENCE_STAGING_PREFIX = "reference/_staging/"
+# Stale pending/crop blobs older than this many days are swept (never-returned
+# Gem reads, abandoned Yes/No prompts).
+PIPELINE_TTL_DAYS = 7
 
 # --- Year-augmented deep-crawl terms (on-demand /run-scan?year_crawl=1) ---
 # Base terms that get a year appended (e.g. "Penn State button 1982") for each

@@ -15,6 +15,7 @@ import contextlib
 import datetime
 import ipaddress
 import os
+import time
 import threading
 import re
 import json
@@ -32,8 +33,13 @@ from . import config
 from . import sheets_client
 from . import notifier
 from . import etsy_client
-from . import gemini_triage
 from . import match_logging as mlog
+from . import pipeline_ingest as ping
+from . import gemini_resolve as gres
+from . import pipeline_classify
+from . import drive_uploader
+from . import normalize
+from . import seen_items
 from .utils import (
     extract_years,
     extract_decades,
@@ -96,6 +102,20 @@ match_logger: mlog.SheetLogger | None = None
 # start a second concurrent run.
 _scan_lock = threading.Lock()
 
+# --- Gemini → GCS pipeline state (Drive watcher → Gem → GCS → /pipeline/notify) -
+# Shared secret the watcher presents on /pipeline/notify (watcher-direct path).
+_PIPELINE_SHARED_SECRET = os.environ.get("PIPELINE_SHARED_SECRET", "")
+# Dedup finished pipeline objects by "<name>#<generation>"; an overwrite (re-run
+# of the same image) bumps generation and reprocesses. Resets on restart.
+processed_pipeline_objects: set[str] = set()
+# Idempotency guard for the notify→internal kick (Cloud Run may deliver twice).
+pipeline_started_jobs: set[str] = set()
+# job_id -> transient job dict for the notify→internal hop (rebuilt from the GCS
+# object name + pending-context blob if empty after a cold start).
+pending_jobs: dict[str, dict] = {}
+# normalized slogan -> {years}; built once after CLIP init (see startup()).
+slogan_years: dict[str, set] = {}
+
 
 @contextlib.contextmanager
 def _keep_cpu_hot():
@@ -149,6 +169,16 @@ def _ensure_clip_loaded() -> bool:
             cm.init(config.BUCKET_NAME)
             vectors_loaded = True
             print(">>> WAKE: CLIP loaded.", flush=True)
+            # Build the Gemini resolver's slogan→years multimap from the loaded
+            # text DB (used by process_pipeline_lot's resolve step).
+            try:
+                global slogan_years
+                _phrases, _years, _types = cm.text_db_arrays()
+                slogan_years = gres.build_slogan_year_multimap(
+                    _phrases, _years, normalize.normalize_key)
+                print(f">>> WAKE: slogan_years built — {len(slogan_years)} keys.", flush=True)
+            except Exception as exc:
+                print(f"!!! WAKE: slogan_years build failed: {exc}", flush=True)
             return True
         except Exception as exc:
             print(f"!!! WAKE: CLIP init failed: {exc}", flush=True)
@@ -356,15 +386,18 @@ def internal_crawl500():
 def handle_crawl10_command(ack, body):
     """Small (10-lot) test crawl over the fixed "Penn State bank button" search.
 
-    Adds a Gemini Flash triage pass per lot on top of the normal green/auto
-    gate (see _run_crawl10): logs Gemini's button-count estimate and
-    auto-resolves yellow candidates whose slogan Gemini also detected.
+    No longer calls Gemini directly. Instead it pushes each lot's PRIMARY photo
+    into the Gemini pipeline: the image is uploaded to the shared Google Drive
+    folder the watcher polls; the watcher's Gem analyzes it and writes the
+    result to GCS pipeline/output/, which the watcher POSTs back to this
+    service's /pipeline/notify. Per-lot results (auto-confirmed buttons + an
+    add-to-reference Yes/No) then post to the channel as each Gem read returns.
 
-    Slack requires an ack within 3s, so we ack immediately and kick the run
-    via /internal/crawl10 through the load balancer (fresh CPU-funded request).
+    Slack requires an ack within 3s, so we ack immediately and kick the upload
+    run via /internal/crawl10 through the load balancer (fresh CPU-funded request).
     """
-    ack("🔎 Starting `/crawl10` — searching up to 10 lots with Gemini triage, "
-        "this runs in the background and will post results to the channel.")
+    ack("🔎 Starting `/crawl10` — pushing up to 10 lots' primary photos into the "
+        "Gemini pipeline. Results will post to the channel as each Gem read returns.")
 
     def _kick():
         base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
@@ -384,39 +417,471 @@ def handle_crawl10_command(ack, body):
 
 @flask_app.route("/internal/crawl10", methods=["POST"])
 def internal_crawl10():
-    """Run the /crawl10 search synchronously in this request so Cloud Run keeps
+    """Run the /crawl10 upload synchronously in this request so Cloud Run keeps
     CPU allocated for the whole run. Auth: per-startup X-Internal-Secret header,
-    or a localhost caller (local dev). Mirrors /internal/crawl500."""
+    or a localhost caller (local dev). Mirrors /internal/crawl500.
+
+    Upload-only: downloads each lot's primary photo and pushes it into the
+    Gemini pipeline (Drive → Gem → GCS). No CLIP / buy_rules / Gemini-API needed
+    here — the heavy detect+match work happens later in /internal/pipeline when
+    the Gem's result returns. Each upload records a pending-context blob so the
+    async result can be correlated back to the originating eBay listing."""
     provided     = request.headers.get("X-Internal-Secret", "")
     from_localhost = _is_localhost(request.remote_addr)
     if provided != _INTERNAL_SECRET and not from_localhost:
         return jsonify({"status": "forbidden"}), 403
 
+    if not _scan_lock.acquire(blocking=False):
+        return jsonify({"status": "already running"}), 409
+    try:
+        processed = _run_crawl10()
+    finally:
+        _scan_lock.release()
+    return jsonify({"status": "crawl10 upload complete", "processed": processed}), 200
+
+
+# ---------------------------------------------------------------------------
+# Gemini → GCS pipeline ingest (Drive watcher → Gem → GCS → here)
+# ---------------------------------------------------------------------------
+
+def _gcs_blob_text(name: str, bucket_name: str = config.BUCKET_NAME) -> str:
+    from google.cloud import storage
+    return storage.Client().bucket(bucket_name).blob(name).download_as_text()
+
+
+def _gcs_blob_to_file(name: str, dest: str, bucket_name: str = config.BUCKET_NAME) -> None:
+    from google.cloud import storage
+    storage.Client().bucket(bucket_name).blob(name).download_to_filename(dest)
+
+
+def _pipeline_key_from_image(image_name: str | None) -> str | None:
+    """Recover the correlation key from pipeline/output/<prefix><key>.png."""
+    if not image_name:
+        return None
+    base = image_name.rsplit("/", 1)[-1]
+    pref = config.PIPELINE_OBJECT_PREFIX
+    if base.startswith(pref):
+        return base[len(pref):].split(".")[0]
+    return None
+
+
+def _restrict_years_from_ctx(ctx: dict, _cm) -> set[int] | None:
+    """Mirror the daily-scan title-year/decade restriction now that CLIP is loaded."""
+    decades = {int(d) for d in (ctx.get("title_decades") or [])}
+    if decades:
+        return decades
+    tyears = [int(y) for y in (ctx.get("title_years") or [])]
+    ref_years = _cm.reference_years()
+    if len(tyears) == 1 and tyears[0] in ref_years:
+        return {tyears[0]}
+    return None
+
+
+@flask_app.route("/pipeline/notify", methods=["POST"])
+def pipeline_notify():
+    """Trigger entrypoint for the Gemini pipeline. Fast-acks 204, then kicks
+    /internal/pipeline (CPU-hot) in a thread. Auth: X-Pipeline-Secret (watcher),
+    internal secret, or localhost. Body: {"object": "...response.json"} or a
+    Pub/Sub envelope. Ignores non-response objects and objects that belong to
+    another service (no ebayscout prefix and no pending-context blob)."""
+    provided       = request.headers.get("X-Pipeline-Secret", "")
+    internal       = request.headers.get("X-Internal-Secret", "")
+    from_localhost = _is_localhost(request.remote_addr)
+    authed = (
+        (_PIPELINE_SHARED_SECRET and provided == _PIPELINE_SHARED_SECRET)
+        or internal == _INTERNAL_SECRET
+        or from_localhost
+    )
+    if not authed:
+        return jsonify({"status": "forbidden"}), 403
+
+    body = request.get_json(silent=True) or {}
+    name = body.get("object") or body.get("name")
+    if not name:
+        env = ping.parse_pubsub_envelope(request.get_data())
+        if env:
+            name = env.get("name")
+    if not ping.is_response_json(name):
+        return ("", 204)   # not a .response.json — ignore
+
+    image_name = ping.image_name_for_response(name)
+    key        = _pipeline_key_from_image(image_name)
+    base       = (image_name or "").rsplit("/", 1)[-1]
+    is_ours    = base.startswith(config.PIPELINE_OBJECT_PREFIX)
+    if not is_ours and not (key and seen_items.load_pending_context(key)):
+        return ("", 204)   # belongs to another service — ack-and-drop
+
+    dedup_key = f"{name}#{body.get('generation', '')}"
+    if dedup_key in processed_pipeline_objects:
+        return ("", 204)
+    processed_pipeline_objects.add(dedup_key)
+
+    job_id = uuid.uuid4().hex
+    pending_jobs[job_id] = {"response_name": name, "image_name": image_name, "key": key}
+
+    def _kick():
+        base_url = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers  = {"X-Internal-Secret": _INTERNAL_SECRET}
+        for attempt in range(4):
+            try:
+                requests.post(f"{base_url}/internal/pipeline",
+                              json={"job_id": job_id}, headers=headers, timeout=3500)
+                return
+            except Exception as exc:
+                print(f"!!! PIPELINE: internal kick failed (try {attempt}): {exc}", flush=True)
+                time.sleep(2 ** attempt)
+
+    threading.Thread(target=_kick, daemon=True).start()
+    return ("", 204)
+
+
+@flask_app.route("/internal/pipeline", methods=["POST"])
+def internal_pipeline():
+    """Run process_pipeline_lot synchronously so Cloud Run keeps CPU allocated
+    for detection + CLIP. Auth: internal secret / localhost."""
+    provided = request.headers.get("X-Internal-Secret", "")
+    if provided != _INTERNAL_SECRET and not _is_localhost(request.remote_addr):
+        return jsonify({"status": "forbidden"}), 403
+    body   = request.get_json(silent=True) or {}
+    job_id = body.get("job_id")
+    if not job_id:
+        return jsonify({"status": "no job_id"}), 400
+    if job_id in pipeline_started_jobs:
+        return jsonify({"status": "already started"}), 200
+    pipeline_started_jobs.add(job_id)
+
     if not vectors_loaded and not _ensure_clip_loaded():
         return jsonify({"status": "clip init failed"}), 500
-
     global buy_rules
     if not buy_rules:
         try:
             buy_rules = sheets_client.load_buy_rules(
                 _get_secret("GOOGLE_SHEETS_JSON"), _get_secret("SPREADSHEET_ID"))
         except Exception as exc:
-            print(f"!!! CRAWL10: buy_rules reload failed: {exc}", flush=True)
+            print(f"!!! PIPELINE: buy_rules reload failed: {exc}", flush=True)
 
     try:
-        gemini_api_key = _get_secret("GEMINI_API")
+        with _keep_cpu_hot():
+            process_pipeline_lot(job_id)
     except Exception as exc:
-        print(f"!!! CRAWL10: GEMINI_API secret unavailable — aborting: {exc}", flush=True)
-        notifier.send_warning(_slack_token, _channel_id, "/crawl10: no GEMINI_API secret.")
-        return jsonify({"status": "no gemini secret"}), 500
+        print(f"!!! PIPELINE: process failed for {job_id}: {exc}", flush=True)
+        traceback.print_exc()
+    return jsonify({"status": "pipeline complete"}), 200
 
-    if not _scan_lock.acquire(blocking=False):
-        return jsonify({"status": "already running"}), 409
+
+@flask_app.route("/internal/pipelinetest", methods=["GET"])
+def internal_pipelinetest():
+    """Run the full pipeline path against an existing GCS object, for live
+    verification without the watcher. ?object=pipeline/output/<f>.png.response.json"""
+    provided = request.headers.get("X-Internal-Secret", "")
+    if provided != _INTERNAL_SECRET and not _is_localhost(request.remote_addr):
+        return jsonify({"status": "forbidden"}), 403
+    name = request.args.get("object", "")
+    if not ping.is_response_json(name):
+        return jsonify({"status": "not a .response.json object"}), 400
+    if not vectors_loaded and not _ensure_clip_loaded():
+        return jsonify({"status": "clip init failed"}), 500
+    global buy_rules
+    if not buy_rules:
+        try:
+            buy_rules = sheets_client.load_buy_rules(
+                _get_secret("GOOGLE_SHEETS_JSON"), _get_secret("SPREADSHEET_ID"))
+        except Exception:
+            pass
+    job_id     = uuid.uuid4().hex
+    image_name = ping.image_name_for_response(name)
+    pending_jobs[job_id] = {
+        "response_name": name, "image_name": image_name,
+        "key": _pipeline_key_from_image(image_name),
+    }
+    with _keep_cpu_hot():
+        process_pipeline_lot(job_id)
+    return jsonify({"status": "ok", "job_id": job_id}), 200
+
+
+def process_pipeline_lot(job_id: str) -> None:
+    """Consume one Gemini-pipeline result: download image+JSON, run independent
+    Hough detection + Gemini reconciliation, CLIP match, then confirm slogans
+    against Gemini's reading. Posts the lot's auto-confirmed buttons + a Yes/No
+    "add to reference DB" prompt to #ebay-checker, and a needed-button alert if
+    any confirmed button satisfies a standing need.
+
+    Unlike buttonmatcher's process_pipeline_grid, there is NO Inventory/Sort/
+    Scout chooser and NO vectors.pt write — ebayscout is a needed-button detector
+    that, on a Yes vote, only STAGES crop files into reference/_staging/."""
+    import tempfile
+    import cv2
+    from . import clip_matcher as _cm, detect_pipeline as _dp, image_proc as _ip
+
+    job = pending_jobs.get(job_id) or {}
+    response_name = job.get("response_name")
+    if not response_name:
+        print(f"!!! PIPELINE: no job context for {job_id}", flush=True)
+        return
+    image_name = job.get("image_name") or ping.image_name_for_response(response_name)
+    key        = job.get("key") or _pipeline_key_from_image(image_name)
+
+    # 1) download image + Gemini JSON from GCS
     try:
-        processed = _run_crawl10(gemini_api_key)
+        gemini = ping.parse_gemini_response(_gcs_blob_text(response_name))
+    except Exception as exc:
+        print(f"!!! PIPELINE: response.json read failed for {response_name}: {exc}", flush=True)
+        return
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.close()
+    try:
+        _gcs_blob_to_file(image_name, tmp.name)
+        image_bgr = cv2.imread(tmp.name)
     finally:
-        _scan_lock.release()
-    return jsonify({"status": "crawl10 complete", "processed": processed}), 200
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+    if image_bgr is None:
+        print(f"!!! PIPELINE: could not read image {image_name}", flush=True)
+        return
+    h, w = image_bgr.shape[:2]
+    if max(h, w) > 2200:
+        s = 2200 / max(h, w)
+        image_bgr = cv2.resize(image_bgr, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
+
+    # 2) recover the originating-listing context (survives cold start)
+    ctx     = (seen_items.load_pending_context(key) if key else None) or {}
+    item_id = ctx.get("item_id", key or "?")
+    asking  = ctx.get("asking")
+    title   = ctx.get("title", "(context lost)")
+    url     = ctx.get("url", "")
+    restrict_years = _restrict_years_from_ctx(ctx, _cm)
+
+    gem_slogans = gemini.get("detected_slogans") or []
+    gem_count   = gemini.get("total_button_count") or 0
+    flagged     = [s for s in (gemini.get("flagged_problem_slogans") or []) if isinstance(s, dict)]
+    flagged_indices = {s.get("index") for s in flagged if s.get("index") is not None}
+
+    # Gemini-works vs Gemini-fails. A blank/empty response.json (no slogans AND no
+    # count — parse_gemini_response fails open to EMPTY_ANALYSIS on parse errors)
+    # means the Gem gave us nothing, so we fall back to Hough-only/CLIP-only. In
+    # that fallback ONLY, yellow crops are surfaced for human review; when Gemini
+    # works, classification is autoconfirm-or-ignore (no human prompt).
+    gemini_ok = bool(gem_slogans) or gem_count > 0
+
+    # 3) Hough detection, INDEPENDENT of the JSON (radius from full-button count)
+    full_count = (gem_count - len(flagged)) if gem_count > 0 else 0
+    expected   = full_count if full_count > 0 else None
+    if expected is None:
+        _n, _ = _dp.count_circles_unguided(image_bgr)
+        expected = _n if (_n and _n > 0) else None
+    if expected is None:
+        print(f">>> PIPELINE: no buttons found in {image_name} — skipped.", flush=True)
+        seen_items.delete_pending_context(key) if key else None
+        pending_jobs.pop(job_id, None)
+        return
+    _diag = {}
+    crops, debug_img, det_rows, det_cols, circle_info = _dp.detect_buttons(
+        image_bgr, rows=None, cols=None, expected=expected, debug=True,
+        diag_out=_diag, truncate_to_expected=False,
+    )
+
+    # 4) reconcile missed buttons from Gemini x/y, in detection's coord space
+    _ph, _pw = debug_img.shape[:2]
+    _det_img = (image_bgr if (image_bgr.shape[0], image_bgr.shape[1]) == (_ph, _pw)
+                else cv2.resize(image_bgr, (_pw, _ph), interpolation=cv2.INTER_AREA))
+    if _diag.get("detector_used") == "grid" and gem_slogans:
+        led_crops, led_info = _dp.gemini_led_crops(gem_slogans, _det_img)
+        if led_crops:
+            crops, circle_info = led_crops, led_info
+    rec_crops, rec_info, crop_to_slogan, _rt = _dp.reconcile_with_gemini(
+        circle_info, gem_slogans, _det_img)
+    if rec_crops:
+        crops = list(crops) + list(rec_crops)
+        circle_info = list(circle_info) + list(rec_info)
+    if not crops:
+        print(f">>> PIPELINE: no crops for {image_name} after reconcile — skipped.", flush=True)
+        pending_jobs.pop(job_id, None)
+        return
+
+    # 5) CLIP matching, INDEPENDENT of the JSON
+    pil_crops   = _ip._bgr_to_pil(crops)
+    diagnostics = _cm.match_crops_with_diagnostics(pil_crops, restrict_years=restrict_years)
+    crop_candidates = {i: d["candidates"] for i, d in enumerate(diagnostics)}
+
+    # 6) confirm slogans against Gemini's reading (two-pass)
+    resolution = gres.resolve_with_gemini_slogans(
+        crop_candidates, crop_to_slogan, slogan_years, flagged_indices,
+        normalize_fn=normalize.normalize_key,
+    )
+
+    # 7) classify crops per the autoconfirmation decision tree (pure module).
+    #    Gemini works:  green/auto → confirm; else Gemini slogan in top-10 AND
+    #                   conf≥0.70 AND not flagged (res.auto) → confirm; else ignore.
+    #    Gemini fails:  green/auto → confirm; else overall≥RED → yellow (ask the
+    #                   user); else ignore.
+    auto_confirmed, yellow = pipeline_classify.classify_crops(
+        diagnostics, resolution, gemini_ok, job_id)
+
+    # needed-button hits among the auto-confirmed crops
+    needed_hits: dict[tuple, dict] = {}
+    for b in auto_confirmed:
+        overall = b["overall"]
+        enriched = _check_needed_hit({"year": b["year"], "slogan": b["slogan"],
+                                      "overall": overall or 0.0}, buy_rules)
+        if enriched is not None:
+            k = (b["year"], b["slogan"])
+            if k not in needed_hits or (overall or 0) > needed_hits[k].get("overall", 0):
+                needed_hits[k] = enriched
+
+    # 8) stage auto-confirmed crops to the temp holding area + manifest
+    manifest_crops: list[dict] = []
+    for b in auto_confirmed:
+        try:
+            ok, buf = cv2.imencode(".jpg", crops[b["crop_idx"]])
+            if not ok:
+                continue
+            gcs_name = seen_items.stage_pipeline_crop(job_id, b["n"], buf.tobytes())
+            if not gcs_name:
+                continue
+            manifest_crops.append({
+                "gcs_name": gcs_name, "year": b["year"], "slogan": b["slogan"],
+                "entry_id": _cm.entry_id_for(b["year"], b["slogan"]),
+            })
+        except Exception as exc:
+            print(f"!!! PIPELINE: crop stage failed (crop {b['n']}): {exc}", flush=True)
+    if manifest_crops:
+        seen_items.save_crops_manifest(job_id, {
+            "job_id": job_id, "item_id": item_id, "title": title, "url": url,
+            "crops": manifest_crops,
+        })
+
+    # 9) post the per-lot Slack message (auto-confirmed + Yes/No), and any alert
+    _post_pipeline_lot(job_id, item_id, title, url, asking, gem_count,
+                       len(crops), auto_confirmed, bool(manifest_crops))
+    # Gemini-fails fallback only: surface yellow crops for human review.
+    if not gemini_ok and yellow:
+        _post_yellow_review(
+            {"item_id": item_id, "title": title, "url": url, "current_price": asking},
+            yellow, job_id, auto_confirmed)
+    if needed_hits:
+        listing = {"item_id": item_id, "title": title, "url": url,
+                   "current_price": asking, "seller": ctx.get("seller", ""),
+                   "gallery_url": ctx.get("gallery_url")}
+        needed = list(needed_hits.values())
+        try:
+            lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in needed)
+            notifier.send_needed_alert(
+                slack_token=_slack_token, channel=_channel_id, listing=listing,
+                needed_buttons=needed, asking_price=asking or 0.0, lot_value=lot_value)
+        except Exception as exc:
+            print(f"!!! PIPELINE: needed alert failed for {item_id}: {exc}", flush=True)
+
+    # 10) logging + cleanup (pending context only; temp crops await the Yes/No vote)
+    _log_pipeline_count(job_id, item_id, gem_count)
+    if key:
+        seen_items.delete_pending_context(key)
+    pending_jobs.pop(job_id, None)
+
+
+def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int) -> None:
+    """Log the Gem's button-count estimate as its own confirm_log row
+    (source='gemini_count'), preserving the old /crawl10 count telemetry."""
+    if match_logger is None:
+        return
+    check_id = f"gemini_count:{item_id}"
+    try:
+        rec = mlog.build_confirm_record(
+            service="ebayscout", command="/crawl10-pipeline", job_id=job_id,
+            thread_ts=None, crop_num=None, check_id=check_id, user_id=None,
+            chosen_year=None, chosen_phrase=str(total_button_count),
+            chosen_type=None, source="gemini_count",
+            rank_restricted=None, rank_shadow=None, shadow_leaderboard_size=None,
+        )
+        match_logger.log_confirmation(check_id, rec)
+    except Exception as exc:
+        print(f"!!! PIPELINE: gemini_count log failed for {item_id}: {exc}", flush=True)
+
+
+def _post_pipeline_lot(job_id, item_id, title, url, asking, gem_count, n_crops,
+                       auto_confirmed, has_stageable) -> None:
+    """Post one lot to #ebay-checker: the lot, its auto-confirmed buttons, and a
+    Yes/No prompt to add those crops to the reference database (staging)."""
+    try:
+        price_str = f" · ${asking:.2f}" if asking else ""
+        link      = f"<{url}|{title[:60]}>" if url else title[:60]
+        header    = (f"🧩 *Pipeline lot* · {link}{price_str}\n"
+                     f"🤖 Gemini count: {gem_count} · detected crops: {n_crops} · "
+                     f"✅ auto-confirmed: {len(auto_confirmed)}")
+        lines = [header]
+        if auto_confirmed:
+            for b in auto_confirmed[:20]:
+                sc = f" ({b['overall']:.2f})" if b.get("overall") is not None else ""
+                lines.append(f"   ✅ {b['year']} — {b['slogan']}{sc}  ·  _{b['source']}_")
+        else:
+            lines.append("   _no auto-confirmed buttons_")
+
+        blocks = [{"type": "section",
+                   "text": {"type": "mrkdwn", "text": "\n".join(lines)}}]
+        if has_stageable:
+            meta = json.dumps({"job_id": job_id, "item_id": item_id})
+            blocks.append({
+                "type": "actions",
+                "block_id": f"pipeline_ref:{job_id}",
+                "elements": [
+                    {"type": "button", "style": "primary",
+                     "text": {"type": "plain_text", "text": "✅ Yes — add to reference DB"},
+                     "action_id": "pipeline_ref_yes", "value": meta},
+                    {"type": "button", "style": "danger",
+                     "text": {"type": "plain_text", "text": "❌ No — discard crops"},
+                     "action_id": "pipeline_ref_no", "value": meta},
+                ],
+            })
+        app.client.chat_postMessage(
+            token=_slack_token, channel=_channel_id,
+            text=f"Pipeline lot {item_id}: {len(auto_confirmed)} auto-confirmed",
+            blocks=blocks)
+    except Exception as exc:
+        print(f"!!! PIPELINE: Slack post failed for {item_id}: {exc}", flush=True)
+
+
+@app.action("pipeline_ref_yes")
+def handle_pipeline_ref_yes(ack, body):
+    """YES vote: stage the lot's auto-confirmed crops into reference/_staging/."""
+    ack()
+    try:
+        val    = json.loads(body["actions"][0]["value"])
+        job_id = val.get("job_id")
+        manifest = seen_items.load_crops_manifest(job_id)
+        if not manifest:
+            _pipeline_ref_update(body, "⚠️ Crops expired or already handled.")
+            return
+        staged = seen_items.promote_crops_to_reference_staging(job_id, manifest)
+        _pipeline_ref_update(body, f"✅ Added {staged} crop(s) to the reference DB (staged).")
+        print(f">>> PIPELINE REF: staged {staged} crops for job={job_id}.", flush=True)
+    except Exception as exc:
+        print(f"!!! PIPELINE REF YES failed: {exc}", flush=True)
+
+
+@app.action("pipeline_ref_no")
+def handle_pipeline_ref_no(ack, body):
+    """NO vote: delete the lot's staged crops from GCS."""
+    ack()
+    try:
+        val    = json.loads(body["actions"][0]["value"])
+        job_id = val.get("job_id")
+        deleted = seen_items.delete_pipeline_crops(job_id)
+        _pipeline_ref_update(body, f"🗑️ Discarded {deleted} crop object(s) from GCS.")
+        print(f">>> PIPELINE REF: discarded {deleted} objects for job={job_id}.", flush=True)
+    except Exception as exc:
+        print(f"!!! PIPELINE REF NO failed: {exc}", flush=True)
+
+
+def _pipeline_ref_update(body, text: str) -> None:
+    """Replace the Yes/No prompt with a confirmation line (cosmetic)."""
+    try:
+        app.client.chat_update(
+            token=_slack_token, channel=body["channel"]["id"], ts=body["message"]["ts"],
+            text=text, blocks=[{"type": "section",
+                                 "text": {"type": "mrkdwn", "text": text}}])
+    except Exception:
+        pass
 
 
 @flask_app.route("/test-clip", methods=["GET"])
@@ -1763,112 +2228,21 @@ def _post_logging_only(listing: dict, result: dict) -> None:
     return len(new_listings)
 
 
-def _log_gemini_count(job_id: str, item_id: str, total_button_count: int) -> None:
-    """Log Gemini's button-count estimate as its own confirm_log row.
+def _run_crawl10() -> int:
+    """Push each lot's PRIMARY photo into the Gemini pipeline (upload-only).
 
-    source='gemini_count' — distinct from the human 'user_count' bucket
-    (scout_count_* handlers) so the two stay separately queryable.
+    Runs the fixed /crawl10 search (config.CRAWL10_QUERY), caps at 10 lots, NO
+    seller exclusion (apparel-keyword + Clothing-category filters stay on),
+    downloads photo 0 of each lot, uploads it to the Google Drive folder the
+    watcher polls, and records a pending-context blob so the async Gem result
+    (arriving later at /pipeline/notify) can be correlated back to this listing.
+
+    No CLIP / Gemini-API call here — detect+match+resolve happen in
+    /internal/pipeline when the Gem's .response.json returns. Does NOT touch
+    seen_items.json (repeatable test harness). Returns the number of lots
+    uploaded.
     """
-    if match_logger is None:
-        return
-    check_id = f"gemini_count:{item_id}"
-    try:
-        rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl10", job_id=job_id, thread_ts=None,
-            crop_num=None, check_id=check_id, user_id=None,
-            chosen_year=None, chosen_phrase=str(total_button_count),
-            chosen_type=None, source="gemini_count",
-            rank_restricted=None, rank_shadow=None, shadow_leaderboard_size=None,
-        )
-        match_logger.log_confirmation(check_id, rec)
-    except Exception as exc:
-        print(f"!!! CRAWL10: gemini_count log failed for {item_id}: {exc}", flush=True)
-
-
-def _gemini_resolve_yellow(job_id: str, item_id: str, result: dict,
-                           gemini_res: dict) -> list[dict]:
-    """Promote yellow candidates whose slogan Gemini also detected.
-
-    Mutates result['yellow']/['confirmed']/['needed'] in place. Each promoted
-    candidate is logged to confirm_log as source='gemini_verify_yes' — kept
-    distinct from the human 'human_verify_yes' (scout_verify_yes handler) so
-    Gemini-vs-human accuracy can be compared and the calibration ground-truth
-    stays uncorrupted. Returns the list of promoted candidates.
-    """
-    detected = gemini_res.get("detected_slogans") or []
-    if not detected:
-        return []
-
-    remaining_yellow: list[dict] = []
-    promoted: list[dict] = []
-    for btn in result["yellow"]:
-        if any(gemini_triage.slogans_match(btn["slogan"], s) for s in detected):
-            promoted.append(btn)
-        else:
-            remaining_yellow.append(btn)
-
-    if not promoted:
-        return []
-
-    result["yellow"] = remaining_yellow
-    for btn in promoted:
-        result["confirmed"].append(btn)
-        if match_logger is not None:
-            try:
-                rec = mlog.build_confirm_record(
-                    service="ebayscout", command="/crawl10", job_id=job_id, thread_ts=None,
-                    crop_num=None, check_id=btn.get("check_id"), user_id=None,
-                    chosen_year=btn["year"], chosen_phrase=btn["slogan"],
-                    chosen_type="Football", source="gemini_verify_yes",
-                    rank_restricted=None, rank_shadow=None, shadow_leaderboard_size=None,
-                )
-                match_logger.log_confirmation(btn.get("check_id"), rec)
-            except Exception as exc:
-                print(f"!!! CRAWL10: gemini_verify_yes log failed for {item_id}: {exc}",
-                      flush=True)
-
-        enriched = _check_needed_hit(btn, buy_rules)
-        if enriched is not None:
-            result["needed"].append(enriched)
-
-    return promoted
-
-
-def _build_gemini_summary(gemini_res: dict, resolved: list[dict]) -> str:
-    """Build the '🤖 Gemini triage' summary line prepended to the Slack
-    yellow-review post (see _post_yellow_review's gemini_summary param)."""
-    total   = gemini_res.get("total_button_count", 0)
-    blue    = gemini_res.get("blue_background_count", 0)
-    white   = gemini_res.get("white_background_count", 0)
-    flagged = gemini_res.get("flagged_problem_slogans") or []
-
-    if not total and not resolved and not flagged:
-        return ""
-
-    lines = []
-    if total:
-        lines.append(f"🤖 *Gemini triage*: {total} button(s) ({blue} blue, {white} white)")
-    if resolved:
-        resolved_str = "  ·  ".join(f"{b['year']} — {b['slogan']}" for b in resolved)
-        lines.append(f"✅ Auto-resolved via Gemini: {resolved_str}")
-    if flagged:
-        lines.append("⚠️ Gemini flagged as hard to match: " + "  ·  ".join(flagged))
-    return "\n".join(lines)
-
-
-def _run_crawl10(gemini_api_key: str) -> int:
-    """Run the fixed /crawl10 search (config.CRAWL10_QUERY), cap at 10 lots,
-    NO seller exclusion (apparel-keyword + Clothing-category filters stay on).
-
-    Adds a Gemini Flash triage pass per lot on the primary photo: logs the
-    button-count estimate (source='gemini_count') and auto-resolves yellow
-    candidates whose slogan Gemini also detected (source='gemini_verify_yes').
-
-    Does NOT touch seen_items.json — /crawl10 is a repeatable test harness
-    over the same ~10 lots across iterations of the Gemini prompt. Returns the
-    number of lots processed.
-    """
-    from . import ebay_client, clip_matcher as _cm
+    from . import ebay_client, image_proc as _ip
 
     try:
         ebay_app_id  = _get_secret("EBAY_APP_ID")
@@ -1894,96 +2268,63 @@ def _run_crawl10(gemini_api_key: str) -> int:
         return 0
 
     new_listings = dedup_listings(all_listings)[: config.CRAWL10_MAX_LOTS]
-    print(f">>> CRAWL10: {len(all_listings)} unique found; processing "
-          f"{len(new_listings)} (cap {config.CRAWL10_MAX_LOTS}).", flush=True)
+    print(f">>> CRAWL10: {len(all_listings)} unique found; uploading "
+          f"{len(new_listings)} primary photos (cap {config.CRAWL10_MAX_LOTS}).", flush=True)
 
     if not new_listings:
         notifier.send_warning(_slack_token, _channel_id,
-                              "/crawl10: no lots to process this run.")
+                              "/crawl10: no lots to upload this run.")
         return 0
 
-    job_id = str(uuid.uuid4())
-    stat_alerted = stat_confirmed_not_needed = stat_rejected = stat_gemini_resolved = 0
-    ref_years = _cm.reference_years()
-
+    uploaded = 0
     for listing in new_listings:
         item_id = listing["item_id"]
-        asking  = listing.get("current_price", 0.0)
         title   = listing.get("title", "?")
         seller  = listing.get("seller", "")
-
-        title_years_all = extract_years(title)
-        title_decades   = extract_decades(title)
-        if title_decades:
-            restrict_years: set[int] | None = title_decades
-        elif len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
-            restrict_years = {next(iter(title_years_all))}
-        else:
-            restrict_years = None
-
         try:
             picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
             if not picture_urls and listing.get("gallery_url"):
                 picture_urls = [listing["gallery_url"]]
+            if not picture_urls:
+                print(f">>> CRAWL10: {item_id} has no photos — skipping.", flush=True)
+                continue
 
-            with _keep_cpu_hot():
-                result = _evaluate_listing(
-                    listing, picture_urls, restrict_years,
-                    command="/crawl10", job_id=job_id,
-                    title_years=title_years_all, title_count=extract_lot_count(title),
-                    return_first_image=True,
-                )
+            # Only the PRIMARY photo, one per lot.
+            image_bytes = _ip.download_image(picture_urls[0])
 
-            gemini_res = dict(gemini_triage.EMPTY_RESULT)
-            if result.get("first_image_bytes"):
-                print(">>> CRAWL10: running Gemini triage on primary photo...", flush=True)
-                gemini_res = gemini_triage.analyze_lot_with_gemini(
-                    result["first_image_bytes"], gemini_api_key)
-
-            _log_gemini_count(job_id, item_id, gemini_res["total_button_count"])
-
-            resolved = _gemini_resolve_yellow(job_id, item_id, result, gemini_res)
-            stat_gemini_resolved += len(resolved)
-
-            gemini_summary = _build_gemini_summary(gemini_res, resolved)
-
-            if result.get("yellow") or gemini_summary:
-                _post_yellow_review(
-                    listing=listing,
-                    yellow_buttons=result["yellow"],
-                    job_id=job_id,
-                    confirmed_buttons=result.get("confirmed", []),
-                    gemini_summary=gemini_summary,
-                )
-
-            if not result["confirmed"]:
-                stat_rejected += 1
-            elif result["needed"]:
-                needed_buttons = result["needed"]
-                lot_value = sum(
-                    sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
-                )
-                notifier.send_needed_alert(
-                    slack_token=_slack_token, channel=_channel_id, listing=listing,
-                    needed_buttons=needed_buttons, asking_price=asking, lot_value=lot_value,
-                )
-                stat_alerted += 1
-            else:
-                stat_confirmed_not_needed += 1
+            # Correlation key: a random token carried in the Drive filename and
+            # the resulting GCS object name. The authoritative listing context is
+            # persisted to GCS so the async result survives a cold start.
+            key = uuid.uuid4().hex[:12]
+            ctx = {
+                "key":          key,
+                "item_id":      item_id,
+                "title":        title,
+                "seller":       seller,
+                "asking":       listing.get("current_price"),
+                "url":          listing.get("url") or listing.get("listing_url") or "",
+                "gallery_url":  listing.get("gallery_url"),
+                "search_era":   listing.get("search_era") or "",
+                "title_years":   sorted(extract_years(title)),
+                "title_decades": sorted(extract_decades(title)),
+                "command":      "/crawl10",
+                "created":      datetime.datetime.utcnow().isoformat() + "Z",
+            }
+            seen_items.save_pending_context(key, ctx)
+            drive_uploader.upload_lot_image(image_bytes, key)
+            uploaded += 1
+            print(f">>> CRAWL10: uploaded {item_id} → pipeline as key={key}.", flush=True)
         except Exception as exc:
-            print(f"!!! CRAWL10: error processing {item_id} [{seller}]: {exc}", flush=True)
+            print(f"!!! CRAWL10: upload failed for {item_id} [{seller}]: {exc}", flush=True)
             traceback.print_exc()
 
-    notifier.send_crawl10_summary(
-        slack_token=_slack_token, channel=_channel_id,
-        processed=len(new_listings), alerted=stat_alerted,
-        confirmed_not_needed=stat_confirmed_not_needed, rejected=stat_rejected,
-        gemini_resolved=stat_gemini_resolved,
+    notifier.send_warning(
+        _slack_token, _channel_id,
+        f"🔎 `/crawl10`: pushed {uploaded}/{len(new_listings)} lots' primary photos into "
+        f"the Gemini pipeline. Per-lot results will post here as each Gem read returns."
     )
-    print(f">>> CRAWL10: complete — processed={len(new_listings)} alerted={stat_alerted} "
-          f"confirmed_not_needed={stat_confirmed_not_needed} rejected={stat_rejected} "
-          f"gemini_resolved={stat_gemini_resolved}.", flush=True)
-    return len(new_listings)
+    print(f">>> CRAWL10: upload complete — uploaded={uploaded}/{len(new_listings)}.", flush=True)
+    return uploaded
 
 
 # ---------------------------------------------------------------------------

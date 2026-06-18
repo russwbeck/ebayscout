@@ -30,6 +30,8 @@ from google.cloud import storage
 from . import config
 from . import match_logging
 from . import scoring
+from . import rerank
+from . import normalize
 from .scoring import tokenize, rarity_weight, STOPWORDS, confidence_emoji, is_confirmed
 
 # Pin PyTorch's CPU thread budget so it doesn't over-subscribe the container's
@@ -62,6 +64,12 @@ _initialized = False
 _init_lock   = threading.Lock()
 
 _era_means: dict | None = None   # era_label -> unit [D] tensor, built lazily
+
+# (year, normalized_slogan) -> sloganID, loaded from the shared text_db.json so
+# the Gemini pipeline can stage confirmed crops under reference/_staging/<id>/
+# exactly where buttonmatcher's /reference flow consumes them. Best-effort: a
+# (year, slogan) with no id falls back to the year-only "_year_YYYY" convention.
+_slogan_key_to_entry: dict = {}
 
 # tokenize / STOPWORDS / rarity_weight / confidence_emoji / is_confirmed are
 # imported from scoring.py (pure-python, unit-testable). init() populates the
@@ -112,6 +120,29 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             _ref_labels  = list(cached_vecs["labels"])
             print(f">>> CLIP: Image reference vectors loaded — {len(_ref_labels)} entries.", flush=True)
 
+            # --- text_db.json (sloganID map for reference staging) ---
+            # Optional: only used by the Gemini-pipeline staging path. Shared
+            # schema: {"<id>": {"slogan":..., "year":..., "type":...}, ...}.
+            _slogan_key_to_entry.clear()
+            try:
+                tdb_path = os.path.join(tmpdir, "text_db.json")
+                bucket.blob("text_db.json").download_to_filename(tdb_path)
+                import json as _json
+                with open(tdb_path) as _fh:
+                    _tdb = _json.load(_fh)
+                for _eid, _rec in (_tdb or {}).items():
+                    try:
+                        _yr = int(_rec.get("year"))
+                    except (TypeError, ValueError):
+                        continue
+                    _key = (_yr, normalize.normalize_key(_rec.get("slogan", "")))
+                    _slogan_key_to_entry[_key] = str(_eid)
+                print(f">>> CLIP: text_db.json loaded — {len(_slogan_key_to_entry)} entry ids.",
+                      flush=True)
+            except Exception as _exc:
+                print(f">>> CLIP: text_db.json not loaded (staging will use _year_YYYY): {_exc}",
+                      flush=True)
+
         # Build the rarity word-frequency table now that slogans are loaded
         # (buttonmatcher/main.py:680-685): freq = # of distinct slogans a word
         # appears in, so 1/freq² gives rare words a small tiebreaker boost.
@@ -128,6 +159,30 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
 def reference_years() -> set[int]:
     """Years present in the loaded text reference data (empty before init())."""
     return {int(y) for y in _text_years}
+
+
+def text_db_arrays() -> tuple[list[str], list[int], list[str]]:
+    """(_text_phrases, _text_years, _text_types) — the parallel slogan DB arrays.
+    Used to build the Gemini resolver's slogan→years multimap (empty before init)."""
+    return list(_text_phrases), [int(y) for y in _text_years], list(_text_types)
+
+
+def entry_id_for(year, slogan: str) -> str:
+    """Resolve the reference sloganID for (year, slogan) for crop staging.
+
+    Returns the shared text_db.json sloganID when known, else the year-only
+    "_year_YYYY" convention buttonmatcher also accepts (so a crop is never lost
+    just because its exact slogan isn't ID-mapped)."""
+    try:
+        yr = int(str(year).split()[0])
+    except (ValueError, IndexError, AttributeError):
+        yr = None
+    if yr is not None:
+        eid = _slogan_key_to_entry.get((yr, normalize.normalize_key(slogan)))
+        if eid:
+            return eid
+        return f"_year_{yr}"
+    return "_year_unknown"
 
 
 def _label_year(label) -> int | None:
@@ -345,6 +400,8 @@ def match_crops_with_diagnostics(
             image_sims = (vec @ _ref_vectors.T).cpu().numpy()[0]
             text_sims  = (vec @ _text_features.T).cpu().numpy()[0]
 
+            # _ranked_matches applies the rerank (env-gated) + the always-on
+            # ref-photo check, so candidates already carry the refined ranking.
             ranked     = _ranked_matches(image_sims, text_sims, restrict_years)
             candidates = [_format_match(r) for r in ranked]
             gap = (candidates[0]["overall"] - candidates[1]["overall"]
@@ -364,6 +421,110 @@ def match_crops_with_diagnostics(
             })
         del tensors, vecs   # release activations before the next chunk
     return out
+
+
+def _era_years_for(year: int) -> set[int]:
+    """Years sharing `year`'s bank era (config.BUTTON_ERAS); {} if none."""
+    out: set[int] = set()
+    for _lo, _hi in config.BUTTON_ERAS.values():
+        if _lo <= year <= _hi:
+            out |= {int(y) for y in _text_years if _lo <= int(y) <= _hi}
+    return out
+
+
+def _apply_reference_rerank(ranked: list[dict], image_sims: np.ndarray) -> list[dict]:
+    """Opt-in two-level reference re-rank (rerank.py) — Year Score + SloganID
+    Score from the crop's similarities to the reference photos. Bounded ±0.05
+    each; fail-open (returns `ranked` unchanged on any error). Off by default."""
+    try:
+        # Per-entry (year, normalized-slogan) max crop↔ref similarity, and per-year.
+        entry_sims: dict[tuple, float] = {}
+        year_max_sims: dict[int, float] = {}
+        entry_phrases: list[str] = []
+        entry_years: list[int] = []
+        for i, label in enumerate(_ref_labels):
+            yr = _label_year(label)
+            if yr is None:
+                continue
+            s = float(image_sims[i])
+            if yr not in year_max_sims or s > year_max_sims[yr]:
+                year_max_sims[yr] = s
+            # entry key from the label's slogan text (label = "YEAR SLOGAN...")
+            parts = str(label).split(None, 1)
+            phrase = parts[1] if len(parts) > 1 else ""
+            key = (yr, normalize.normalize_key(phrase))
+            if key not in entry_sims:
+                entry_sims[key] = s
+                entry_phrases.append(phrase)
+                entry_years.append(yr)
+            elif s > entry_sims[key]:
+                entry_sims[key] = s
+
+        entry_keys = list(entry_sims.keys())
+        entry_sim_list = [entry_sims[k] for k in entry_keys]
+
+        def _score_fn(result):
+            yr = result.get("year")
+            try:
+                yr = int(str(yr).split()[0])
+            except (ValueError, IndexError, AttributeError):
+                return 0.0, 0.0
+            ys = rerank.year_score(yr, year_max_sims, _era_years_for(yr))
+            ekey = (yr, normalize.normalize_key(result.get("slogan", "")))
+            esim = entry_sims.get(ekey)
+            peers = rerank.similar_slogan_peers(
+                result.get("slogan", ""), yr, entry_phrases, entry_years,
+                tokenize, STOPWORDS)
+            peer_sims = [entry_sim_list[p] for p in peers]
+            ss = rerank.sloganid_score(esim, peer_sims)
+            return ys, ss
+
+        return rerank.rerank_results(ranked, _score_fn)
+    except Exception as exc:   # pragma: no cover
+        print(f">>> CLIP: reference rerank skipped ({exc})", flush=True)
+        return ranked
+
+
+def _apply_ref_photo_check(ranked: list[dict], image_sims: np.ndarray) -> list[dict]:
+    """Always-on entry-level reference-photo visual check (buttonmatcher's
+    REF_CHECK step, buttonmatcher/main.py:1631-1671). For each candidate, take
+    the crop's max similarity to THAT (year, slogan) entry's reference photos and
+    nudge `overall += REF_CHECK_WEIGHT * ref_sim`, then re-sort. Entries with no
+    matching reference photos are left untouched (no bonus, no penalty).
+    Fail-open: returns `ranked` unchanged on any error."""
+    try:
+        # Per-entry (year, normalized-slogan) max crop↔ref similarity.
+        entry_sims: dict[tuple, float] = {}
+        for i, label in enumerate(_ref_labels):
+            yr = _label_year(label)
+            if yr is None:
+                continue
+            parts  = str(label).split(None, 1)          # label = "YEAR SLOGAN..."
+            phrase = parts[1] if len(parts) > 1 else ""
+            key    = (yr, normalize.normalize_key(phrase))
+            s      = float(image_sims[i])
+            if key not in entry_sims or s > entry_sims[key]:
+                entry_sims[key] = s
+
+        any_ref = False
+        for r in ranked:
+            try:
+                yr = int(str(r.get("year")).split()[0])
+            except (ValueError, IndexError, AttributeError):
+                r["ref_sim"] = None
+                continue
+            esim = entry_sims.get((yr, normalize.normalize_key(r.get("slogan", ""))))
+            r["ref_sim"] = esim
+            if esim is not None:
+                r["overall"] = min(1.0, r["overall"] + config.REF_CHECK_WEIGHT * esim)
+                any_ref = True
+        if any_ref:
+            ranked.sort(key=lambda x: (x["overall"], x.get("slogan_score", 0)),
+                        reverse=True)
+        return ranked
+    except Exception as exc:   # pragma: no cover
+        print(f">>> CLIP: ref-photo check skipped ({exc})", flush=True)
+        return ranked
 
 
 def _ranked_matches(
@@ -408,30 +569,48 @@ def _ranked_matches(
         if mask.any():
             year_text_best[year] = float(text_sims[mask].max())
 
-    # --- Dual-signal year selection (buttonmatcher/main.py:2348-2370) ---
-    # Signal 1: top-3 years by image similarity (visual match to reference photos).
+    # --- Dual-signal year selection (buttonmatcher/main.py:1539-1565) ---
+    # Signal 1: top-5 years by image similarity (visual match to reference photos).
     top_image_years = dict(
-        sorted(year_image_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+        sorted(year_image_scores.items(), key=lambda x: x[1], reverse=True)[:5]
     )
-    # Signal 2: top-3 years by max text similarity (CLIP image-vs-slogan text) —
+    # Signal 2: top-5 years by max text similarity (CLIP image-vs-slogan text) —
     # rescues near-identical visual templates where the slogan discriminates.
     top_text_years = dict(
-        sorted(year_text_best.items(), key=lambda x: x[1], reverse=True)[:3]
+        sorted(year_text_best.items(), key=lambda x: x[1], reverse=True)[:5]
     )
-    # Merge: image years first, then any text years not already present (≤6 total).
+    # Merge: image years first, then text years not already present, capped at 8.
+    # Wider than the old 3+3/6 union so the rerank's Year/SloganID scores and the
+    # ref-photo check have the right year present to promote (and so a Gemini
+    # slogan can match a lower-ranked-but-correct candidate). The score_slogans
+    # loop over ≤8 entries costs nothing.
     top_year_image_scores = dict(top_image_years)
     for year in top_text_years:
+        if len(top_year_image_scores) >= 8:
+            break
         if year not in top_year_image_scores:
             top_year_image_scores[year] = year_image_scores.get(year, 0.0)
 
     allowed_years = set(top_year_image_scores.keys())
 
     # Score slogans for each candidate year
-    return _score_slogans(
+    ranked = _score_slogans(
         text_sims=np.array(text_sims, dtype=np.float32),
         year_scores=top_year_image_scores,
         allowed_years=allowed_years,
     )
+    if not ranked:
+        return ranked
+
+    # Two-level reference refinement, in buttonmatcher's order:
+    #   1) opt-in rerank (Year + SloganID deltas, env-gated, default off)
+    #   2) ALWAYS-ON entry-level reference-photo visual check (REF_CHECK)
+    # Both fail open. Applied here (the single ranking path) so every caller —
+    # the daily scan, /scout, and the Gemini pipeline — sees the same ranking.
+    if rerank.rerank_enabled():
+        ranked = _apply_reference_rerank(ranked, image_sims)
+    ranked = _apply_ref_photo_check(ranked, image_sims)
+    return ranked
 
 
 def _format_match(result: dict) -> dict:
@@ -484,7 +663,7 @@ def _score_slogans(
 ) -> list[dict]:
     """
     For each candidate year, find the best matching slogan and compute overall score.
-    Returns results sorted by (overall, slogan_score) descending, top 3.
+    Returns results sorted by (overall, slogan_score) descending, top 10.
     """
     years_arr = np.array(_text_years, dtype=np.int32)
     allowed_arr = np.array(list(allowed_years), dtype=np.int32)
@@ -540,7 +719,10 @@ def _score_slogans(
         })
 
     results.sort(key=lambda x: (x["overall"], x["slogan_score"]), reverse=True)
-    return results[:3]
+    # Keep up to 10 (buttonmatcher scores with limit=10). The reference rerank /
+    # ref-photo check re-sort this list, and the Gemini resolver matches its
+    # slogan against the full top-10 — so do NOT trim to 3 here.
+    return results[:10]
 
 
 def _normalize_slogan(score: float, min_s: float = 0.15, max_s: float = 0.35) -> float:
