@@ -37,7 +37,6 @@ from . import match_logging as mlog
 from . import pipeline_ingest as ping
 from . import gemini_resolve as gres
 from . import pipeline_classify
-from . import drive_uploader
 from . import normalize
 from . import seen_items
 from .utils import (
@@ -2360,7 +2359,8 @@ def _run_crawl10() -> int:
                 "created":      datetime.datetime.utcnow().isoformat() + "Z",
             }
             seen_items.save_pending_context(key, ctx)
-            drive_uploader.upload_lot_image(image_bytes, key)
+            if not seen_items.upload_pipeline_input(key, image_bytes):
+                raise RuntimeError("pipeline-input upload to GCS failed")
             uploaded += 1
             print(f">>> CRAWL10: uploaded {item_id} → pipeline as key={key}.", flush=True)
         except Exception as exc:
