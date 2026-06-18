@@ -36,6 +36,7 @@ from . import etsy_client
 from . import match_logging as mlog
 from . import pipeline_ingest as ping
 from . import gemini_resolve as gres
+from . import pipeline_classify
 from . import drive_uploader
 from . import normalize
 from . import seen_items
@@ -657,6 +658,13 @@ def process_pipeline_lot(job_id: str) -> None:
     flagged     = [s for s in (gemini.get("flagged_problem_slogans") or []) if isinstance(s, dict)]
     flagged_indices = {s.get("index") for s in flagged if s.get("index") is not None}
 
+    # Gemini-works vs Gemini-fails. A blank/empty response.json (no slogans AND no
+    # count — parse_gemini_response fails open to EMPTY_ANALYSIS on parse errors)
+    # means the Gem gave us nothing, so we fall back to Hough-only/CLIP-only. In
+    # that fallback ONLY, yellow crops are surfaced for human review; when Gemini
+    # works, classification is autoconfirm-or-ignore (no human prompt).
+    gemini_ok = bool(gem_slogans) or gem_count > 0
+
     # 3) Hough detection, INDEPENDENT of the JSON (radius from full-button count)
     full_count = (gem_count - len(flagged)) if gem_count > 0 else 0
     expected   = full_count if full_count > 0 else None
@@ -703,43 +711,22 @@ def process_pipeline_lot(job_id: str) -> None:
         normalize_fn=normalize.normalize_key,
     )
 
-    # 7) classify auto-confirmed crops + needed-button hits
-    MIN_AUTO_GAP = 0.05
-    auto_confirmed: list[dict] = []   # {n, year, slogan, overall, source, crop_idx}
+    # 7) classify crops per the autoconfirmation decision tree (pure module).
+    #    Gemini works:  green/auto → confirm; else Gemini slogan in top-10 AND
+    #                   conf≥0.70 AND not flagged (res.auto) → confirm; else ignore.
+    #    Gemini fails:  green/auto → confirm; else overall≥RED → yellow (ask the
+    #                   user); else ignore.
+    auto_confirmed, yellow = pipeline_classify.classify_crops(
+        diagnostics, resolution, gemini_ok, job_id)
+
+    # needed-button hits among the auto-confirmed crops
     needed_hits: dict[tuple, dict] = {}
-    for i, d in enumerate(diagnostics):
-        cands = d.get("candidates") or []
-        gap   = d.get("gap")
-        top   = cands[0] if cands else None
-        res   = resolution.get(i)
-
-        clip_conf = False
-        if top is not None:
-            _gap_bad = gap is None or gap != gap or gap < MIN_AUTO_GAP
-            if _gap_bad and top["overall"] < config.AUTO_RESOLVE_THRESHOLD + 0.05:
-                clip_conf = False
-            else:
-                clip_conf = _cm.is_confirmed(top["overall"], gap)
-        is_auto = bool((res and res.get("auto")) or clip_conf)
-        if not is_auto:
-            continue
-
-        if res:
-            year, slogan = res.get("year"), res.get("slogan")
-            source = res.get("source")
-        else:
-            year, slogan = top["year"], top["slogan"]
-            source = "clip_green"
-        overall = top["overall"] if top else None
-        auto_confirmed.append({
-            "n": i + 1, "crop_idx": i, "year": year, "slogan": slogan,
-            "overall": overall, "source": source,
-        })
-
-        enriched = _check_needed_hit({"year": year, "slogan": slogan,
+    for b in auto_confirmed:
+        overall = b["overall"]
+        enriched = _check_needed_hit({"year": b["year"], "slogan": b["slogan"],
                                       "overall": overall or 0.0}, buy_rules)
         if enriched is not None:
-            k = (year, slogan)
+            k = (b["year"], b["slogan"])
             if k not in needed_hits or (overall or 0) > needed_hits[k].get("overall", 0):
                 needed_hits[k] = enriched
 
@@ -768,6 +755,11 @@ def process_pipeline_lot(job_id: str) -> None:
     # 9) post the per-lot Slack message (auto-confirmed + Yes/No), and any alert
     _post_pipeline_lot(job_id, item_id, title, url, asking, gem_count,
                        len(crops), auto_confirmed, bool(manifest_crops))
+    # Gemini-fails fallback only: surface yellow crops for human review.
+    if not gemini_ok and yellow:
+        _post_yellow_review(
+            {"item_id": item_id, "title": title, "url": url, "current_price": asking},
+            yellow, job_id, auto_confirmed)
     if needed_hits:
         listing = {"item_id": item_id, "title": title, "url": url,
                    "current_price": asking, "seller": ctx.get("seller", ""),

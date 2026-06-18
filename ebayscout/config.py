@@ -61,6 +61,12 @@ GREEN_THRESHOLD           = 0.82   # solo-score green: 0 wrong above this in dat
 GREEN_GAP                 = 0.12   # a #1 leading #2 by this much earns green too
 RED_THRESHOLD             = 0.65   # below this = low confidence (35% wrong in data)
 
+# Always-on entry-level reference-photo visual check (buttonmatcher's REF_CHECK
+# step): for each candidate, nudge `overall` by REF_CHECK_WEIGHT * (the crop's max
+# similarity to THAT entry's reference photos), then re-sort. Mirrors
+# buttonmatcher/main.py REF_CHECK_WEIGHT.
+REF_CHECK_WEIGHT          = 0.15
+
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
 
