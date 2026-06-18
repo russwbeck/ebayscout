@@ -774,6 +774,55 @@ def process_pipeline_lot(job_id: str) -> None:
             print(f"!!! PIPELINE: needed alert failed for {item_id}: {exc}", flush=True)
 
     # 10) logging + cleanup (pending context only; temp crops await the Yes/No vote)
+    # Per-crop match records carrying the Gemini reconcile fields, so the
+    # match_log is schema-compatible with buttonmatcher's pipeline rows.
+    try:
+        if match_logger is not None and diagnostics:
+            _det = mlog.build_detection_diag(
+                h=_diag.get("h") or image_bgr.shape[0],
+                w=_diag.get("w") or image_bgr.shape[1],
+                bg_brightness=_diag.get("bg_brightness") or 0.0,
+                bg_saturation=_diag.get("bg_saturation"),
+                bg_is_white=bool(_diag.get("bg_is_white")),
+                mask_path=_diag.get("mask_path"),
+                hough_pass1_count=_diag.get("hough_pass1_count") or 0,
+                hough_retry_count=_diag.get("hough_retry_count"),
+                final_count_user=len(crops), final_count_noinput=None,
+                user_count=None, detector_used=_diag.get("detector_used"),
+                n_crops=len(crops),
+                raw_hough=_diag.get("raw_hough"),
+                circles_rejected=_diag.get("circles_rejected"),
+                radius_min=_diag.get("radius_min"), radius_max=_diag.get("radius_max"),
+                radius_mean=_diag.get("radius_mean"), radius_std=_diag.get("radius_std"),
+                mask_components=_diag.get("mask_components"),
+                border_removed=_diag.get("border_removed"),
+                fill_removed=_diag.get("fill_removed"),
+                overlap_removed=_diag.get("overlap_removed"),
+                edge_density=_diag.get("edge_density"),
+                brightness_std=_diag.get("brightness_std"),
+                count_source=("gemini_led"
+                              if (_diag.get("detector_used") == "grid" and gem_slogans)
+                              else "gemini" if full_count > 0 else "unguided"),
+                gemini_button_count=gem_count,
+                n_recovered=len(rec_crops),
+                reconcile_misses=(_rt or {}).get("misses"),
+            )
+            _records = [
+                mlog.build_match_record(
+                    service="ebayscout", command="/crawl10-pipeline", mode="pipeline",
+                    job_id=job_id, thread_ts=None, channel_id=_channel_id, user_id=None,
+                    crop_num=i + 1, check_id=f"{job_id}:{item_id}:{i + 1}",
+                    detection=_det, bank=None,
+                    restricted_top=d.get("restricted_top", []),
+                    shadow_top=d.get("shadow_top", []),
+                    shadow_enabled=bool(d.get("shadow_enabled")),
+                )
+                for i, d in enumerate(diagnostics)
+            ]
+            match_logger.log_image_crops(job_id, _records)
+    except Exception as exc:
+        print(f"!!! PIPELINE: match_log failed for {item_id}: {exc}", flush=True)
+
     _log_pipeline_count(job_id, item_id, gem_count)
     if key:
         seen_items.delete_pending_context(key)

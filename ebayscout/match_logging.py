@@ -240,9 +240,17 @@ def build_detection_diag(
     edge_density=None,
     brightness_std=None,
     # Where the count/grid came from: "user" (default) | "auto" |
-    # "auto_overridden" | "suggest" — the live precision monitor for the
-    # auto-detection rollout is the auto_overridden rate.
+    # "auto_overridden" | "suggest" | "gemini" — the live precision monitor for
+    # the auto-detection rollout is the auto_overridden rate.
     count_source=None,
+    # Gemini-pipeline reconciliation (Phase 2).  None on the slash-command path
+    # (no Gemini JSON); set only for GCS-triggered pipeline jobs:
+    #   gemini_button_count  int   Gemini's total_button_count for the photo
+    #   n_recovered          int   buttons Hough missed that Gemini x/y recovered
+    #   reconcile_misses     list  per-miss telemetry [{slogan, gx, gy, r_px}]
+    gemini_button_count=None,
+    n_recovered=None,
+    reconcile_misses=None,
 ):
     """Detection diagnostics block.
 
@@ -345,6 +353,10 @@ def build_detection_diag(
         # disabled or count_circles_unguided hasn't been updated yet.
         "noinput_diag": noinput_diag or None,
         "count_source": count_source,
+        # Gemini-pipeline reconciliation (Phase 2) — None on the slash path.
+        "gemini_button_count": _i(gemini_button_count),
+        "n_recovered": _i(n_recovered),
+        "reconcile_misses": reconcile_misses or None,
     }
 
 
@@ -452,7 +464,9 @@ def build_confirm_record(
         "chosen_type": chosen_type,
         "typed_slogan": typed_slogan,
         "source": source,                 # pick|manual|dussellbot|other_sports|
-                                          # typed_search|missed_button|skip|skip_after_type
+                                          # typed_search|missed_button|skip|skip_after_type|
+                                          # gemini_auto|gemini_majority|gemini_clip_fallback|
+                                          # correction|skip_correction
         "rank_restricted": rank_restricted,
         "rank_shadow": rank_shadow,
         "rank_image_only": rank_image_only,
@@ -501,10 +515,12 @@ MATCH_HEADER = [
     # Mask parity + scale-first unguided detection
     "ni_bgdiff", "ni_r_est", "ni_scale_conf", "ni_scale_path",
     "ni_est_rows", "ni_est_cols", "ni_gate",
-    # Where the count/grid came from: user | auto | auto_overridden | suggest
+    # Where the count/grid came from: user | auto | auto_overridden | suggest | gemini
     "count_source",
     # Two-level reference re-rank scores for the offered candidates
     "rerank_json",
+    # --- appended: Gemini-pipeline reconciliation (Phase 2) ---
+    "gemini_button_count", "n_recovered", "reconcile_misses_json",
 ]
 
 CONFIRM_HEADER = [
@@ -587,6 +603,9 @@ def flatten_match_record(rec):
         # --- appended: count provenance + re-rank scores ---
         _cell(d.get("count_source")),
         json.dumps(rec.get("rerank_top") or [], default=str),
+        # --- appended: Gemini-pipeline reconciliation (Phase 2) ---
+        _cell(d.get("gemini_button_count")), _cell(d.get("n_recovered")),
+        json.dumps(d.get("reconcile_misses") or [], default=str),
     ]
 
 

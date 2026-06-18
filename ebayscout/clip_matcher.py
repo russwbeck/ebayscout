@@ -367,7 +367,7 @@ def match_crops_with_diagnostics(
 
     Returns one dict per input crop (order preserved):
       {
-        "candidates":     [up to 3 match dicts, best first],  # live dual-signal result
+        "candidates":     [up to 10 match dicts, best first], # live dual-signal result
         "gap":            float | None,                       # #1.overall - #2.overall
         "restricted_top": [top-10 restricted leaderboard],    # match_log restricted_top
         "shadow_top":     [top-10 unrestricted leaderboard],  # match_log shadow_top
