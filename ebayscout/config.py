@@ -277,6 +277,10 @@ DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
 PIPELINE_OBJECT_PREFIX = "ebayscout__"
 # GCS prefix where the Gem writes <f>.png + <f>.png.response.json.
 PIPELINE_OUTPUT_PREFIX = "pipeline/output/"
+# GCS prefix where /crawl10 drops each lot's primary photo for the watcher to
+# pick up (a service account can't own Drive files on personal Gmail — "no
+# storage quota" — so ebayscout feeds the pipeline via GCS instead of Drive).
+PIPELINE_INPUT_PREFIX = "pipeline/input/"
 # Per-lot correlation context written at upload, read when the async result
 # returns (one small JSON blob per key; survives cold start).
 PENDING_CONTEXT_PREFIX = "ebay_scout/pending/"

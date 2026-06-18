@@ -205,6 +205,27 @@ def delete_pending_context(key: str,
         print(f"!!! PIPELINE: delete_pending_context({key}) failed: {exc}", flush=True)
 
 
+def upload_pipeline_input(key: str, image_bytes: bytes,
+                          bucket_name: str = config.BUCKET_NAME) -> str | None:
+    """Drop one lot's primary photo into the GCS pipeline-input prefix for the
+    watcher to pick up: pipeline/input/ebayscout__<key>.png.
+
+    We upload to GCS (not Drive) because a service account has no Drive storage
+    quota on a personal Google account ("storageQuotaExceeded"); GCS uses the
+    project's quota, so the same compute SA can write here freely. The watcher
+    polls this prefix, runs the Gem, and writes the result to pipeline/output/.
+    Returns the object name, or None on failure (caller logs + continues)."""
+    try:
+        name   = f"{config.PIPELINE_INPUT_PREFIX}{config.PIPELINE_OBJECT_PREFIX}{key}.png"
+        client = storage.Client()
+        client.bucket(bucket_name).blob(name).upload_from_string(
+            image_bytes, content_type="image/png")
+        return name
+    except Exception as exc:
+        print(f"!!! CRAWL10: upload_pipeline_input({key}) failed: {exc}", flush=True)
+        return None
+
+
 def stage_pipeline_crop(job_id: str, n: int, jpg_bytes: bytes,
                         bucket_name: str = config.BUCKET_NAME) -> str | None:
     """Write one auto-confirmed crop to the temp holding area; return its GCS name."""
