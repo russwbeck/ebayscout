@@ -11,6 +11,7 @@ once at the end of a successful job run.
 """
 
 import json
+import time
 from datetime import date
 
 from google.cloud import storage
@@ -153,6 +154,172 @@ def mark_ondemand2_first_run_done(bucket_name: str = config.BUCKET_NAME) -> bool
     except Exception as exc:
         print(f"!!! OD2: Failed to write {config.ONDEMAND2_STATE_BLOB}: {exc}", flush=True)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Gemini pipeline correlation + crop staging (Drive watcher → Gem → GCS)
+# ---------------------------------------------------------------------------
+# /crawl10 uploads each lot's primary photo to Drive under a random correlation
+# `key`; the watcher's Gem writes the result to pipeline/output/ and POSTs it
+# back to /pipeline/notify. The listing context is persisted here (keyed by the
+# same `key`) so the async result can be correlated even after a cold start.
+# Auto-confirmed crops are held in a temp prefix until the Slack Yes/No vote
+# either promotes them to the shared reference/_staging/ area or deletes them.
+
+def save_pending_context(key: str, ctx: dict,
+                         bucket_name: str = config.BUCKET_NAME) -> bool:
+    """Persist a per-lot correlation context blob at PENDING_CONTEXT_PREFIX<key>.json."""
+    try:
+        client = storage.Client()
+        blob   = client.bucket(bucket_name).blob(f"{config.PENDING_CONTEXT_PREFIX}{key}.json")
+        blob.upload_from_string(json.dumps(ctx, indent=2), content_type="application/json")
+        return True
+    except Exception as exc:
+        print(f"!!! PIPELINE: save_pending_context({key}) failed: {exc}", flush=True)
+        return False
+
+
+def load_pending_context(key: str,
+                         bucket_name: str = config.BUCKET_NAME) -> dict | None:
+    """Read back a pending-context blob; None if missing/unreadable."""
+    try:
+        client = storage.Client()
+        blob   = client.bucket(bucket_name).blob(f"{config.PENDING_CONTEXT_PREFIX}{key}.json")
+        if not blob.exists():
+            return None
+        return json.loads(blob.download_as_text())
+    except Exception as exc:
+        print(f"!!! PIPELINE: load_pending_context({key}) failed: {exc}", flush=True)
+        return None
+
+
+def delete_pending_context(key: str,
+                           bucket_name: str = config.BUCKET_NAME) -> None:
+    """Delete a pending-context blob (best-effort)."""
+    try:
+        client = storage.Client()
+        blob   = client.bucket(bucket_name).blob(f"{config.PENDING_CONTEXT_PREFIX}{key}.json")
+        if blob.exists():
+            blob.delete()
+    except Exception as exc:
+        print(f"!!! PIPELINE: delete_pending_context({key}) failed: {exc}", flush=True)
+
+
+def stage_pipeline_crop(job_id: str, n: int, jpg_bytes: bytes,
+                        bucket_name: str = config.BUCKET_NAME) -> str | None:
+    """Write one auto-confirmed crop to the temp holding area; return its GCS name."""
+    try:
+        name = f"{config.PIPELINE_CROPS_PREFIX}{job_id}/{n}.jpg"
+        client = storage.Client()
+        client.bucket(bucket_name).blob(name).upload_from_string(
+            jpg_bytes, content_type="image/jpeg")
+        return name
+    except Exception as exc:
+        print(f"!!! PIPELINE: stage_pipeline_crop({job_id},{n}) failed: {exc}", flush=True)
+        return None
+
+
+def save_crops_manifest(job_id: str, manifest: dict,
+                        bucket_name: str = config.BUCKET_NAME) -> bool:
+    """Persist the job→crops manifest used by the Yes/No reference vote."""
+    try:
+        client = storage.Client()
+        blob   = client.bucket(bucket_name).blob(
+            f"{config.PIPELINE_CROPS_PREFIX}{job_id}/manifest.json")
+        blob.upload_from_string(json.dumps(manifest, indent=2),
+                                content_type="application/json")
+        return True
+    except Exception as exc:
+        print(f"!!! PIPELINE: save_crops_manifest({job_id}) failed: {exc}", flush=True)
+        return False
+
+
+def load_crops_manifest(job_id: str,
+                        bucket_name: str = config.BUCKET_NAME) -> dict | None:
+    """Read back a job→crops manifest; None if missing/unreadable."""
+    try:
+        client = storage.Client()
+        blob   = client.bucket(bucket_name).blob(
+            f"{config.PIPELINE_CROPS_PREFIX}{job_id}/manifest.json")
+        if not blob.exists():
+            return None
+        return json.loads(blob.download_as_text())
+    except Exception as exc:
+        print(f"!!! PIPELINE: load_crops_manifest({job_id}) failed: {exc}", flush=True)
+        return None
+
+
+def promote_crops_to_reference_staging(job_id: str, manifest: dict,
+                                       bucket_name: str = config.BUCKET_NAME) -> int:
+    """YES vote: copy each temp crop into reference/_staging/<entry_id>/<ts>.jpg
+    (the shared area buttonmatcher's /reference flow consumes), then remove the
+    temp crops + manifest. Returns the number of crops staged.
+
+    ebayscout writes only image FILES here — it never encodes or writes vectors.pt.
+    """
+    staged = 0
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        for crop in manifest.get("crops", []):
+            src_name  = crop.get("gcs_name")
+            entry_id  = crop.get("entry_id")
+            if not src_name or not entry_id:
+                continue
+            src = bucket.blob(src_name)
+            if not src.exists():
+                continue
+            ts   = int(time.time() * 1000) + staged   # unique ms timestamp
+            dest = f"{config.REFERENCE_STAGING_PREFIX}{entry_id}/{ts}.jpg"
+            bucket.copy_blob(src, bucket, dest)
+            staged += 1
+    except Exception as exc:
+        print(f"!!! PIPELINE: promote_crops({job_id}) failed: {exc}", flush=True)
+    finally:
+        delete_pipeline_crops(job_id, bucket_name=bucket_name)
+    return staged
+
+
+def delete_pipeline_crops(job_id: str,
+                          bucket_name: str = config.BUCKET_NAME) -> int:
+    """NO vote (or post-promotion cleanup): delete all temp objects + manifest
+    under the job's crop prefix. Returns the number of objects deleted."""
+    deleted = 0
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        for blob in bucket.list_blobs(prefix=f"{config.PIPELINE_CROPS_PREFIX}{job_id}/"):
+            try:
+                blob.delete()
+                deleted += 1
+            except Exception:
+                pass
+    except Exception as exc:
+        print(f"!!! PIPELINE: delete_pipeline_crops({job_id}) failed: {exc}", flush=True)
+    return deleted
+
+
+def sweep_pipeline_temp(ttl_days: int = config.PIPELINE_TTL_DAYS,
+                        bucket_name: str = config.BUCKET_NAME) -> int:
+    """Delete pending-context + crop blobs older than ttl_days (never-returned
+    Gem reads, abandoned Yes/No prompts). Best-effort; returns objects deleted."""
+    cutoff = time.time() - ttl_days * 86400
+    deleted = 0
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        for prefix in (config.PENDING_CONTEXT_PREFIX, config.PIPELINE_CROPS_PREFIX):
+            for blob in bucket.list_blobs(prefix=prefix):
+                created = blob.time_created
+                if created and created.timestamp() < cutoff:
+                    try:
+                        blob.delete()
+                        deleted += 1
+                    except Exception:
+                        pass
+    except Exception as exc:
+        print(f"!!! PIPELINE: sweep_pipeline_temp failed: {exc}", flush=True)
+    return deleted
 
 
 def is_new(item_id: str, seen: dict[str, str]) -> bool:

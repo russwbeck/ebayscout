@@ -22,8 +22,10 @@ google-cloud-secret-manager==2.27.0
 google-cloud-storage==3.10.1
 google-auth==2.50.0
 
-# Gemini (image triage for /crawl10)
-google-genai==1.5.0
+# Google Drive upload (push /crawl10 primary photos into the Gemini pipeline).
+# Gemini itself is no longer called in-process — the external watcher's Gem does
+# the analysis (see GEMINI_TRIAGE_REMOVED.md). Pinned for google-auth 2.50.0.
+google-api-python-client==2.149.0
 
 # Google Sheets
 gspread==6.2.1
