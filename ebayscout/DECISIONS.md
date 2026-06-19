@@ -801,3 +801,39 @@ worker starts accepting requests
       → releases lock
       → returns 200
 ```
+
+---
+
+## 29. `/crawl <N>` consolidates `/crawl10` + `/crawl500`; two-worker Gem pipeline
+
+**`/crawl <N>` (one parameterized command).** The two fixed-size on-demand
+commands were merged into a single Slack command that takes the lot count:
+`@app.command("/crawl")` parses `N` from the command text, validates
+`1 … config.CRAWL_MAX_LOTS_CAP` (=`1000`) — junk or out-of-range gets a usage
+message and **no** run, so a fat-finger can't launch a 50k-lot paid run — then
+kicks `/internal/crawl?n=N` (synchronous in-request, CPU-funded, same pattern as
+before). `_run_crawl500()` became `_run_crawl(n)`: identical on-demand2
+**seen-aware** search (`CRAWL500_QUERIES`, Citizens/Mellon/Central-Counties),
+capped at the caller's `N`; first-run marker still allows already-seen lots on the
+first run, unseen-only thereafter. Removed: `_run_crawl10`, the `/crawl10` +
+`/crawl500` command handlers, `/internal/crawl10` + `/internal/crawl500` routes,
+and `CRAWL10_*` config (`CRAWL500_QUERIES`/`BANKS`/`MAX_LOTS` kept; `MAX_LOTS` is
+now a historical default since the cap is the user's `N`). The `/crawl` tag flows
+through `process_pipeline_lot` (detection mode, `pipeline_command` default,
+confirm-log tags). Operator must register the `/crawl` slash command in Slack
+(Request URL = existing `/slack/events`); old `/crawl10`/`/crawl500` can be removed.
+
+Rationale: one command, one mental model, with a hard 1–1000 guard — instead of
+two hardcoded sizes (and the temptation to keep adding `/crawlNNN` variants).
+
+**Two-worker Gem pipeline.** Throughput scales by running one `watcher.py` per
+Gemini account: every worker polls the same `pipeline/input/` but processes only
+its `crc32(filename) % worker_count == worker_index` shard (no overlap, no
+locking). Each worker needs its **own** Chrome profile (`user_data_dir`,
+absolute + unique) pre-authenticated to its account — Google blocks sign-in in the
+automation browser, so you log the profile in with real Chrome once and the
+watcher reuses the session. The Gem must emit **strictly valid JSON**; slogans
+with quotation marks must use single quotes inside the value (a raw `"` such as
+`PSU Dots The "I" In Win` breaks `json.loads`, leaving the lot to retry until the
+per-worker `gem_empty_limit` halt). Full schema lives in
+`PIPELINE_WATCHER_CONTRACT.md`.

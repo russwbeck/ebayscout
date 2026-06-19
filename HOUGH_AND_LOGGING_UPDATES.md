@@ -12,7 +12,7 @@ Three bots share the same core detection and logging infrastructure:
 | Bot | Command | Detection path |
 |---|---|---|
 | buttonmatcher | `/inventory`, `/sort` | `detect_buttons()` in `main__3_.py` — user supplies count/grid |
-| ebayscout | `/scout`, `/crawl500` | `image_proc.detect_and_crop()` — fully automated, no user input |
+| ebayscout | `/scout`, `/crawl <N>` | `image_proc.detect_and_crop()` — fully automated, no user input |
 | buybot | `/buy` | Single-image match; count = 1 |
 
 `match_logging.py` is shared byte-for-byte across all three. Every detection event
@@ -181,7 +181,7 @@ how close the automated count comes to what a human sees.
 
 ---
 
-## ebayscout — crawl500 person-in-the-loop
+## ebayscout — /crawl person-in-the-loop
 
 **File:** `main__4_.py`
 

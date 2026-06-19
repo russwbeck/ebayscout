@@ -6,6 +6,37 @@ the "what we did today + where it stands + what's next" layer on top.
 
 ---
 
+## 2026-06-19 — `/crawl10` + `/crawl500` consolidated into `/crawl <N>`; two-worker Gem pipeline live
+
+Branch `claude/buttonmatcher-gemini-ebayscout-vs0f83` (PR #32).
+
+**`/crawl <N>` replaces both `/crawl10` and `/crawl500`.** One Slack slash command
+now takes the lot count instead of two fixed-size endpoints:
+- `@app.command("/crawl")` parses `N` from the command text, validates
+  `1 … CRAWL_MAX_LOTS_CAP` (=`1000`; junk / out-of-range gets a usage message and
+  no run), and kicks `/internal/crawl?n=N`.
+- `_run_crawl(n)` (was `_run_crawl500`) runs the same on-demand2 **seen-aware**
+  search (Citizens/Mellon/Central-Counties), capped at the caller's `N`; the
+  first-run marker still lets the first run include already-seen lots, later runs
+  feed only unseen. `_run_crawl10` and the `/crawl10`/`/crawl500` handlers +
+  `/internal/crawl10`/`/internal/crawl500` routes were removed; `CRAWL10_*` config
+  dropped (`CRAWL500_QUERIES/BANKS` kept as the search list).
+- `/crawl 10` is the small validation run (seen-aware now, unlike the old
+  repeatable `/crawl10`); `/crawl 800` (≤1000) is the big paid run.
+- Operator step: register the `/crawl` slash command in Slack (Request URL =
+  existing `/slack/events`); the old `/crawl10`/`/crawl500` commands can be removed.
+
+**Two-worker Gem pipeline is live.** Run one `watcher.py` per Gemini account
+(crc32 sharding by `worker_index`/`worker_count`), each with its own Chrome profile
+(`user_data_dir`) pre-authenticated to that account. Full schema + the Google
+"browser not secure" login workaround + the Gem JSON-validity rule (single quotes
+inside slogans, never raw `"`) are in **`PIPELINE_WATCHER_CONTRACT.md`**.
+
+Related buttonmatcher work this session: `/reference` 404-race fix (concurrency
+guard + tolerant promotion) and the revert to manual review (`REF_FLOOR=2`).
+
+---
+
 ## 2026-06-05 — buttonmatcher scoring/logging + green/auto gate + `/crawl500`
 
 Branch `claude/ebay-scout-auto-ondemand-I8AOS`. Major convergence onto

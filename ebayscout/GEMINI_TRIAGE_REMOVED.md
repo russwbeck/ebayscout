@@ -1,5 +1,10 @@
 # Removed: direct Gemini Flash triage in `/crawl10` (preserved for restore)
 
+> **Note (2026-06-19):** `/crawl10` and `/crawl500` no longer exist — both were
+> consolidated into `/crawl <N>` (DECISIONS #29). This archive of the even older
+> inline-Gemini triage is doubly historical; the restore steps below predate the
+> command rename.
+
 This file preserves the **inline, synchronous Gemini API call** that `/crawl10`
 used before the switch to the automated Drive → Gem → GCS pipeline (see
 `HANDOFF`/the pipeline endpoints in `main.py`). The Gem now does the analysis
