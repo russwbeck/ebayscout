@@ -117,9 +117,16 @@ _SYNTHETIC_SOURCES = ("gemini_led", "gemini_recovered")
 
 def staging_candidates(auto_confirmed, circle_info, resolution, stage_conf):
     """Subset of ``auto_confirmed`` eligible for auto-staging into
-    reference/_staging: the crop is a real Hough detection (not synthetic), Gemini
-    confirmed its slogan (``resolution[crop_idx]["auto"]``), AND its CLIP
-    ``overall >= stage_conf``. Pure (plain data in, list out)."""
+    reference/_staging: the crop is a real Hough detection (not synthetic) AND
+    Gemini confirmed its slogan (``resolution[crop_idx]["auto"]`` — the
+    gemini_auto/majority/clip_fallback resolution, i.e. loose agreement with a
+    CLIP top-N candidate).
+
+    Gemini agreement is the safety signal — NOT the CLIP score (log analysis
+    Logger_5: a score threshold is the wrong lever; a 0.968 visual-twin still
+    matched wrong). ``stage_conf`` is therefore only a tiny junk floor (default
+    ~0.5), not a confidence gate; a Gemini-agreed crop with a modest CLIP score
+    is exactly the most valuable new reference. Pure (plain data in, list out)."""
     resolution  = resolution or {}
     circle_info = circle_info or []
     out = []
@@ -135,6 +142,6 @@ def staging_candidates(auto_confirmed, circle_info, resolution, stage_conf):
             continue                                   # Gemini did not confirm
         overall = b.get("overall")
         if overall is None or overall < stage_conf:
-            continue                                   # CLIP not confident enough
+            continue                                   # junk floor only (sub-~0.5 noise)
         out.append(b)
     return out
