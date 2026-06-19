@@ -156,10 +156,19 @@ def test_staging_excludes_when_gemini_not_confirmed():
     assert pc.staging_candidates(auto, [_hough()], {}, 0.85) == []
 
 
-def test_staging_excludes_below_conf():
-    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.84}]
-    out = pc.staging_candidates(auto, [_hough()], {0: {"auto": True}}, stage_conf=0.85)
-    assert out == []
+def test_staging_keeps_modest_clip_when_gemini_agrees():
+    # New save policy: agreement is the gate, not the CLIP score. A Gemini-agreed
+    # real-Hough crop with a modest score (below the OLD 0.85 gate) is now KEPT —
+    # these low-CLIP-but-agreed crops are the most valuable new references.
+    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.70}]
+    out = pc.staging_candidates(auto, [_hough()], {0: {"auto": True}}, stage_conf=0.50)
+    assert [b["crop_idx"] for b in out] == [0]
+
+
+def test_staging_excludes_only_junk_below_sanity_floor():
+    # The remaining score check is only a tiny junk floor (~0.5), not a gate.
+    junk = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.40}]
+    assert pc.staging_candidates(junk, [_hough()], {0: {"auto": True}}, stage_conf=0.50) == []
 
 
 def test_staging_handles_missing_overall_and_bad_index():
