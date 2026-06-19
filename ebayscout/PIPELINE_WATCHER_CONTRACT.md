@@ -58,6 +58,22 @@ tokens, so it doesn't churn the whole queue into empties:
 - At `gem_empty_limit` (default **5**) consecutive failures it logs a halt line
   and exits; if `slack_webhook_url` is set it also posts the halt to Slack.
 
+## Multiple workers (one Gem per account → N× throughput)
+A 500-lot run is ~8–13 h on one Gem. With several Gemini accounts (each its own
+token budget — e.g. a family plan), run **one watcher per account** to cut
+wall-clock roughly N×. The watcher self-partitions: every worker polls the **same**
+input prefixes but processes only its deterministic shard
+(`crc32(filename) % worker_count == worker_index`), so the lots are split with **no
+overlap, no locking, and no feed change**. Set `worker_count`/`worker_index` in each
+watcher's config.json (defaults `1`/`0` = single worker owns everything). Each
+worker's Gem-exhaustion failsafe is independent: if one account runs dry, that
+worker halts and its shard pauses (queued + un-`seen`) while the others keep going;
+restart it after refilling to resume. Per worker you need a **separate Chrome
+profile dir** (`user_data_dir`) and ideally a separate machine or enough headroom
+for N browsers. ebayscout (single Cloud Run instance, 8 gunicorn threads) handles
+the concurrent results — `/pipeline/notify` dedups by object name and the
+scan_log/seen writes are lock-guarded.
+
 ## Config the operator must set
 | Where | Key | Value |
 |---|---|---|
@@ -67,6 +83,8 @@ tokens, so it doesn't churn the whole queue into empties:
 | watcher config | ebayscout pipeline secret | same value as `PIPELINE_SHARED_SECRET` |
 | watcher config | `gem_empty_limit` | *(optional)* consecutive Gem failures before halt (default `5`) |
 | watcher config | `slack_webhook_url` | *(optional)* Slack incoming-webhook URL for the halt ping |
+| watcher config | `worker_count` | *(optional)* total number of parallel watchers (default `1`) |
+| watcher config | `worker_index` | *(optional)* this watcher's index, `0..worker_count-1` (default `0`) |
 
 ebayscout reaches GCS with its runtime (compute) SA — no Drive folder/SA config
 is needed anymore. `DRIVE_FOLDER_ID` / `DRIVE_SA_JSON` are no longer used by the

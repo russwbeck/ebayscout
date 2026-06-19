@@ -105,6 +105,11 @@ _scan_lock = threading.Lock()
 # is marked seen on confirmation, possibly from overlapping result threads).
 _seen_lock = threading.Lock()
 
+# Guards the per-result scan_log.jsonl append (a GCS read-modify-write). With
+# several Gem workers feeding results concurrently, unguarded appends would clobber
+# each other's lines; this serializes them within the single ebayscout instance.
+_scanlog_lock = threading.Lock()
+
 # --- Gemini → GCS pipeline state (Drive watcher → Gem → GCS → /pipeline/notify) -
 # Shared secret the watcher presents on /pipeline/notify (watcher-direct path).
 _PIPELINE_SHARED_SECRET = os.environ.get("PIPELINE_SHARED_SECRET", "")
@@ -457,6 +462,25 @@ def _gcs_blob_to_file(name: str, dest: str, bucket_name: str = config.BUCKET_NAM
     storage.Client().bucket(bucket_name).blob(name).download_to_filename(dest)
 
 
+def _delete_pipeline_output(*names: str | None, bucket_name: str = config.BUCKET_NAME) -> None:
+    """Delete the pipeline/output image + .response.json once a lot is fully
+    processed, so the shared GCS bucket doesn't fill up. Best-effort per object;
+    a failure here never affects the result that was already posted."""
+    from google.cloud import storage
+    try:
+        bucket = storage.Client().bucket(bucket_name)
+    except Exception as exc:
+        print(f">>> PIPELINE: output cleanup skipped (GCS client): {exc}", flush=True)
+        return
+    for name in names:
+        if not name:
+            continue
+        try:
+            bucket.blob(name).delete()
+        except Exception as exc:
+            print(f">>> PIPELINE: output cleanup skip {name}: {exc}", flush=True)
+
+
 def _pipeline_key_from_image(image_name: str | None) -> str | None:
     """Recover the correlation key from pipeline/output/<prefix><key>.png."""
     if not image_name:
@@ -602,6 +626,43 @@ def internal_pipelinetest():
     return jsonify({"status": "ok", "job_id": job_id}), 200
 
 
+def _stage_crop_fullres(src_img, det_crop, ci, det_w, det_h, roi_used):
+    """Re-cut one reference crop from the FULL-RES source image instead of the
+    ~800px detection working copy, so auto-staged reference crops aren't
+    downscaled (detection itself stays at 800px — see _prepare_detection_image).
+
+    `ci` is the crop's circle_info entry (detection-space geometry); `det_w/det_h`
+    are the detection image dims. Maps the crop's box back to `src_img` by the
+    uniform downscale factor and re-crops. Fail-safe: returns the original
+    `det_crop` whenever a clean mapping isn't available (ROI-retry frame, missing
+    geometry, degenerate box), so this can never produce a worse crop than today.
+    """
+    try:
+        if roi_used or not det_w or not det_h:
+            return det_crop
+        H, W = src_img.shape[:2]
+        if H == det_h and W == det_w:
+            return det_crop                      # no downscale happened
+        sx, sy = W / det_w, H / det_h
+        if ci.get("shape") == "rect":
+            x1, y1, x2, y2 = ci["x1"], ci["y1"], ci["x2"], ci["y2"]
+        else:
+            cx, cy = ci.get("x"), ci.get("y")
+            if cx is None or cy is None:
+                return det_crop
+            ch, cw = det_crop.shape[:2]          # preserve detect's framing, scaled
+            x1, y1 = cx - cw / 2.0, cy - ch / 2.0
+            x2, y2 = x1 + cw, y1 + ch
+        X1, Y1 = max(0, int(round(x1 * sx))), max(0, int(round(y1 * sy)))
+        X2, Y2 = min(W, int(round(x2 * sx))), min(H, int(round(y2 * sy)))
+        if X2 - X1 < 8 or Y2 - Y1 < 8:
+            return det_crop
+        hi = src_img[Y1:Y2, X1:X2]
+        return hi if hi.size else det_crop
+    except Exception:
+        return det_crop
+
+
 def process_pipeline_lot(job_id: str) -> None:
     """Consume one Gemini-pipeline result: download image+JSON, run independent
     Hough detection + Gemini reconciliation, CLIP match, then confirm slogans
@@ -683,6 +744,7 @@ def process_pipeline_lot(job_id: str) -> None:
     if expected is None:
         print(f">>> PIPELINE: no buttons found in {image_name} — skipped.", flush=True)
         seen_items.delete_pending_context(key) if key else None
+        _delete_pipeline_output(response_name, image_name)
         pending_jobs.pop(job_id, None)
         return
     _diag = {}
@@ -706,6 +768,8 @@ def process_pipeline_lot(job_id: str) -> None:
         circle_info = list(circle_info) + list(rec_info)
     if not crops:
         print(f">>> PIPELINE: no crops for {image_name} after reconcile — skipped.", flush=True)
+        seen_items.delete_pending_context(key) if key else None
+        _delete_pipeline_output(response_name, image_name)
         pending_jobs.pop(job_id, None)
         return
 
@@ -739,10 +803,8 @@ def process_pipeline_lot(job_id: str) -> None:
             if k not in needed_hits or (overall or 0) > needed_hits[k].get("overall", 0):
                 needed_hits[k] = enriched
 
-    # total matched lot value + undervalued-deal flag (pure helper)
-    def _price_of(_year, _slogan):
-        _ps, _, _, _ = sheets_client.get_buy_decision(_year, _slogan, buy_rules)
-        return sheets_client.parse_price(_ps)
+    # total matched lot value (every confirmed button has a sheet price, needed
+    # or not) + undervalued-deal flag (pure helper)
     lot_value, undervalued, margin = pipeline_classify.lot_value_and_deal(
         auto_confirmed, _price_of, asking)
 
@@ -753,9 +815,13 @@ def process_pipeline_lot(job_id: str) -> None:
     stageable = pipeline_classify.staging_candidates(
         auto_confirmed, circle_info, resolution, config.STAGE_CONF)
     manifest_crops: list[dict] = []
+    _roi_used = bool(_diag.get("roi_retry"))
     for b in stageable:
         try:
-            ok, buf = cv2.imencode(".jpg", crops[b["crop_idx"]])
+            # Stage from the full-res source, not the ~800px detection copy.
+            hi = _stage_crop_fullres(image_bgr, crops[b["crop_idx"]],
+                                     circle_info[b["crop_idx"]], _pw, _ph, _roi_used)
+            ok, buf = cv2.imencode(".jpg", hi, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
             if not ok:
                 continue
             gcs_name = seen_items.stage_pipeline_crop(job_id, b["n"], buf.tobytes())
@@ -782,11 +848,12 @@ def process_pipeline_lot(job_id: str) -> None:
     if needed_hits:
         needed = list(needed_hits.values())
         try:
-            needed_value = sum(
-                sheets_client.parse_price(m["max_price_single"]) for m in needed)
+            # Report the value of the WHOLE lot (all confirmed buttons), not just
+            # the needed ones — `lot_value` above already sums every confirmed
+            # button's sheet price.
             notifier.send_needed_alert(
                 slack_token=_slack_token, channel=_channel_id, listing=listing,
-                needed_buttons=needed, asking_price=asking or 0.0, lot_value=needed_value)
+                needed_buttons=needed, asking_price=asking or 0.0, lot_value=lot_value)
         except Exception as exc:
             print(f"!!! PIPELINE: needed alert failed for {item_id}: {exc}", flush=True)
     if undervalued:
@@ -818,7 +885,8 @@ def process_pipeline_lot(job_id: str) -> None:
             best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
                          if needed_hits else None),
         )
-        seen_items.append_scan_log([record])
+        with _scanlog_lock:                  # serialize the GCS read-modify-write
+            seen_items.append_scan_log([record])
     except Exception as exc:
         print(f"!!! PIPELINE: scan_log append failed for {item_id}: {exc}", flush=True)
 
@@ -881,6 +949,8 @@ def process_pipeline_lot(job_id: str) -> None:
 
     if key:
         seen_items.delete_pending_context(key)
+    # Free the bucket: the image + .response.json are fully consumed now.
+    _delete_pipeline_output(response_name, image_name)
     pending_jobs.pop(job_id, None)
 
 
@@ -1184,6 +1254,14 @@ def _check_needed_hit(top: dict, buy_rules: dict) -> dict | None:
     enriched["max_price_single"] = price_single
     enriched["amount_needed"]    = amount_needed
     return enriched
+
+
+def _price_of(year, slogan) -> float:
+    """Max single-sale price for one button from the buy sheet (0.0 if absent).
+    EVERY button in the sheet has a price, needed or not — so this values the
+    WHOLE lot, not just the needed buttons."""
+    price_single, _, _, _ = sheets_client.get_buy_decision(year, slogan, buy_rules)
+    return sheets_client.parse_price(price_single)
 
 
 def _evaluate_listing(
@@ -1946,9 +2024,10 @@ def _run_daily_scan(
             else:
                 listing_alerted = False
                 if needed_buttons:
-                    lot_value = sum(
-                        sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
-                    )
+                    # Value of the WHOLE lot (every confirmed button has a sheet
+                    # price, needed or not), not just the needed buttons.
+                    lot_value, _, _ = pipeline_classify.lot_value_and_deal(
+                        confirmed, _price_of, None)
                     print(
                         f">>> TITLE: [needed {best_score_seen:.2f} "
                         f"{needed_buttons[0]['year']} {needed_buttons[0]['slogan']}] [{seller}] {title}",
