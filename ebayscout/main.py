@@ -739,10 +739,8 @@ def process_pipeline_lot(job_id: str) -> None:
             if k not in needed_hits or (overall or 0) > needed_hits[k].get("overall", 0):
                 needed_hits[k] = enriched
 
-    # total matched lot value + undervalued-deal flag (pure helper)
-    def _price_of(_year, _slogan):
-        _ps, _, _, _ = sheets_client.get_buy_decision(_year, _slogan, buy_rules)
-        return sheets_client.parse_price(_ps)
+    # total matched lot value (every confirmed button has a sheet price, needed
+    # or not) + undervalued-deal flag (pure helper)
     lot_value, undervalued, margin = pipeline_classify.lot_value_and_deal(
         auto_confirmed, _price_of, asking)
 
@@ -782,11 +780,12 @@ def process_pipeline_lot(job_id: str) -> None:
     if needed_hits:
         needed = list(needed_hits.values())
         try:
-            needed_value = sum(
-                sheets_client.parse_price(m["max_price_single"]) for m in needed)
+            # Report the value of the WHOLE lot (all confirmed buttons), not just
+            # the needed ones — `lot_value` above already sums every confirmed
+            # button's sheet price.
             notifier.send_needed_alert(
                 slack_token=_slack_token, channel=_channel_id, listing=listing,
-                needed_buttons=needed, asking_price=asking or 0.0, lot_value=needed_value)
+                needed_buttons=needed, asking_price=asking or 0.0, lot_value=lot_value)
         except Exception as exc:
             print(f"!!! PIPELINE: needed alert failed for {item_id}: {exc}", flush=True)
     if undervalued:
@@ -1184,6 +1183,14 @@ def _check_needed_hit(top: dict, buy_rules: dict) -> dict | None:
     enriched["max_price_single"] = price_single
     enriched["amount_needed"]    = amount_needed
     return enriched
+
+
+def _price_of(year, slogan) -> float:
+    """Max single-sale price for one button from the buy sheet (0.0 if absent).
+    EVERY button in the sheet has a price, needed or not — so this values the
+    WHOLE lot, not just the needed buttons."""
+    price_single, _, _, _ = sheets_client.get_buy_decision(year, slogan, buy_rules)
+    return sheets_client.parse_price(price_single)
 
 
 def _evaluate_listing(
@@ -1946,9 +1953,10 @@ def _run_daily_scan(
             else:
                 listing_alerted = False
                 if needed_buttons:
-                    lot_value = sum(
-                        sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
-                    )
+                    # Value of the WHOLE lot (every confirmed button has a sheet
+                    # price, needed or not), not just the needed buttons.
+                    lot_value, _, _ = pipeline_classify.lot_value_and_deal(
+                        confirmed, _price_of, None)
                     print(
                         f">>> TITLE: [needed {best_score_seen:.2f} "
                         f"{needed_buttons[0]['year']} {needed_buttons[0]['slogan']}] [{seller}] {title}",
