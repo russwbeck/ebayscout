@@ -105,6 +105,11 @@ _scan_lock = threading.Lock()
 # is marked seen on confirmation, possibly from overlapping result threads).
 _seen_lock = threading.Lock()
 
+# Guards the per-result scan_log.jsonl append (a GCS read-modify-write). With
+# several Gem workers feeding results concurrently, unguarded appends would clobber
+# each other's lines; this serializes them within the single ebayscout instance.
+_scanlog_lock = threading.Lock()
+
 # --- Gemini → GCS pipeline state (Drive watcher → Gem → GCS → /pipeline/notify) -
 # Shared secret the watcher presents on /pipeline/notify (watcher-direct path).
 _PIPELINE_SHARED_SECRET = os.environ.get("PIPELINE_SHARED_SECRET", "")
@@ -817,7 +822,8 @@ def process_pipeline_lot(job_id: str) -> None:
             best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
                          if needed_hits else None),
         )
-        seen_items.append_scan_log([record])
+        with _scanlog_lock:                  # serialize the GCS read-modify-write
+            seen_items.append_scan_log([record])
     except Exception as exc:
         print(f"!!! PIPELINE: scan_log append failed for {item_id}: {exc}", flush=True)
 
