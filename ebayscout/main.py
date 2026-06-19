@@ -607,6 +607,43 @@ def internal_pipelinetest():
     return jsonify({"status": "ok", "job_id": job_id}), 200
 
 
+def _stage_crop_fullres(src_img, det_crop, ci, det_w, det_h, roi_used):
+    """Re-cut one reference crop from the FULL-RES source image instead of the
+    ~800px detection working copy, so auto-staged reference crops aren't
+    downscaled (detection itself stays at 800px — see _prepare_detection_image).
+
+    `ci` is the crop's circle_info entry (detection-space geometry); `det_w/det_h`
+    are the detection image dims. Maps the crop's box back to `src_img` by the
+    uniform downscale factor and re-crops. Fail-safe: returns the original
+    `det_crop` whenever a clean mapping isn't available (ROI-retry frame, missing
+    geometry, degenerate box), so this can never produce a worse crop than today.
+    """
+    try:
+        if roi_used or not det_w or not det_h:
+            return det_crop
+        H, W = src_img.shape[:2]
+        if H == det_h and W == det_w:
+            return det_crop                      # no downscale happened
+        sx, sy = W / det_w, H / det_h
+        if ci.get("shape") == "rect":
+            x1, y1, x2, y2 = ci["x1"], ci["y1"], ci["x2"], ci["y2"]
+        else:
+            cx, cy = ci.get("x"), ci.get("y")
+            if cx is None or cy is None:
+                return det_crop
+            ch, cw = det_crop.shape[:2]          # preserve detect's framing, scaled
+            x1, y1 = cx - cw / 2.0, cy - ch / 2.0
+            x2, y2 = x1 + cw, y1 + ch
+        X1, Y1 = max(0, int(round(x1 * sx))), max(0, int(round(y1 * sy)))
+        X2, Y2 = min(W, int(round(x2 * sx))), min(H, int(round(y2 * sy)))
+        if X2 - X1 < 8 or Y2 - Y1 < 8:
+            return det_crop
+        hi = src_img[Y1:Y2, X1:X2]
+        return hi if hi.size else det_crop
+    except Exception:
+        return det_crop
+
+
 def process_pipeline_lot(job_id: str) -> None:
     """Consume one Gemini-pipeline result: download image+JSON, run independent
     Hough detection + Gemini reconciliation, CLIP match, then confirm slogans
@@ -756,9 +793,13 @@ def process_pipeline_lot(job_id: str) -> None:
     stageable = pipeline_classify.staging_candidates(
         auto_confirmed, circle_info, resolution, config.STAGE_CONF)
     manifest_crops: list[dict] = []
+    _roi_used = bool(_diag.get("roi_retry"))
     for b in stageable:
         try:
-            ok, buf = cv2.imencode(".jpg", crops[b["crop_idx"]])
+            # Stage from the full-res source, not the ~800px detection copy.
+            hi = _stage_crop_fullres(image_bgr, crops[b["crop_idx"]],
+                                     circle_info[b["crop_idx"]], _pw, _ph, _roi_used)
+            ok, buf = cv2.imencode(".jpg", hi, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
             if not ok:
                 continue
             gcs_name = seen_items.stage_pipeline_crop(job_id, b["n"], buf.tobytes())
