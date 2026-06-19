@@ -462,6 +462,25 @@ def _gcs_blob_to_file(name: str, dest: str, bucket_name: str = config.BUCKET_NAM
     storage.Client().bucket(bucket_name).blob(name).download_to_filename(dest)
 
 
+def _delete_pipeline_output(*names: str | None, bucket_name: str = config.BUCKET_NAME) -> None:
+    """Delete the pipeline/output image + .response.json once a lot is fully
+    processed, so the shared GCS bucket doesn't fill up. Best-effort per object;
+    a failure here never affects the result that was already posted."""
+    from google.cloud import storage
+    try:
+        bucket = storage.Client().bucket(bucket_name)
+    except Exception as exc:
+        print(f">>> PIPELINE: output cleanup skipped (GCS client): {exc}", flush=True)
+        return
+    for name in names:
+        if not name:
+            continue
+        try:
+            bucket.blob(name).delete()
+        except Exception as exc:
+            print(f">>> PIPELINE: output cleanup skip {name}: {exc}", flush=True)
+
+
 def _pipeline_key_from_image(image_name: str | None) -> str | None:
     """Recover the correlation key from pipeline/output/<prefix><key>.png."""
     if not image_name:
@@ -725,6 +744,7 @@ def process_pipeline_lot(job_id: str) -> None:
     if expected is None:
         print(f">>> PIPELINE: no buttons found in {image_name} — skipped.", flush=True)
         seen_items.delete_pending_context(key) if key else None
+        _delete_pipeline_output(response_name, image_name)
         pending_jobs.pop(job_id, None)
         return
     _diag = {}
@@ -748,6 +768,8 @@ def process_pipeline_lot(job_id: str) -> None:
         circle_info = list(circle_info) + list(rec_info)
     if not crops:
         print(f">>> PIPELINE: no crops for {image_name} after reconcile — skipped.", flush=True)
+        seen_items.delete_pending_context(key) if key else None
+        _delete_pipeline_output(response_name, image_name)
         pending_jobs.pop(job_id, None)
         return
 
@@ -927,6 +949,8 @@ def process_pipeline_lot(job_id: str) -> None:
 
     if key:
         seen_items.delete_pending_context(key)
+    # Free the bucket: the image + .response.json are fully consumed now.
+    _delete_pipeline_output(response_name, image_name)
     pending_jobs.pop(job_id, None)
 
 
