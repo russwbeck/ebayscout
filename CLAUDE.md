@@ -2,11 +2,13 @@
 
 Flask + Slack Bolt service on Google Cloud Run (`ebayscout/main.py`). It (1) runs
 a daily eBay/Etsy scan that flags listings likely to contain a **needed** Penn
-State gameday button (`amount_needed > 0`) for human review, and (2) serves a
+State gameday button (`amount_needed > 0`) for human review, (2) serves a
 manual `/scout` mode where a user uploads a photo and gets a CLIP-based lot
-valuation. Full design history and rationale live in `ebayscout/DECISIONS.md` —
-read it before changing deploy/gunicorn/CPU behavior. For the latest status and
-next steps, start with `ebayscout/HANDOFF.md`.
+valuation, and (3) runs `/crawl <N>` — an on-demand, seen-aware eBay search that
+feeds up to N (≤1000) lots through the two-worker Gemini→GCS pipeline (see
+`ebayscout/PIPELINE_WATCHER_CONTRACT.md`). Full design history and rationale live
+in `ebayscout/DECISIONS.md` — read it before changing deploy/gunicorn/CPU
+behavior. For the latest status and next steps, start with `ebayscout/HANDOFF.md`.
 
 ## Hard constraints (do not violate)
 

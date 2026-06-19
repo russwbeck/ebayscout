@@ -43,7 +43,7 @@ ebayscout posts only **deals** (a needed button, or matched value > asking),
 the `gcs_input_prefix` poller + `notify_pipeline` routing.)
 
 ## Gem-exhaustion failsafe (watcher.py)
-For the multi-hour `/crawl500` run, the watcher self-halts if the Gem runs out of
+For a big `/crawl <N>` run, the watcher self-halts if the Gem runs out of
 tokens, so it doesn't churn the whole queue into empties:
 - Failure is detected by **JSON-parseability** — a healthy Gem returns the
   prompt's JSON object; anything that doesn't parse (or the response-timeout
@@ -58,21 +58,56 @@ tokens, so it doesn't churn the whole queue into empties:
 - At `gem_empty_limit` (default **5**) consecutive failures it logs a halt line
   and exits; if `slack_webhook_url` is set it also posts the halt to Slack.
 
-## Multiple workers (one Gem per account → N× throughput)
-A 500-lot run is ~8–13 h on one Gem. With several Gemini accounts (each its own
-token budget — e.g. a family plan), run **one watcher per account** to cut
-wall-clock roughly N×. The watcher self-partitions: every worker polls the **same**
-input prefixes but processes only its deterministic shard
-(`crc32(filename) % worker_count == worker_index`), so the lots are split with **no
-overlap, no locking, and no feed change**. Set `worker_count`/`worker_index` in each
-watcher's config.json (defaults `1`/`0` = single worker owns everything). Each
-worker's Gem-exhaustion failsafe is independent: if one account runs dry, that
-worker halts and its shard pauses (queued + un-`seen`) while the others keep going;
-restart it after refilling to resume. Per worker you need a **separate Chrome
-profile dir** (`user_data_dir`) and ideally a separate machine or enough headroom
-for N browsers. ebayscout (single Cloud Run instance, 8 gunicorn threads) handles
-the concurrent results — `/pipeline/notify` dedups by object name and the
-scan_log/seen writes are lock-guarded.
+## Multiple workers (one Gemini account per worker → N× throughput)
+A big `/crawl <N>` run is ~1–2 min/Gem, so N lots ≈ N×(1–2 min) on a single Gem.
+With several Gemini accounts (each its own token budget — e.g. a family plan), run
+**one `watcher.py` process per account** ("worker") to cut wall-clock roughly N×.
+Every worker polls the **same** input prefixes but processes only its
+deterministic shard (`crc32(filename) % worker_count == worker_index`), so lots
+split with **no overlap, no locking, and no feed change**. `worker_count=1` /
+`worker_index=0` (defaults) = a single worker owns everything.
+
+**Per-worker config (`workerN.json`).** The files are identical except the three
+★ fields, which must be **unique per worker**:
+
+| Key | Value |
+|---|---|
+| `worker_count` | total parallel workers (e.g. `2`) — **same** in every config |
+| `worker_index` ★ | this worker's index, `0 … worker_count-1` |
+| `user_data_dir` ★ | absolute path to this worker's **own** Chrome profile dir (no `~`); Chrome locks a profile to one process, so it must not be shared |
+| `gem_url` ★ | this account's Gem URL |
+| `gcs_bucket` | `60d488c5-9c8e-4acc-aac-button-data` |
+| `gcs_input_prefix` / `gcs_prefix` | `pipeline/input` / `pipeline/output` |
+| `ebayscout_notify_url` | `https://<ebayscout-service>/pipeline/notify` |
+| `pipeline_shared_secret` | the shared `PIPELINE_SHARED_SECRET` (both services pull the same secret; the optional `ebayscout_pipeline_shared_secret` falls back to it, so it can be omitted) |
+| `service_account` | full SA JSON (identical in every config) |
+| `gem_empty_limit` | consecutive Gem failures before this worker self-halts (default `5`) |
+
+Two-worker example: `worker0.json` → `worker_index 0`, `…/gem-profile0`;
+`worker1.json` → `worker_index 1`, `…/gem-profile1`; both `worker_count 2`. The
+profile-folder name need not match the index — only **uniqueness** and the config
+pointing at the **right logged-in folder** matter.
+
+**One-time login per profile.** Google blocks sign-in inside the
+automation-controlled browser ("this browser may not be secure"), so
+pre-authenticate each profile with real Chrome and let the watcher reuse the saved
+session: with all other Chrome closed, run
+`google-chrome --user-data-dir=<that worker's user_data_dir>`, sign into **that
+worker's account**, open its Gem once, fully quit. Then launch the workers as
+separate processes — `python3 watcher.py --config worker0.json` and
+`… --config worker1.json` (not `--login`).
+
+**Gem output must be valid JSON.** A reply that doesn't parse leaves the lot
+queued for retry and counts toward the halt limit. Slogans that contain quotation
+marks must use single quotes (`'`) inside the value — a raw `"` inside a string
+(e.g. `PSU Dots The "I" In Win`) makes the whole object invalid — so the Gem
+prompt must enforce single-quotes-inside.
+
+Each worker's Gem-exhaustion failsafe is independent: if one account runs dry it
+halts and its shard pauses (queued + un-`seen`) while the others keep going;
+restart it after the quota resets. ebayscout (single Cloud Run instance, 8
+gunicorn threads) handles the concurrent results — `/pipeline/notify` dedups by
+object name and the scan_log/seen writes are lock-guarded.
 
 ## Config the operator must set
 | Where | Key | Value |
