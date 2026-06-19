@@ -84,3 +84,57 @@ def classify_crops(diagnostics, resolution, gemini_ok, job_id):
         })
 
     return auto_confirmed, yellow
+
+
+def lot_value_and_deal(auto_confirmed, price_of, asking):
+    """Total matched lot value + the undervalued-deal flag.
+
+    ``price_of(year, slogan) -> float`` returns a button's max single-sale price
+    (0.0 when no buy-rule/price exists for it). Kept pure by injection — main
+    wires ``price_of`` to ``sheets_client.get_buy_decision`` + ``parse_price``;
+    tests pass a stub.
+
+    Returns ``(lot_value, undervalued, margin)`` where
+    ``undervalued = asking > 0 and lot_value > asking`` and
+    ``margin = lot_value - asking``.
+    """
+    lot_value = 0.0
+    for b in auto_confirmed:
+        try:
+            lot_value += float(price_of(b.get("year"), b.get("slogan")) or 0.0)
+        except Exception:
+            pass
+    ask = float(asking or 0.0)
+    return lot_value, (ask > 0 and lot_value > ask), lot_value - ask
+
+
+# Crops auto-staged into the reference DB must be REAL Hough detections — a
+# Gemini-synthesised box (count collapsed to a grid, or recovered from x/y) is
+# tagged with one of these `source` values; a genuine detected circle/rect has no
+# `source` key at all.
+_SYNTHETIC_SOURCES = ("gemini_led", "gemini_recovered")
+
+
+def staging_candidates(auto_confirmed, circle_info, resolution, stage_conf):
+    """Subset of ``auto_confirmed`` eligible for auto-staging into
+    reference/_staging: the crop is a real Hough detection (not synthetic), Gemini
+    confirmed its slogan (``resolution[crop_idx]["auto"]``), AND its CLIP
+    ``overall >= stage_conf``. Pure (plain data in, list out)."""
+    resolution  = resolution or {}
+    circle_info = circle_info or []
+    out = []
+    for b in auto_confirmed:
+        idx = b.get("crop_idx")
+        if not (isinstance(idx, int) and 0 <= idx < len(circle_info)):
+            continue                                   # no detection entry — can't verify origin
+        ci = circle_info[idx] or {}
+        if ci.get("source") in _SYNTHETIC_SOURCES:
+            continue                                   # synthetic box, not real Hough
+        res = resolution.get(idx)
+        if not (res and res.get("auto")):
+            continue                                   # Gemini did not confirm
+        overall = b.get("overall")
+        if overall is None or overall < stage_conf:
+            continue                                   # CLIP not confident enough
+        out.append(b)
+    return out

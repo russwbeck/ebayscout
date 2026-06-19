@@ -91,3 +91,79 @@ def test_green_autoconfirms_even_in_fallback():
 def test_empty_diagnostics():
     auto, yellow = pc.classify_crops([], {}, gemini_ok=True, job_id="j")
     assert auto == [] and yellow == []
+
+
+# --- lot_value_and_deal -----------------------------------------------------
+
+_PRICES = {("1984", "Stop Stanford"): 30.0, ("1990", "Beat Pitt"): 12.0}
+
+
+def _price_of(year, slogan):
+    return _PRICES.get((year, slogan), 0.0)
+
+
+def test_lot_value_sums_matched_prices():
+    auto = [{"year": "1984", "slogan": "Stop Stanford"},
+            {"year": "1990", "slogan": "Beat Pitt"}]
+    value, undervalued, margin = pc.lot_value_and_deal(auto, _price_of, asking=25.0)
+    assert value == 42.0
+    assert undervalued is True
+    assert margin == 17.0
+
+
+def test_lot_value_not_undervalued_when_asking_exceeds_value():
+    auto = [{"year": "1990", "slogan": "Beat Pitt"}]   # 12.0
+    value, undervalued, margin = pc.lot_value_and_deal(auto, _price_of, asking=25.0)
+    assert value == 12.0 and undervalued is False and margin == -13.0
+
+
+def test_lot_value_unpriced_buttons_count_zero():
+    auto = [{"year": "2099", "slogan": "Unknown"}]      # no price rule
+    value, undervalued, _ = pc.lot_value_and_deal(auto, _price_of, asking=5.0)
+    assert value == 0.0 and undervalued is False
+
+
+def test_lot_value_no_asking_never_undervalued():
+    auto = [{"year": "1984", "slogan": "Stop Stanford"}]
+    value, undervalued, _ = pc.lot_value_and_deal(auto, _price_of, asking=None)
+    assert value == 30.0 and undervalued is False
+
+
+# --- staging_candidates -----------------------------------------------------
+
+def _hough(): return {"shape": "circle", "x": 1, "y": 1, "r": 5}          # real detection
+def _synthetic(): return {"shape": "circle", "source": "gemini_recovered"}  # not real
+
+
+def test_staging_includes_hough_gemini_confirmed_high_conf():
+    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.90}]
+    circle_info = [_hough()]
+    resolution  = {0: {"auto": True}}
+    out = pc.staging_candidates(auto, circle_info, resolution, stage_conf=0.85)
+    assert [b["crop_idx"] for b in out] == [0]
+
+
+def test_staging_excludes_synthetic_crop():
+    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.95}]
+    out = pc.staging_candidates(auto, [_synthetic()], {0: {"auto": True}}, stage_conf=0.85)
+    assert out == []
+
+
+def test_staging_excludes_when_gemini_not_confirmed():
+    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.95}]
+    # res.auto False (clip-green confirmed), and also the no-resolution case.
+    assert pc.staging_candidates(auto, [_hough()], {0: {"auto": False}}, 0.85) == []
+    assert pc.staging_candidates(auto, [_hough()], {}, 0.85) == []
+
+
+def test_staging_excludes_below_conf():
+    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.84}]
+    out = pc.staging_candidates(auto, [_hough()], {0: {"auto": True}}, stage_conf=0.85)
+    assert out == []
+
+
+def test_staging_handles_missing_overall_and_bad_index():
+    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": None},
+            {"crop_idx": 9, "year": "1990", "slogan": "Y", "overall": 0.99}]
+    out = pc.staging_candidates(auto, [_hough()], {0: {"auto": True}, 9: {"auto": True}}, 0.85)
+    assert out == []   # first: no overall; second: crop_idx out of range

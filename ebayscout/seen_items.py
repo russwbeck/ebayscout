@@ -159,12 +159,13 @@ def mark_ondemand2_first_run_done(bucket_name: str = config.BUCKET_NAME) -> bool
 # ---------------------------------------------------------------------------
 # Gemini pipeline correlation + crop staging (Drive watcher → Gem → GCS)
 # ---------------------------------------------------------------------------
-# /crawl10 uploads each lot's primary photo to Drive under a random correlation
-# `key`; the watcher's Gem writes the result to pipeline/output/ and POSTs it
-# back to /pipeline/notify. The listing context is persisted here (keyed by the
-# same `key`) so the async result can be correlated even after a cold start.
-# Auto-confirmed crops are held in a temp prefix until the Slack Yes/No vote
-# either promotes them to the shared reference/_staging/ area or deletes them.
+# /crawl10 + /crawl500 upload each lot's primary photo to the GCS input prefix
+# under a random correlation `key`; the watcher's Gem writes the result to
+# pipeline/output/ and POSTs it back to /pipeline/notify. The listing context is
+# persisted here (keyed by the same `key`) so the async result can be correlated
+# even after a cold start. The surest auto-confirmed crops are written to a temp
+# prefix and immediately promoted into the shared reference/_staging/ area
+# (auto-staging) for buttonmatcher's /reference review — no Yes/No vote.
 
 def save_pending_context(key: str, ctx: dict,
                          bucket_name: str = config.BUCKET_NAME) -> bool:
@@ -237,36 +238,6 @@ def stage_pipeline_crop(job_id: str, n: int, jpg_bytes: bytes,
         return name
     except Exception as exc:
         print(f"!!! PIPELINE: stage_pipeline_crop({job_id},{n}) failed: {exc}", flush=True)
-        return None
-
-
-def save_crops_manifest(job_id: str, manifest: dict,
-                        bucket_name: str = config.BUCKET_NAME) -> bool:
-    """Persist the job→crops manifest used by the Yes/No reference vote."""
-    try:
-        client = storage.Client()
-        blob   = client.bucket(bucket_name).blob(
-            f"{config.PIPELINE_CROPS_PREFIX}{job_id}/manifest.json")
-        blob.upload_from_string(json.dumps(manifest, indent=2),
-                                content_type="application/json")
-        return True
-    except Exception as exc:
-        print(f"!!! PIPELINE: save_crops_manifest({job_id}) failed: {exc}", flush=True)
-        return False
-
-
-def load_crops_manifest(job_id: str,
-                        bucket_name: str = config.BUCKET_NAME) -> dict | None:
-    """Read back a job→crops manifest; None if missing/unreadable."""
-    try:
-        client = storage.Client()
-        blob   = client.bucket(bucket_name).blob(
-            f"{config.PIPELINE_CROPS_PREFIX}{job_id}/manifest.json")
-        if not blob.exists():
-            return None
-        return json.loads(blob.download_as_text())
-    except Exception as exc:
-        print(f"!!! PIPELINE: load_crops_manifest({job_id}) failed: {exc}", flush=True)
         return None
 
 
