@@ -62,3 +62,36 @@ def test_sample_photo_regression():
     assert dgate.gate_decision(
         confidence=0.8608, layout_conf=1.0, selected=4, est_rows=2, est_cols=2
     ) == dgate.GATE_AUTO
+def test_hough_small_lot_acceptance_floor():
+    """Locks the Hough acceptance floor in detect.py / detect_pipeline.py
+    (`_enough or _small_complete`). That gate lives inline in the cv2/numpy
+    detection path (not importable without cv2), so this mirrors its exact
+    predicate as an executable spec — keep the two in sync.
+
+    Logger_5 finding: the old hard floor of 6 forced every <=5-button lot onto
+    the projection-grid fallback even when Hough cleanly found the buttons. The
+    fix accepts a FEW-button Hough result that already matches expected (within
+    1), leaving the >=6 grid branch untouched.
+    """
+    def accepts(cleaned, expected):
+        _enough = cleaned >= max(6, expected - 4)
+        _small_complete = expected <= 5 and cleaned >= max(1, expected - 1)
+        return _enough or _small_complete
+
+    # NEW: small lots accepted when Hough is essentially complete
+    assert accepts(1, 1) is True          # single button, found
+    assert accepts(2, 3) is True          # 3-button lot, one miss tolerated
+    assert accepts(3, 3) is True
+    assert accepts(4, 5) is True
+    # small lots still rejected when Hough clearly under-found
+    assert accepts(0, 1) is False
+    assert accepts(1, 3) is False         # only 1 of 3 -> grid fallback
+    assert accepts(3, 5) is False
+
+    # >=6 regime UNCHANGED vs the original `len(cleaned) >= max(6, expected-4)`
+    for expected in range(6, 40):
+        for cleaned in range(0, expected + 2):
+            assert accepts(cleaned, expected) == (cleaned >= max(6, expected - 4))
+    # boundary: a 6-button lot with 5 circles still defers to grid
+    assert accepts(5, 6) is False
+    assert accepts(6, 6) is True
