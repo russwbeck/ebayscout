@@ -67,6 +67,13 @@ RED_THRESHOLD             = 0.65   # below this = low confidence (35% wrong in d
 # buttonmatcher/main.py REF_CHECK_WEIGHT.
 REF_CHECK_WEIGHT          = 0.15
 
+# Auto-staging gate (Gemini pipeline). A crop is copied straight into
+# reference/_staging (for buttonmatcher's /reference review) only when it cleared
+# real Hough detection, Gemini confirmed its slogan, AND its CLIP `overall` is at
+# least this high. Deliberately equal to AUTO_RESOLVE_THRESHOLD — only the surest
+# crops seed the reference DB at scale; everything else is reviewed by eye.
+STAGE_CONF = 0.85
+
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
 

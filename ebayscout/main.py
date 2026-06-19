@@ -101,6 +101,10 @@ match_logger: mlog.SheetLogger | None = None
 # start a second concurrent run.
 _scan_lock = threading.Lock()
 
+# Guards the per-result seen read-modify-write in process_pipeline_lot (each lot
+# is marked seen on confirmation, possibly from overlapping result threads).
+_seen_lock = threading.Lock()
+
 # --- Gemini → GCS pipeline state (Drive watcher → Gem → GCS → /pipeline/notify) -
 # Shared secret the watcher presents on /pipeline/notify (watcher-direct path).
 _PIPELINE_SHARED_SECRET = os.environ.get("PIPELINE_SHARED_SECRET", "")
@@ -601,13 +605,19 @@ def internal_pipelinetest():
 def process_pipeline_lot(job_id: str) -> None:
     """Consume one Gemini-pipeline result: download image+JSON, run independent
     Hough detection + Gemini reconciliation, CLIP match, then confirm slogans
-    against Gemini's reading. Posts the lot's auto-confirmed buttons + a Yes/No
-    "add to reference DB" prompt to #ebay-checker, and a needed-button alert if
-    any confirmed button satisfies a standing need.
+    against Gemini's reading. At scale this lot is a unit of work for BOTH
+    /crawl10 and /crawl500, so its output is deal-focused:
+
+      * posts to #ebay-checker ONLY when the lot is a deal — it has a needed
+        button, or its matched value exceeds the asking price;
+      * AUTO-STAGES the surest crops (real Hough detection + Gemini-confirmed +
+        CLIP overall >= STAGE_CONF) into reference/_staging/ for /reference review
+        (no Yes/No prompt);
+      * writes scan_log.jsonl + match_log rows and marks the lot seen here, per
+        confirmation — never buffered to a run's end.
 
     Unlike buttonmatcher's process_pipeline_grid, there is NO Inventory/Sort/
-    Scout chooser and NO vectors.pt write — ebayscout is a needed-button detector
-    that, on a Yes vote, only STAGES crop files into reference/_staging/."""
+    Scout chooser and NO vectors.pt write — ebayscout only STAGES crop FILES."""
     import tempfile
     import cv2
     from . import clip_matcher as _cm, detect_pipeline as _dp, image_proc as _ip
@@ -713,9 +723,9 @@ def process_pipeline_lot(job_id: str) -> None:
     # 7) classify crops per the autoconfirmation decision tree (pure module).
     #    Gemini works:  green/auto → confirm; else Gemini slogan in top-10 AND
     #                   conf≥0.70 AND not flagged (res.auto) → confirm; else ignore.
-    #    Gemini fails:  green/auto → confirm; else overall≥RED → yellow (ask the
-    #                   user); else ignore.
-    auto_confirmed, yellow = pipeline_classify.classify_crops(
+    #    Gemini fails:  green/auto → confirm; else ignore. (The yellow tier is
+    #                   not surfaced at scale — deals-only posting; see step 9.)
+    auto_confirmed, _yellow = pipeline_classify.classify_crops(
         diagnostics, resolution, gemini_ok, job_id)
 
     # needed-button hits among the auto-confirmed crops
@@ -729,9 +739,21 @@ def process_pipeline_lot(job_id: str) -> None:
             if k not in needed_hits or (overall or 0) > needed_hits[k].get("overall", 0):
                 needed_hits[k] = enriched
 
-    # 8) stage auto-confirmed crops to the temp holding area + manifest
+    # total matched lot value + undervalued-deal flag (pure helper)
+    def _price_of(_year, _slogan):
+        _ps, _, _, _ = sheets_client.get_buy_decision(_year, _slogan, buy_rules)
+        return sheets_client.parse_price(_ps)
+    lot_value, undervalued, margin = pipeline_classify.lot_value_and_deal(
+        auto_confirmed, _price_of, asking)
+
+    # 8) AUTO-STAGE the surest crops (real Hough detection + Gemini-confirmed +
+    #    overall >= STAGE_CONF) straight into reference/_staging for buttonmatcher's
+    #    /reference review — no Yes/No prompt. Reuses stage_pipeline_crop + promote
+    #    so there is one promotion path; ebayscout never writes vectors.pt.
+    stageable = pipeline_classify.staging_candidates(
+        auto_confirmed, circle_info, resolution, config.STAGE_CONF)
     manifest_crops: list[dict] = []
-    for b in auto_confirmed:
+    for b in stageable:
         try:
             ok, buf = cv2.imencode(".jpg", crops[b["crop_idx"]])
             if not ok:
@@ -746,33 +768,60 @@ def process_pipeline_lot(job_id: str) -> None:
         except Exception as exc:
             print(f"!!! PIPELINE: crop stage failed (crop {b['n']}): {exc}", flush=True)
     if manifest_crops:
-        seen_items.save_crops_manifest(job_id, {
-            "job_id": job_id, "item_id": item_id, "title": title, "url": url,
-            "crops": manifest_crops,
-        })
+        staged = seen_items.promote_crops_to_reference_staging(
+            job_id, {"job_id": job_id, "item_id": item_id, "crops": manifest_crops})
+        print(f">>> PIPELINE: auto-staged {staged}/{len(manifest_crops)} crop(s) for "
+              f"{item_id} -> reference/_staging (job={job_id}).", flush=True)
 
-    # 9) post the per-lot Slack message (auto-confirmed + Yes/No), and any alert
-    _post_pipeline_lot(job_id, item_id, title, url, asking, gem_count,
-                       len(crops), auto_confirmed, bool(manifest_crops))
-    # Gemini-fails fallback only: surface yellow crops for human review.
-    if not gemini_ok and yellow:
-        _post_yellow_review(
-            {"item_id": item_id, "title": title, "url": url, "current_price": asking},
-            yellow, job_id, auto_confirmed)
+    # 9) post to Slack ONLY when this lot is a deal — a needed button, or matched
+    #    lot value over the asking price. No generic per-lot card; no Yes/No;
+    #    yellow-review crops are not surfaced at scale.
+    listing = {"item_id": item_id, "title": title, "url": url, "listing_url": url,
+               "current_price": asking, "seller": ctx.get("seller", ""),
+               "gallery_url": ctx.get("gallery_url")}
     if needed_hits:
-        listing = {"item_id": item_id, "title": title, "url": url,
-                   "current_price": asking, "seller": ctx.get("seller", ""),
-                   "gallery_url": ctx.get("gallery_url")}
         needed = list(needed_hits.values())
         try:
-            lot_value = sum(sheets_client.parse_price(m["max_price_single"]) for m in needed)
+            needed_value = sum(
+                sheets_client.parse_price(m["max_price_single"]) for m in needed)
             notifier.send_needed_alert(
                 slack_token=_slack_token, channel=_channel_id, listing=listing,
-                needed_buttons=needed, asking_price=asking or 0.0, lot_value=lot_value)
+                needed_buttons=needed, asking_price=asking or 0.0, lot_value=needed_value)
         except Exception as exc:
             print(f"!!! PIPELINE: needed alert failed for {item_id}: {exc}", flush=True)
+    if undervalued:
+        try:
+            matches = []
+            for b in auto_confirmed:
+                _ps, _, _, _amt = sheets_client.get_buy_decision(
+                    b["year"], b["slogan"], buy_rules)
+                matches.append({"year": b["year"], "slogan": b["slogan"],
+                                "overall": b["overall"], "max_price_single": _ps,
+                                "amount_needed": _amt})
+            notifier.send_undervalued_alert(
+                slack_token=_slack_token, channel=_channel_id, listing=listing,
+                matches=matches, lot_value=lot_value, asking_price=asking or 0.0,
+                margin=margin, unmatched_count=max(0, len(crops) - len(auto_confirmed)))
+        except Exception as exc:
+            print(f"!!! PIPELINE: undervalued alert failed for {item_id}: {exc}", flush=True)
 
-    # 10) logging + cleanup (pending context only; temp crops await the Yes/No vote)
+    # 10) write the research logs NOW — per confirmation, never buffered. Reaching
+    #     here means we got a real reading (Gem-empty lots returned earlier).
+    pipeline_command = f'{ctx.get("command", "/crawl10")}-pipeline'
+    try:
+        record = _scan_log_record(
+            listing=listing, photos_processed=1,
+            best_score=max((b["overall"] or 0.0 for b in auto_confirmed), default=0.0),
+            top_matches=[{"year": b["year"], "slogan": b["slogan"],
+                          "overall": b["overall"] or 0.0} for b in auto_confirmed],
+            needed_hit=bool(needed_hits), alerted=bool(needed_hits or undervalued),
+            best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
+                         if needed_hits else None),
+        )
+        seen_items.append_scan_log([record])
+    except Exception as exc:
+        print(f"!!! PIPELINE: scan_log append failed for {item_id}: {exc}", flush=True)
+
     # Per-crop match records carrying the Gemini reconcile fields, so the
     # match_log is schema-compatible with buttonmatcher's pipeline rows.
     try:
@@ -808,7 +857,7 @@ def process_pipeline_lot(job_id: str) -> None:
             )
             _records = [
                 mlog.build_match_record(
-                    service="ebayscout", command="/crawl10-pipeline", mode="pipeline",
+                    service="ebayscout", command=pipeline_command, mode="pipeline",
                     job_id=job_id, thread_ts=None, channel_id=_channel_id, user_id=None,
                     crop_num=i + 1, check_id=f"{job_id}:{item_id}:{i + 1}",
                     detection=_det, bank=None,
@@ -822,13 +871,35 @@ def process_pipeline_lot(job_id: str) -> None:
     except Exception as exc:
         print(f"!!! PIPELINE: match_log failed for {item_id}: {exc}", flush=True)
 
-    _log_pipeline_count(job_id, item_id, gem_count)
+    _log_pipeline_count(job_id, item_id, gem_count, command=pipeline_command)
+
+    # mark the lot seen on confirmation (never at feed) so it's never re-run; a
+    # Gem that never answered leaves the lot un-seen (the watcher retries it), so
+    # we only reach here for a real reading.
+    if item_id and item_id != "?":
+        _mark_item_seen_now(item_id)
+
     if key:
         seen_items.delete_pending_context(key)
     pending_jobs.pop(job_id, None)
 
 
-def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int) -> None:
+def _mark_item_seen_now(item_id: str) -> None:
+    """Mark one item seen the instant its pipeline result confirms: load -> add ->
+    save under a lock so concurrent result threads can't clobber each other.
+    seen_items.json on GCS is the source of truth; result volume is low (~one Gem
+    at a time), so a full read-modify-write per result is cheap."""
+    try:
+        with _seen_lock:
+            seen = seen_items.load_seen()
+            seen_items.mark_seen(item_id, seen)
+            seen_items.save_seen(seen)
+    except Exception as exc:
+        print(f"!!! PIPELINE: mark_seen({item_id}) failed: {exc}", flush=True)
+
+
+def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int,
+                        command: str = "/crawl10-pipeline") -> None:
     """Log the Gem's button-count estimate as its own confirm_log row
     (source='gemini_count'), preserving the old /crawl10 count telemetry."""
     if match_logger is None:
@@ -836,7 +907,7 @@ def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int) -> N
     check_id = f"gemini_count:{item_id}"
     try:
         rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl10-pipeline", job_id=job_id,
+            service="ebayscout", command=command, job_id=job_id,
             thread_ts=None, crop_num=None, check_id=check_id, user_id=None,
             chosen_year=None, chosen_phrase=str(total_button_count),
             chosen_type=None, source="gemini_count",
@@ -845,91 +916,6 @@ def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int) -> N
         match_logger.log_confirmation(check_id, rec)
     except Exception as exc:
         print(f"!!! PIPELINE: gemini_count log failed for {item_id}: {exc}", flush=True)
-
-
-def _post_pipeline_lot(job_id, item_id, title, url, asking, gem_count, n_crops,
-                       auto_confirmed, has_stageable) -> None:
-    """Post one lot to #ebay-checker: the lot, its auto-confirmed buttons, and a
-    Yes/No prompt to add those crops to the reference database (staging)."""
-    try:
-        price_str = f" · ${asking:.2f}" if asking else ""
-        link      = f"<{url}|{title[:60]}>" if url else title[:60]
-        header    = (f"🧩 *Pipeline lot* · {link}{price_str}\n"
-                     f"🤖 Gemini count: {gem_count} · detected crops: {n_crops} · "
-                     f"✅ auto-confirmed: {len(auto_confirmed)}")
-        lines = [header]
-        if auto_confirmed:
-            for b in auto_confirmed[:20]:
-                sc = f" ({b['overall']:.2f})" if b.get("overall") is not None else ""
-                lines.append(f"   ✅ {b['year']} — {b['slogan']}{sc}  ·  _{b['source']}_")
-        else:
-            lines.append("   _no auto-confirmed buttons_")
-
-        blocks = [{"type": "section",
-                   "text": {"type": "mrkdwn", "text": "\n".join(lines)}}]
-        if has_stageable:
-            meta = json.dumps({"job_id": job_id, "item_id": item_id})
-            blocks.append({
-                "type": "actions",
-                "block_id": f"pipeline_ref:{job_id}",
-                "elements": [
-                    {"type": "button", "style": "primary",
-                     "text": {"type": "plain_text", "text": "✅ Yes — add to reference DB"},
-                     "action_id": "pipeline_ref_yes", "value": meta},
-                    {"type": "button", "style": "danger",
-                     "text": {"type": "plain_text", "text": "❌ No — discard crops"},
-                     "action_id": "pipeline_ref_no", "value": meta},
-                ],
-            })
-        app.client.chat_postMessage(
-            token=_slack_token, channel=_channel_id,
-            text=f"Pipeline lot {item_id}: {len(auto_confirmed)} auto-confirmed",
-            blocks=blocks)
-    except Exception as exc:
-        print(f"!!! PIPELINE: Slack post failed for {item_id}: {exc}", flush=True)
-
-
-@app.action("pipeline_ref_yes")
-def handle_pipeline_ref_yes(ack, body):
-    """YES vote: stage the lot's auto-confirmed crops into reference/_staging/."""
-    ack()
-    try:
-        val    = json.loads(body["actions"][0]["value"])
-        job_id = val.get("job_id")
-        manifest = seen_items.load_crops_manifest(job_id)
-        if not manifest:
-            _pipeline_ref_update(body, "⚠️ Crops expired or already handled.")
-            return
-        staged = seen_items.promote_crops_to_reference_staging(job_id, manifest)
-        _pipeline_ref_update(body, f"✅ Added {staged} crop(s) to the reference DB (staged).")
-        print(f">>> PIPELINE REF: staged {staged} crops for job={job_id}.", flush=True)
-    except Exception as exc:
-        print(f"!!! PIPELINE REF YES failed: {exc}", flush=True)
-
-
-@app.action("pipeline_ref_no")
-def handle_pipeline_ref_no(ack, body):
-    """NO vote: delete the lot's staged crops from GCS."""
-    ack()
-    try:
-        val    = json.loads(body["actions"][0]["value"])
-        job_id = val.get("job_id")
-        deleted = seen_items.delete_pipeline_crops(job_id)
-        _pipeline_ref_update(body, f"🗑️ Discarded {deleted} crop object(s) from GCS.")
-        print(f">>> PIPELINE REF: discarded {deleted} objects for job={job_id}.", flush=True)
-    except Exception as exc:
-        print(f"!!! PIPELINE REF NO failed: {exc}", flush=True)
-
-
-def _pipeline_ref_update(body, text: str) -> None:
-    """Replace the Yes/No prompt with a confirmation line (cosmetic)."""
-    try:
-        app.client.chat_update(
-            token=_slack_token, channel=body["channel"]["id"], ts=body["message"]["ts"],
-            text=text, blocks=[{"type": "section",
-                                 "text": {"type": "mrkdwn", "text": text}}])
-    except Exception:
-        pass
 
 
 @flask_app.route("/test-clip", methods=["GET"])
@@ -2065,13 +2051,73 @@ def _run_daily_scan(
 # on-demand2 / crawl500 (called from /internal/crawl500)
 # ---------------------------------------------------------------------------
 
-def _run_crawl500() -> int:
-    """Run the fixed on-demand2 search (config.CRAWL500_QUERIES), cap at 500 lots,
-    NO seller exclusion (apparel-keyword + Clothing-category filters stay on).
+def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
+                          command: str) -> str | None:
+    """Push one lot's PRIMARY photo into the Gemini pipeline (upload-only).
 
-    First run (per the GCS marker) may re-scan already-seen lots to reach 500;
-    every run after processes only unseen lots. Every lot's crops are logged per
-    event for automation. Returns the number of lots processed.
+    Downloads photo 0, writes a pending-context blob (so the async Gem result can
+    be correlated back to this listing even after a cold start), and uploads the
+    image to the GCS pipeline-input prefix the watcher polls. ``command``
+    ("/crawl10" or "/crawl500") is carried in the context. Returns the
+    correlation key on success, or None when the lot has no photo.
+
+    Does NOT mark the lot seen — that happens on confirmation in
+    process_pipeline_lot, so a lot the Gem never answers is retried, never lost.
+    """
+    from . import ebay_client, image_proc as _ip
+
+    item_id = listing["item_id"]
+    title   = listing.get("title", "?")
+    seller  = listing.get("seller", "")
+
+    picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
+    if not picture_urls and listing.get("gallery_url"):
+        picture_urls = [listing["gallery_url"]]
+    if not picture_urls:
+        print(f">>> PIPELINE FEED: {item_id} has no photos — skipping.", flush=True)
+        return None
+
+    image_bytes = _ip.download_image(picture_urls[0])   # PRIMARY photo only
+
+    # Correlation key carried in the GCS object name; the authoritative listing
+    # context is persisted to GCS so the async result survives a cold start.
+    key = uuid.uuid4().hex[:12]
+    ctx = {
+        "key":          key,
+        "item_id":      item_id,
+        "title":        title,
+        "seller":       seller,
+        "asking":       listing.get("current_price"),
+        "url":          listing.get("url") or listing.get("listing_url") or "",
+        "gallery_url":  listing.get("gallery_url"),
+        "search_era":   listing.get("search_era") or "",
+        "title_years":   sorted(extract_years(title)),
+        "title_decades": sorted(extract_decades(title)),
+        "command":      command,
+        "created":      datetime.datetime.utcnow().isoformat() + "Z",
+    }
+    seen_items.save_pending_context(key, ctx)
+    if not seen_items.upload_pipeline_input(key, image_bytes):
+        raise RuntimeError("pipeline-input upload to GCS failed")
+    print(f">>> PIPELINE FEED: uploaded {item_id} -> pipeline as key={key} ({command}).",
+          flush=True)
+    return key
+
+
+def _run_crawl500() -> int:
+    """Feed the fixed on-demand2 search (config.CRAWL500_QUERIES) into the Gemini
+    pipeline at scale, capped at 500 lots. NO seller exclusion (apparel-keyword +
+    Clothing-category filters stay on).
+
+    Like /crawl10 but at scale and SEEN-aware: each lot's primary photo is pushed
+    into the pipeline (watcher → Gem → GCS → /pipeline/notify); detection,
+    matching, deal-posting, auto-staging, and the per-lot logs (scan_log.jsonl +
+    marking the lot seen) all happen asynchronously in process_pipeline_lot as
+    each Gem read returns. A lot is marked seen ONLY on confirmation, so a lot the
+    Gem never answers is retried, never lost.
+
+    First run (per the GCS marker) may re-feed already-seen lots to reach 500;
+    every run after feeds only unseen lots. Returns the number of lots fed.
     """
     from . import ebay_client, seen_items as seen_store
 
@@ -2104,176 +2150,49 @@ def _run_crawl500() -> int:
     all_listings = dedup_listings(all_listings)
     seen = seen_store.load_seen()
 
+    # Skip lots already run (in `seen`); on the very first run feed everything to
+    # reach the 500 cap. `seen` is marked on confirmation (process_pipeline_lot),
+    # never here, so failed/un-answered lots stay re-feedable.
     if first_run:
-        candidate = all_listings                       # may re-scan seen to reach 500
+        candidate = all_listings
     else:
         candidate = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
     new_listings = candidate[: config.CRAWL500_MAX_LOTS]
-    print(f">>> CRAWL500: {len(all_listings)} unique found; processing "
-          f"{len(new_listings)} (cap {config.CRAWL500_MAX_LOTS}).", flush=True)
+    print(f">>> CRAWL500: {len(all_listings)} unique found; feeding "
+          f"{len(new_listings)} into the pipeline (cap {config.CRAWL500_MAX_LOTS}).",
+          flush=True)
 
     if not new_listings:
         notifier.send_warning(_slack_token, _channel_id,
-                              "/crawl500: no lots to process this run.")
+                              "/crawl500: no lots to feed this run.")
         if first_run:
             seen_store.mark_ondemand2_first_run_done()
         return 0
 
-def _post_logging_only(listing: dict, result: dict) -> None:
-    """Post a text-only lot summary to Slack — no interactive buttons.
-
-    Used to fill the minimum-50-posts guarantee in the final 50 lots of a
-    crawl500 run.  Deliberately minimal: one mrkdwn message, no blocks, so
-    it doesn't clutter the channel with review requests for lots that don't
-    need them.
-    """
-    try:
-        title     = listing.get("title", "?")[:60]
-        url       = listing.get("url") or listing.get("listing_url") or ""
-        asking    = listing.get("current_price")
-        price_str = f" · ${asking:.2f}" if asking else ""
-
-        confirmed = result.get("confirmed", [])
-        yellow    = result.get("yellow", [])
-
-        lines = [f"📋 *Scout log* · <{url}|{title}>{price_str}"]
-        if confirmed:
-            lines.append("✅ " + "  ·  ".join(
-                f"{b['year']} — {b['slogan']}" for b in confirmed[:6]
-            ))
-        if yellow:
-            lines.append("🟡 " + "  ·  ".join(
-                f"{b['year']} ({int(b['overall'] * 100)}%)" for b in yellow[:6]
-            ))
-        if not confirmed and not yellow:
-            lines.append("_(no matches above threshold)_")
-
-        app.client.chat_postMessage(
-            token=_slack_token,
-            channel=_channel_id,
-            text="\n".join(lines),
-        )
-    except Exception as exc:
-        print(f"!!! CRAWL500: logging-only post failed: {exc}", flush=True)
-
-
-    job_id   = str(uuid.uuid4())
-    stat_alerted = stat_confirmed_not_needed = stat_rejected = 0
-    _since_save  = 0
-    slack_posts_count = 0          # lots that generated ANY Slack output this run
-    MIN_SLACK_POSTS   = 50         # guarantee at least this many posts per crawl
-    total_listings    = len(new_listings)
-
-    from . import clip_matcher as _cm
-    ref_years = _cm.reference_years()
-
-    for lot_idx, listing in enumerate(new_listings):
+    fed = 0
+    for listing in new_listings:
         item_id = listing["item_id"]
-        asking  = listing.get("current_price", 0.0)
-        title   = listing.get("title", "?")
         seller  = listing.get("seller", "")
-
-        title_years_all = extract_years(title)
-        title_decades   = extract_decades(title)
-        if title_decades:
-            restrict_years: set[int] | None = title_decades
-        elif len(title_years_all) == 1 and next(iter(title_years_all)) in ref_years:
-            restrict_years = {next(iter(title_years_all))}
-        else:
-            restrict_years = None
-
         try:
-            picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
-            if not picture_urls and listing.get("gallery_url"):
-                picture_urls = [listing["gallery_url"]]
-
-            # _keep_cpu_hot spins a lightweight thread so Cloud Run's scheduler
-            # sees continuous activity during CLIP inference and cv2 work.
-            # Mirrors the same pattern used in buttonmatcher's process_grid.
-            # Without it, the gap between lot downloads gets throttled to ~5 %
-            # CPU when _SERVICE_URL routes through localhost instead of the LB.
-            with _keep_cpu_hot():
-                result = _evaluate_listing(
-                    listing, picture_urls, restrict_years,
-                    command="/crawl500", job_id=job_id,
-                    title_years=title_years_all, title_count=extract_lot_count(title),
-                )
-
-            # --- Minimum-50-posts guarantee --------------------------------------
-            # Track whether this lot generates a natural Slack post (yellow review
-            # or needed-button alert).  As we enter the final 50 lots, any deficit
-            # against the 50-post minimum is filled with logging-only posts — a
-            # plain text message with no interactive buttons.  Natural posts (those
-            # with real content) are never suppressed and always count toward the
-            # minimum, so the crawl is allowed to exceed 50 posts freely.
-            in_final_50     = lot_idx >= total_listings - 50
-            deficit         = max(0, MIN_SLACK_POSTS - slack_posts_count)
-            lots_remaining  = total_listings - lot_idx   # including this one
-
-            will_post_full  = bool(result.get("yellow") or result.get("needed"))
-
-            if will_post_full:
-                # Natural full post — always send regardless of where we are.
-                if result.get("yellow"):
-                    _post_yellow_review(
-                        listing=listing,
-                        yellow_buttons=result["yellow"],
-                        job_id=job_id,
-                        confirmed_buttons=result.get("confirmed", []),
-                    )
-                slack_posts_count += 1
-            elif in_final_50 and deficit > 0:
-                # No natural content but we're in the final 50 and still below
-                # the minimum.  Post a logging-only summary to fill the deficit.
-                # Cap: only do this for the first `deficit` lots in the final 50
-                # so we don't spam if the deficit is large relative to lots left.
-                _post_logging_only(listing, result)
-                slack_posts_count += 1
-                print(
-                    f">>> CRAWL500: logging-only post #{slack_posts_count} "
-                    f"(deficit={deficit}, lot {lot_idx+1}/{total_listings})",
-                    flush=True,
-                )
-
-            if not result["confirmed"]:
-                stat_rejected += 1
-            elif result["needed"]:
-                needed_buttons = result["needed"]
-                lot_value = sum(
-                    sheets_client.parse_price(m["max_price_single"]) for m in needed_buttons
-                )
-                notifier.send_needed_alert(
-                    slack_token=_slack_token, channel=_channel_id, listing=listing,
-                    needed_buttons=needed_buttons, asking_price=asking, lot_value=lot_value,
-                )
-                stat_alerted     += 1
-                slack_posts_count += 1   # needed alert is also a Slack post
-            else:
-                stat_confirmed_not_needed += 1
+            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, "/crawl500"):
+                fed += 1
         except Exception as exc:
-            print(f"!!! CRAWL500: error processing {item_id} [{seller}]: {exc}", flush=True)
+            print(f"!!! CRAWL500: feed failed for {item_id} [{seller}]: {exc}", flush=True)
             traceback.print_exc()
 
-        seen_store.mark_seen(item_id, seen)
-        _since_save += 1
-        if _since_save >= 50:
-            seen_store.save_seen(seen)
-            _since_save = 0
-
-    seen_store.save_seen(seen)
     if first_run:
         seen_store.mark_ondemand2_first_run_done()
 
-    notifier.send_crawl500_summary(
-        slack_token=_slack_token, channel=_channel_id,
-        processed=len(new_listings), alerted=stat_alerted,
-        confirmed_not_needed=stat_confirmed_not_needed, rejected=stat_rejected,
-        first_run=first_run,
+    notifier.send_warning(
+        _slack_token, _channel_id,
+        f"🔎 `/crawl500`: fed {fed}/{len(new_listings)} lot(s) into the Gemini "
+        f"pipeline{' (first run — included already-seen lots)' if first_run else ''}. "
+        f"Deals (needed buttons / undervalued lots) post here as each Gem read "
+        f"returns; confirmed lots are marked seen so they are never re-run."
     )
-    print(f">>> CRAWL500: complete — processed={len(new_listings)} alerted={stat_alerted} "
-          f"confirmed_not_needed={stat_confirmed_not_needed} rejected={stat_rejected} "
-          f"slack_posts={slack_posts_count}.", flush=True)
-    return len(new_listings)
+    print(f">>> CRAWL500: feed complete — fed={fed}/{len(new_listings)} "
+          f"(first_run={first_run}).", flush=True)
+    return fed
 
 
 def _run_crawl10() -> int:
@@ -2290,7 +2209,7 @@ def _run_crawl10() -> int:
     seen_items.json (repeatable test harness). Returns the number of lots
     uploaded.
     """
-    from . import ebay_client, image_proc as _ip
+    from . import ebay_client
 
     try:
         ebay_app_id  = _get_secret("EBAY_APP_ID")
@@ -2327,42 +2246,10 @@ def _run_crawl10() -> int:
     uploaded = 0
     for listing in new_listings:
         item_id = listing["item_id"]
-        title   = listing.get("title", "?")
         seller  = listing.get("seller", "")
         try:
-            picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
-            if not picture_urls and listing.get("gallery_url"):
-                picture_urls = [listing["gallery_url"]]
-            if not picture_urls:
-                print(f">>> CRAWL10: {item_id} has no photos — skipping.", flush=True)
-                continue
-
-            # Only the PRIMARY photo, one per lot.
-            image_bytes = _ip.download_image(picture_urls[0])
-
-            # Correlation key: a random token carried in the Drive filename and
-            # the resulting GCS object name. The authoritative listing context is
-            # persisted to GCS so the async result survives a cold start.
-            key = uuid.uuid4().hex[:12]
-            ctx = {
-                "key":          key,
-                "item_id":      item_id,
-                "title":        title,
-                "seller":       seller,
-                "asking":       listing.get("current_price"),
-                "url":          listing.get("url") or listing.get("listing_url") or "",
-                "gallery_url":  listing.get("gallery_url"),
-                "search_era":   listing.get("search_era") or "",
-                "title_years":   sorted(extract_years(title)),
-                "title_decades": sorted(extract_decades(title)),
-                "command":      "/crawl10",
-                "created":      datetime.datetime.utcnow().isoformat() + "Z",
-            }
-            seen_items.save_pending_context(key, ctx)
-            if not seen_items.upload_pipeline_input(key, image_bytes):
-                raise RuntimeError("pipeline-input upload to GCS failed")
-            uploaded += 1
-            print(f">>> CRAWL10: uploaded {item_id} → pipeline as key={key}.", flush=True)
+            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, "/crawl10"):
+                uploaded += 1
         except Exception as exc:
             print(f"!!! CRAWL10: upload failed for {item_id} [{seller}]: {exc}", flush=True)
             traceback.print_exc()
