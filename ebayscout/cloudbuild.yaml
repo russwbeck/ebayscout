@@ -38,7 +38,7 @@ steps:
       - --timeout=1800
       - --max-instances=1   # keep at 1 — manual pending_scans state is per-container
       # OMP_NUM_THREADS pins PyTorch CPU threads to --cpu. SERVICE_URL lets the
-      # /crawl500 slash handler invoke /internal/crawl500 through the load balancer
+      # /crawl slash handler invoke /internal/crawl through the load balancer
       # so the heavy run gets a fresh CPU-funded request (Cloud Run throttles CPU
       # between requests). Must be this service's own public URL.
       - --update-env-vars=OMP_NUM_THREADS=2,SERVICE_URL=https://ebay-scout-404960106109.us-east1.run.app

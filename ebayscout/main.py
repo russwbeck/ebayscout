@@ -73,11 +73,11 @@ _channel_id      = _get_secret("CHANNEL_ID_EBAY")
 _signing_secret  = _get_secret("SIGNING_SECRET_ES")
 print(">>> INIT: Slack secrets loaded.", flush=True)
 
-# Slack Bolt app — serves the /crawl500 slash command via /slack/events.
+# Slack Bolt app — serves the /crawl slash command via /slack/events.
 app     = App(token=_slack_token, signing_secret=_signing_secret)
 handler = SlackRequestHandler(app)
 
-# External URL the slash handler uses to invoke /internal/crawl500 through the
+# External URL the slash handler uses to invoke /internal/crawl through the
 # load balancer, so the heavy 500-lot run gets a fresh CPU-funded request (Cloud
 # Run throttles CPU between requests). Set SERVICE_URL in the deploy env; falls
 # back to localhost for local dev (CPU may throttle there). Mirrors buttonmatcher.
@@ -309,7 +309,7 @@ def health():
 
 
 # ---------------------------------------------------------------------------
-# Slack slash command: /crawl500 (on-demand2 search)
+# Slack slash command: /crawl <N> (on-demand2 search)
 # ---------------------------------------------------------------------------
 
 @flask_app.route("/slack/events", methods=["POST"])
@@ -323,16 +323,34 @@ def slack_events():
     return handler.handle(request)
 
 
-@app.command("/crawl500")
-def handle_crawl500_command(ack, body):
+@app.command("/crawl")
+def handle_crawl_command(ack, body):
     """on-demand2: search the fixed Citizens/Mellon/Central-Counties button query
-    (max 500 lots, no seller exclusion) and log every crop for automation.
+    over up to N lots and feed each lot's primary photo into the Gemini pipeline.
 
-    Slack requires an ack within 3s, so we ack immediately and kick the heavy run
-    via /internal/crawl500 through the load balancer (fresh CPU-funded request).
+    Seen-aware: lots already run are skipped (except the very first on-demand2
+    run, which may include seen lots to reach the cap), and a lot is marked seen
+    only on confirmation — so nothing is lost or double-run.
+
+    Usage: `/crawl <N>` (e.g. `/crawl 800`), N in 1..CRAWL_MAX_LOTS_CAP. Slack
+    requires an ack within 3s, so we validate + ack immediately and kick the
+    heavy run via /internal/crawl through the load balancer (CPU-funded request).
     """
-    ack("🔎 Starting `/crawl500` — searching up to 500 lots, this runs in the "
-        "background and will post results to the channel.")
+    raw = (body.get("text") or "").strip()
+    cap = config.CRAWL_MAX_LOTS_CAP
+    try:
+        n = int(raw)
+    except ValueError:
+        ack(f"Usage: `/crawl <N>` — N = how many lots to search (1–{cap}). "
+            f"Example: `/crawl 800`.")
+        return
+    if n < 1 or n > cap:
+        ack(f"`/crawl {raw}` is out of range — pick N between 1 and {cap}. "
+            f"(This launches a paid eBay + CLIP run, so the cap guards a typo.)")
+        return
+
+    ack(f"🔎 Starting `/crawl {n}` — searching up to {n} lots; runs in the "
+        f"background and posts results to the channel as each Gem read returns.")
 
     def _kick():
         base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
@@ -341,12 +359,13 @@ def handle_crawl500_command(ack, body):
             # Long read timeout: the run executes synchronously inside this call
             # so CPU stays allocated for its whole duration.  3500s leaves 100s
             # headroom against Cloud Run's 3600s max request timeout.
-            requests.post(f"{base}/internal/crawl500", headers=headers, timeout=3500)
+            requests.post(f"{base}/internal/crawl", params={"n": n},
+                          headers=headers, timeout=3500)
         except Exception as exc:
-            print(f"!!! CRAWL500: internal kick failed: {exc}", flush=True)
+            print(f"!!! CRAWL: internal kick failed: {exc}", flush=True)
             try:
                 notifier.send_warning(_slack_token, _channel_id,
-                                      f"/crawl500 failed to start: {exc}")
+                                      f"/crawl {n} failed to start: {exc}")
             except Exception:
                 pass
 
@@ -360,15 +379,22 @@ def _is_localhost(remote_addr: str | None) -> bool:
         return False
 
 
-@flask_app.route("/internal/crawl500", methods=["POST"])
-def internal_crawl500():
-    """Run the on-demand2 500-lot search synchronously in this request so Cloud
-    Run keeps CPU allocated for the whole run. Auth: per-startup X-Internal-Secret
-    header, or a localhost caller (local dev). Mirrors buttonmatcher /internal/match."""
+@flask_app.route("/internal/crawl", methods=["POST"])
+def internal_crawl():
+    """Run the on-demand2 N-lot search synchronously in this request so Cloud Run
+    keeps CPU allocated for the whole run. N comes from ?n= (clamped to
+    1..CRAWL_MAX_LOTS_CAP). Auth: per-startup X-Internal-Secret header, or a
+    localhost caller (local dev). Mirrors buttonmatcher /internal/match."""
     provided     = request.headers.get("X-Internal-Secret", "")
     from_localhost = _is_localhost(request.remote_addr)
     if provided != _INTERNAL_SECRET and not from_localhost:
         return jsonify({"status": "forbidden"}), 403
+
+    cap = config.CRAWL_MAX_LOTS_CAP
+    try:
+        n = max(1, min(cap, int(request.args.get("n", 0) or 0)))
+    except ValueError:
+        return jsonify({"status": "bad n"}), 400
 
     if not vectors_loaded and not _ensure_clip_loaded():
         return jsonify({"status": "clip init failed"}), 500
@@ -379,73 +405,15 @@ def internal_crawl500():
             buy_rules = sheets_client.load_buy_rules(
                 _get_secret("GOOGLE_SHEETS_JSON"), _get_secret("SPREADSHEET_ID"))
         except Exception as exc:
-            print(f"!!! CRAWL500: buy_rules reload failed: {exc}", flush=True)
+            print(f"!!! CRAWL: buy_rules reload failed: {exc}", flush=True)
 
     if not _scan_lock.acquire(blocking=False):
         return jsonify({"status": "already running"}), 409
     try:
-        processed = _run_crawl500()
+        processed = _run_crawl(n)
     finally:
         _scan_lock.release()
-    return jsonify({"status": "crawl500 complete", "processed": processed}), 200
-
-
-@app.command("/crawl10")
-def handle_crawl10_command(ack, body):
-    """Small (10-lot) test crawl over the fixed "Penn State bank button" search.
-
-    No longer calls Gemini directly. Instead it pushes each lot's PRIMARY photo
-    into the Gemini pipeline: the image is uploaded to the shared Google Drive
-    folder the watcher polls; the watcher's Gem analyzes it and writes the
-    result to GCS pipeline/output/, which the watcher POSTs back to this
-    service's /pipeline/notify. Per-lot results (auto-confirmed buttons + an
-    add-to-reference Yes/No) then post to the channel as each Gem read returns.
-
-    Slack requires an ack within 3s, so we ack immediately and kick the upload
-    run via /internal/crawl10 through the load balancer (fresh CPU-funded request).
-    """
-    ack("🔎 Starting `/crawl10` — pushing up to 10 lots' primary photos into the "
-        "Gemini pipeline. Results will post to the channel as each Gem read returns.")
-
-    def _kick():
-        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
-        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
-        try:
-            requests.post(f"{base}/internal/crawl10", headers=headers, timeout=3500)
-        except Exception as exc:
-            print(f"!!! CRAWL10: internal kick failed: {exc}", flush=True)
-            try:
-                notifier.send_warning(_slack_token, _channel_id,
-                                      f"/crawl10 failed to start: {exc}")
-            except Exception:
-                pass
-
-    threading.Thread(target=_kick, daemon=True).start()
-
-
-@flask_app.route("/internal/crawl10", methods=["POST"])
-def internal_crawl10():
-    """Run the /crawl10 upload synchronously in this request so Cloud Run keeps
-    CPU allocated for the whole run. Auth: per-startup X-Internal-Secret header,
-    or a localhost caller (local dev). Mirrors /internal/crawl500.
-
-    Upload-only: downloads each lot's primary photo and pushes it into the
-    Gemini pipeline (Drive → Gem → GCS). No CLIP / buy_rules / Gemini-API needed
-    here — the heavy detect+match work happens later in /internal/pipeline when
-    the Gem's result returns. Each upload records a pending-context blob so the
-    async result can be correlated back to the originating eBay listing."""
-    provided     = request.headers.get("X-Internal-Secret", "")
-    from_localhost = _is_localhost(request.remote_addr)
-    if provided != _INTERNAL_SECRET and not from_localhost:
-        return jsonify({"status": "forbidden"}), 403
-
-    if not _scan_lock.acquire(blocking=False):
-        return jsonify({"status": "already running"}), 409
-    try:
-        processed = _run_crawl10()
-    finally:
-        _scan_lock.release()
-    return jsonify({"status": "crawl10 upload complete", "processed": processed}), 200
+    return jsonify({"status": "crawl complete", "n": n, "processed": processed}), 200
 
 
 # ---------------------------------------------------------------------------
@@ -667,7 +635,7 @@ def process_pipeline_lot(job_id: str) -> None:
     """Consume one Gemini-pipeline result: download image+JSON, run independent
     Hough detection + Gemini reconciliation, CLIP match, then confirm slogans
     against Gemini's reading. At scale this lot is a unit of work for BOTH
-    /crawl10 and /crawl500, so its output is deal-focused:
+    /crawl, so its output is deal-focused:
 
       * posts to #ebay-checker ONLY when the lot is a deal — it has a needed
         button, or its matched value exceeds the asking price;
@@ -874,7 +842,7 @@ def process_pipeline_lot(job_id: str) -> None:
 
     # 10) write the research logs NOW — per confirmation, never buffered. Reaching
     #     here means we got a real reading (Gem-empty lots returned earlier).
-    pipeline_command = f'{ctx.get("command", "/crawl10")}-pipeline'
+    pipeline_command = f'{ctx.get("command", "/crawl")}-pipeline'
     try:
         record = _scan_log_record(
             listing=listing, photos_processed=1,
@@ -969,7 +937,7 @@ def _mark_item_seen_now(item_id: str) -> None:
 
 
 def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int,
-                        command: str = "/crawl10-pipeline") -> None:
+                        command: str = "/crawl-pipeline") -> None:
     """Log the Gem's button-count estimate as its own confirm_log row
     (source='gemini_count'), preserving the old /crawl10 count telemetry."""
     if match_logger is None:
@@ -1296,7 +1264,7 @@ def _evaluate_listing(
     from . import clip_matcher as _cm
 
     item_id = listing["item_id"]
-    mode    = "crawl500" if command == "/crawl500" else "scan"
+    mode    = "crawl500" if command in ("/crawl", "/crawl500") else "scan"
     bank    = listing.get("search_era") or ""
 
     per_photo_cap  = max(config.MAX_CROPS_PER_PHOTO, title_count or 0)
@@ -1623,7 +1591,7 @@ def _handle_scout_verify(body, *, verified: bool) -> None:
         source   = "human_verify_yes" if verified else "human_verify_no"
 
         rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl500",
+            service="ebayscout", command="/crawl",
             job_id=job_id, thread_ts=None,
             crop_num=None, check_id=check_id,
             user_id=(body.get("user") or {}).get("id", ""),
@@ -1675,7 +1643,7 @@ def handle_scout_count(ack, body):
         # det_count_noinput.  chosen_phrase carries the bucket string;
         # source='user_count' identifies the row type.
         rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl500",
+            service="ebayscout", command="/crawl",
             job_id=job_id, thread_ts=None,
             crop_num=None, check_id=f"count:{item_id}",
             user_id=(body.get("user") or {}).get("id", ""),
@@ -2127,7 +2095,7 @@ def _run_daily_scan(
 
 
 # ---------------------------------------------------------------------------
-# on-demand2 / crawl500 (called from /internal/crawl500)
+# on-demand2 / crawl (called from /internal/crawl)
 # ---------------------------------------------------------------------------
 
 def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
@@ -2137,7 +2105,7 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
     Downloads photo 0, writes a pending-context blob (so the async Gem result can
     be correlated back to this listing even after a cold start), and uploads the
     image to the GCS pipeline-input prefix the watcher polls. ``command``
-    ("/crawl10" or "/crawl500") is carried in the context. Returns the
+    ("/crawl") is carried in the context. Returns the
     correlation key on success, or None when the lot has no photo.
 
     Does NOT mark the lot seen — that happens on confirmation in
@@ -2183,19 +2151,19 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
     return key
 
 
-def _run_crawl500() -> int:
+def _run_crawl(n: int) -> int:
     """Feed the fixed on-demand2 search (config.CRAWL500_QUERIES) into the Gemini
-    pipeline at scale, capped at 500 lots. NO seller exclusion (apparel-keyword +
+    pipeline, capped at N lots. NO seller exclusion (apparel-keyword +
     Clothing-category filters stay on).
 
-    Like /crawl10 but at scale and SEEN-aware: each lot's primary photo is pushed
-    into the pipeline (watcher → Gem → GCS → /pipeline/notify); detection,
-    matching, deal-posting, auto-staging, and the per-lot logs (scan_log.jsonl +
-    marking the lot seen) all happen asynchronously in process_pipeline_lot as
-    each Gem read returns. A lot is marked seen ONLY on confirmation, so a lot the
-    Gem never answers is retried, never lost.
+    SEEN-aware: each lot's primary photo is pushed into the pipeline (watcher →
+    Gem → GCS → /pipeline/notify); detection, matching, deal-posting, auto-
+    staging, and the per-lot logs (scan_log.jsonl + marking the lot seen) all
+    happen asynchronously in process_pipeline_lot as each Gem read returns. A lot
+    is marked seen ONLY on confirmation, so a lot the Gem never answers is
+    retried, never lost.
 
-    First run (per the GCS marker) may re-feed already-seen lots to reach 500;
+    First run (per the GCS marker) may re-feed already-seen lots to reach N;
     every run after feeds only unseen lots. Returns the number of lots fed.
     """
     from . import ebay_client, seen_items as seen_store
@@ -2204,12 +2172,12 @@ def _run_crawl500() -> int:
         ebay_app_id  = _get_secret("EBAY_APP_ID")
         ebay_cert_id = _get_secret("EBAY_CERT_ID")
     except Exception as exc:
-        print(f"!!! CRAWL500: eBay credentials unavailable — aborting: {exc}", flush=True)
-        notifier.send_warning(_slack_token, _channel_id, "/crawl500: no eBay credentials.")
+        print(f"!!! CRAWL: eBay credentials unavailable — aborting: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, "/crawl: no eBay credentials.")
         return 0
 
     first_run = not seen_store.ondemand2_first_run_done()
-    print(f">>> CRAWL500: starting (first_run={first_run}) over "
+    print(f">>> CRAWL: starting (n={n}, first_run={first_run}) over "
           f"{len(config.CRAWL500_QUERIES)} OR-expanded queries.", flush=True)
 
     # OR-expansion → one <=200 window per (bank x type); NO seller exclusion.
@@ -2222,28 +2190,27 @@ def _run_crawl500() -> int:
             max_results=200,
         )
     except Exception as exc:
-        print(f"!!! CRAWL500: search failed: {exc}", flush=True)
-        notifier.send_warning(_slack_token, _channel_id, f"/crawl500 search failed: {exc}")
+        print(f"!!! CRAWL: search failed: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, f"/crawl search failed: {exc}")
         return 0
 
     all_listings = dedup_listings(all_listings)
     seen = seen_store.load_seen()
 
     # Skip lots already run (in `seen`); on the very first run feed everything to
-    # reach the 500 cap. `seen` is marked on confirmation (process_pipeline_lot),
+    # reach the N cap. `seen` is marked on confirmation (process_pipeline_lot),
     # never here, so failed/un-answered lots stay re-feedable.
     if first_run:
         candidate = all_listings
     else:
         candidate = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
-    new_listings = candidate[: config.CRAWL500_MAX_LOTS]
-    print(f">>> CRAWL500: {len(all_listings)} unique found; feeding "
-          f"{len(new_listings)} into the pipeline (cap {config.CRAWL500_MAX_LOTS}).",
-          flush=True)
+    new_listings = candidate[: n]
+    print(f">>> CRAWL: {len(all_listings)} unique found; feeding "
+          f"{len(new_listings)} into the pipeline (cap {n}).", flush=True)
 
     if not new_listings:
         notifier.send_warning(_slack_token, _channel_id,
-                              "/crawl500: no lots to feed this run.")
+                              "/crawl: no lots to feed this run.")
         if first_run:
             seen_store.mark_ondemand2_first_run_done()
         return 0
@@ -2253,10 +2220,10 @@ def _run_crawl500() -> int:
         item_id = listing["item_id"]
         seller  = listing.get("seller", "")
         try:
-            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, "/crawl500"):
+            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, "/crawl"):
                 fed += 1
         except Exception as exc:
-            print(f"!!! CRAWL500: feed failed for {item_id} [{seller}]: {exc}", flush=True)
+            print(f"!!! CRAWL: feed failed for {item_id} [{seller}]: {exc}", flush=True)
             traceback.print_exc()
 
     if first_run:
@@ -2264,82 +2231,14 @@ def _run_crawl500() -> int:
 
     notifier.send_warning(
         _slack_token, _channel_id,
-        f"🔎 `/crawl500`: fed {fed}/{len(new_listings)} lot(s) into the Gemini "
+        f"🔎 `/crawl {n}`: fed {fed}/{len(new_listings)} lot(s) into the Gemini "
         f"pipeline{' (first run — included already-seen lots)' if first_run else ''}. "
         f"Deals (needed buttons / undervalued lots) post here as each Gem read "
         f"returns; confirmed lots are marked seen so they are never re-run."
     )
-    print(f">>> CRAWL500: feed complete — fed={fed}/{len(new_listings)} "
-          f"(first_run={first_run}).", flush=True)
+    print(f">>> CRAWL: feed complete — fed={fed}/{len(new_listings)} "
+          f"(n={n}, first_run={first_run}).", flush=True)
     return fed
-
-
-def _run_crawl10() -> int:
-    """Push each lot's PRIMARY photo into the Gemini pipeline (upload-only).
-
-    Runs the fixed /crawl10 search (config.CRAWL10_QUERY), caps at 10 lots, NO
-    seller exclusion (apparel-keyword + Clothing-category filters stay on),
-    downloads photo 0 of each lot, uploads it to the Google Drive folder the
-    watcher polls, and records a pending-context blob so the async Gem result
-    (arriving later at /pipeline/notify) can be correlated back to this listing.
-
-    No CLIP / Gemini-API call here — detect+match+resolve happen in
-    /internal/pipeline when the Gem's .response.json returns. Does NOT touch
-    seen_items.json (repeatable test harness). Returns the number of lots
-    uploaded.
-    """
-    from . import ebay_client
-
-    try:
-        ebay_app_id  = _get_secret("EBAY_APP_ID")
-        ebay_cert_id = _get_secret("EBAY_CERT_ID")
-    except Exception as exc:
-        print(f"!!! CRAWL10: eBay credentials unavailable — aborting: {exc}", flush=True)
-        notifier.send_warning(_slack_token, _channel_id, "/crawl10: no eBay credentials.")
-        return 0
-
-    print(f">>> CRAWL10: starting — query={config.CRAWL10_QUERY!r}.", flush=True)
-
-    try:
-        all_listings = ebay_client.find_all_listings(
-            client_id=ebay_app_id, client_secret=ebay_cert_id,
-            queries=[config.CRAWL10_QUERY],
-            excluded_sellers=[],                       # do not exclude any seller
-            excluded_keywords=config.EXCLUDED_KEYWORDS,  # keep apparel/noise filter
-            max_results=200,
-        )
-    except Exception as exc:
-        print(f"!!! CRAWL10: search failed: {exc}", flush=True)
-        notifier.send_warning(_slack_token, _channel_id, f"/crawl10 search failed: {exc}")
-        return 0
-
-    new_listings = dedup_listings(all_listings)[: config.CRAWL10_MAX_LOTS]
-    print(f">>> CRAWL10: {len(all_listings)} unique found; uploading "
-          f"{len(new_listings)} primary photos (cap {config.CRAWL10_MAX_LOTS}).", flush=True)
-
-    if not new_listings:
-        notifier.send_warning(_slack_token, _channel_id,
-                              "/crawl10: no lots to upload this run.")
-        return 0
-
-    uploaded = 0
-    for listing in new_listings:
-        item_id = listing["item_id"]
-        seller  = listing.get("seller", "")
-        try:
-            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, "/crawl10"):
-                uploaded += 1
-        except Exception as exc:
-            print(f"!!! CRAWL10: upload failed for {item_id} [{seller}]: {exc}", flush=True)
-            traceback.print_exc()
-
-    notifier.send_warning(
-        _slack_token, _channel_id,
-        f"🔎 `/crawl10`: pushed {uploaded}/{len(new_listings)} lots' primary photos into "
-        f"the Gemini pipeline. Per-lot results will post here as each Gem read returns."
-    )
-    print(f">>> CRAWL10: upload complete — uploaded={uploaded}/{len(new_listings)}.", flush=True)
-    return uploaded
 
 
 # ---------------------------------------------------------------------------

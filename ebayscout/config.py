@@ -246,14 +246,14 @@ MELLON_CITIZENS_ERA_QUERIES: list[tuple[str, str]] = (
 PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
 # Produces 4 queries: "PSU button", "PSU pin", "PSU badge", "PSU pinback"
 
-# --- on-demand2 (/crawl500) search ---------------------------------------------
+# --- on-demand2 (/crawl) search ------------------------------------------------
 # User-stipulated search, distinct from everything above:
 #   "Penn State" AND (Citizens OR Mellon OR "Central Counties")
 #                AND (button* OR pin* OR Badge*)
 # The eBay Browse `q` parameter has no reliable boolean/wildcard support, and
 # find_listings() does not paginate past one <=200 window, so we OR-expand the
-# query into one explicit phrase per (bank x button-type), dedup, and cap at 500.
-# NO seller exclusion (see /internal/crawl500); the apparel-keyword + Clothing
+# query into one explicit phrase per (bank x button-type) and dedup.
+# NO seller exclusion (see /internal/crawl); the apparel-keyword + Clothing
 # category noise filters stay on.
 CRAWL500_BANKS: list[str] = ["Citizens", "Mellon", "Central Counties"]
 CRAWL500_QUERIES: list[str] = [
@@ -262,16 +262,12 @@ CRAWL500_QUERIES: list[str] = [
     for btn in BUTTON_TYPES
 ]
 # Produces 3 banks x 4 button-types = 12 queries.
-CRAWL500_MAX_LOTS = 500   # hard ceiling on lots processed per /crawl500 run
+CRAWL500_MAX_LOTS = 500   # historical default; the /crawl command now takes N.
 
-# --- on-demand (/crawl10) search -------------------------------------------
-# Small, fixed-size test crawl: a single search, capped at 10 lots. Each lot's
-# PRIMARY photo is pushed into the Gemini pipeline (Drive watcher → Gem → GCS);
-# results return asynchronously to /pipeline/notify (see _run_crawl10 +
-# process_pipeline_lot). NO seller exclusion, same noise filters as /crawl500.
-# Does not touch seen_items.json — repeatable test harness.
-CRAWL10_QUERY    = "Penn State bank button"
-CRAWL10_MAX_LOTS = 10
+# Hard upper bound on the N accepted by the `/crawl <N>` slash command. A bigger
+# number is a costly paid run (eBay + CLIP), so this guards against a fat-finger
+# like `/crawl 50000` — the handler rejects N outside 1..CRAWL_MAX_LOTS_CAP.
+CRAWL_MAX_LOTS_CAP = 1000
 
 # --- Gemini → GCS pipeline (Drive watcher → Gem → GCS → /pipeline/notify) -----
 # Google Drive folder the external watcher polls; /crawl10 uploads primary lot

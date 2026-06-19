@@ -1,14 +1,14 @@
 # Watcher contract — routing eBay-Scout lots through the Gemini pipeline
 
-`/crawl10` and `/crawl500` push each lot's **primary photo** into the same
-Drive → Gem → GCS pipeline buttonmatcher uses, and consume the result
+`/crawl <N>` pushes each lot's **primary photo** into the same
+Drive → Gem → GCS pipeline buttonmatcher uses, and consumes the result
 asynchronously. The watcher (separate repo, **not** in this codebase) routes
 ebayscout's lots back to ebayscout. This is the one piece that lives outside
 ebayscout — until it's done, the end-to-end flow won't complete (but
 `/internal/pipelinetest` works without it; see VERIFY below).
 
-`/crawl500` feeds up to 500 lots in one run; the watcher drains them one at a
-time, so a full run is multi-hour (~1–2 min/Gem). On each confirmed result
+`/crawl <N>` feeds up to N lots (1–1000) in one run; the watcher drains them one
+at a time, so a big run is multi-hour (~1–2 min/Gem). On each confirmed result
 ebayscout posts only **deals** (a needed button, or matched value > asking),
 **auto-stages** the surest crops into `reference/_staging/`, and marks the lot
 **seen** — so a lot is never re-run.
@@ -92,14 +92,14 @@ upload path.
 
 Stay scale-to-zero: no `--no-cpu-throttling`, no `--min-instances`; keep
 `--max-instances=1`. The notify→internal kick is the same proven pattern as
-`/internal/crawl10`.
+`/internal/crawl`.
 
 ## Verify (no watcher needed for step 1)
 1. `GET /internal/pipelinetest?object=pipeline/output/ebayscout__<key>.png.response.json`
    (use an object the Gem already produced) → `#ebay-checker` posts only if the
    lot is a deal (needed button / undervalued); the surest crops auto-stage under
    `reference/_staging/<entry_id>/`; `scan_log.jsonl` + `seen_items.json` grow.
-2. Full path: run `/crawl10` (10-lot validation of the exact `/crawl500` output
+2. Full path: run `/crawl 10` (small validation of the exact full-run output
    path) → photos upload to GCS → Gem → watcher → `/pipeline/notify` →
-   `#ebay-checker`. Then `/crawl500` for the full run; a re-run skips
-   already-confirmed lots.
+   `#ebay-checker`. Then `/crawl 800` (or up to 1000) for a big run; a re-run
+   skips already-confirmed lots.
