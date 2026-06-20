@@ -68,11 +68,13 @@ RED_THRESHOLD             = 0.65   # below this = low confidence (35% wrong in d
 REF_CHECK_WEIGHT          = 0.15
 
 # Auto-staging gate (Gemini pipeline). A crop is copied straight into
-# reference/_staging (for buttonmatcher's /reference review) only when it cleared
-# real Hough detection, Gemini confirmed its slogan, AND its CLIP `overall` is at
-# least this high. Deliberately equal to AUTO_RESOLVE_THRESHOLD — only the surest
-# crops seed the reference DB at scale; everything else is reviewed by eye.
-STAGE_CONF = 0.85
+# reference/_staging (for buttonmatcher's /reference review) when it cleared real
+# Hough detection AND Gemini confirmed its slogan (independent agreement). The
+# CLIP `overall` is NO LONGER a confidence gate — log analysis (Logger_5) showed a
+# score threshold is the wrong safety lever (a 0.968 visual-twin still matched
+# wrong, while a 0.82 floor captured ~3.5x more good crops). Gemini agreement is
+# the safety; this value is only a tiny junk floor (ignore sub-~0.5 noise).
+STAGE_CONF = 0.50
 
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"

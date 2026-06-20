@@ -2177,8 +2177,9 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
     purposes), selected by ``source``:
       - "daily"  → the daily pull (_collect_ebay_listings: EBAY_SEARCH_QUERIES +
                    PSU restricted to Sports-Mem, with config safeguards).
-      - "/crawl" → the fixed on-demand search (CRAWL500_QUERIES, OR-expanded, no
-                   seller exclusion; apparel-keyword/Clothing-category filters on).
+      - "/crawl" → the fixed on-demand search (CRAWL500_QUERIES, OR-expanded),
+                   with the SAME eBay safeguards as the daily scan (excluded
+                   sellers + keywords + categories, all from shared config).
     ``source`` also tags the lots in the pipeline (→ detection mode + scan_log
     `command`) and the Slack summary. ``ignore_seen`` feeds every fetched lot
     regardless of seen_items; ``dry_run`` reports the count without feeding or
@@ -2211,12 +2212,14 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
             all_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
         else:
             # /crawl: its own fixed on-demand search — deliberately separate from
-            # the daily queries. OR-expansion → one <=200 window per (bank x type);
-            # NO seller exclusion (apparel-keyword + Clothing-category filters stay).
+            # the daily queries. OR-expansion → one <=200 window per (bank x type),
+            # with the same eBay safeguards as the daily/auto scan (excluded
+            # sellers + keywords; category 11450 dropped inside find_listings via
+            # config.EXCLUDED_CATEGORY_IDS regardless).
             all_listings = ebay_client.find_all_listings(
                 client_id=ebay_app_id, client_secret=ebay_cert_id,
                 queries=config.CRAWL500_QUERIES,
-                excluded_sellers=[],
+                excluded_sellers=config.EXCLUDED_SELLERS,
                 excluded_keywords=config.EXCLUDED_KEYWORDS,
                 max_results=200,
             )

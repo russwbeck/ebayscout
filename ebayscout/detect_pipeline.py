@@ -1456,7 +1456,14 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                     for (x, y, r) in _added:
                         cv2.circle(debug_img, (x, y), r, (0, 165, 255), 1)
 
-        if len(cleaned) >= max(6, expected - 4):
+        # Accept Hough when it has enough circles to form a grid (>=6, the original
+        # floor), OR when it has essentially found the expected FEW-button count.  Logs
+        # (Logger_5): Hough engaged on 0% of 1-3 button lots yet its pass-1 nailed the
+        # single button 77% of the time -- the old floor of 6 forced every <=5-button
+        # image onto the projection-grid fallback and discarded a correct detection.
+        _enough = len(cleaned) >= max(6, expected - 4)
+        _small_complete = expected <= 5 and len(cleaned) >= max(1, expected - 1)
+        if _enough or _small_complete:
             # row_tol: grid-based when rows known, else radius-based
             row_tol = int(h / rows * 0.6) if rows is not None else int(expected_r * 1.5)
             rows_est = []
