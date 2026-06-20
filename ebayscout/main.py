@@ -2153,8 +2153,9 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
 
 def _run_crawl(n: int) -> int:
     """Feed the fixed on-demand2 search (config.CRAWL500_QUERIES) into the Gemini
-    pipeline, capped at N lots. NO seller exclusion (apparel-keyword +
-    Clothing-category filters stay on).
+    pipeline, capped at N lots. Applies the SAME eBay safeguards as the daily/auto
+    scan — excluded sellers, apparel/noise keywords, and the excluded categories
+    (11450) — all from the shared config so the two search paths stay in sync.
 
     SEEN-aware: each lot's primary photo is pushed into the pipeline (watcher →
     Gem → GCS → /pipeline/notify); detection, matching, deal-posting, auto-
@@ -2180,13 +2181,17 @@ def _run_crawl(n: int) -> int:
     print(f">>> CRAWL: starting (n={n}, first_run={first_run}) over "
           f"{len(config.CRAWL500_QUERIES)} OR-expanded queries.", flush=True)
 
-    # OR-expansion → one <=200 window per (bank x type); NO seller exclusion.
+    # OR-expansion → one <=200 window per (bank x type); same safeguards as auto.
     try:
         all_listings = ebay_client.find_all_listings(
             client_id=ebay_app_id, client_secret=ebay_cert_id,
             queries=config.CRAWL500_QUERIES,
-            excluded_sellers=[],                       # do not exclude any seller
-            excluded_keywords=config.EXCLUDED_KEYWORDS,  # keep apparel/noise filter
+            # Same eBay safeguards as the daily/auto scan — one shared source of
+            # truth in config. Sellers were previously NOT excluded here; as crawl
+            # scales it must match auto mode. (Category 11450 is dropped inside
+            # find_listings from config.EXCLUDED_CATEGORY_IDS regardless.)
+            excluded_sellers=config.EXCLUDED_SELLERS,
+            excluded_keywords=config.EXCLUDED_KEYWORDS,
             max_results=200,
         )
     except Exception as exc:
