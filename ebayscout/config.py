@@ -271,6 +271,17 @@ CRAWL500_MAX_LOTS = 500   # historical default; the /crawl command now takes N.
 # like `/crawl 50000` — the handler rejects N outside 1..CRAWL_MAX_LOTS_CAP.
 CRAWL_MAX_LOTS_CAP = 1000
 
+# The default daily /run-scan FEEDS THE GEMINI PIPELINE (detection → Gemini →
+# CLIP via process_pipeline_lot) instead of the legacy CLIP-only scan. `/crawl
+# <N>` is the manual one-off; the daily scan is the automated default moving
+# forward. Set DAILY_PIPELINE_FEED=0 to revert the daily run to the CLIP scan
+# without a redeploy (e.g. if the watcher workers are down).
+DAILY_PIPELINE_FEED = os.environ.get("DAILY_PIPELINE_FEED", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+# Max lots the daily pipeline feed pushes per run. Seen-aware, so after the first
+# run daily increments are just the day's new listings; this caps the first run.
+DAILY_PIPELINE_N = 1000
+
 # --- Gemini → GCS pipeline (Drive watcher → Gem → GCS → /pipeline/notify) -----
 # Google Drive folder the external watcher polls; /crawl10 uploads primary lot
 # photos here. Set DRIVE_FOLDER_ID in the deploy env. The Drive service-account

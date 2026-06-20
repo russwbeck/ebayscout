@@ -281,9 +281,19 @@ def run_scan():
         return jsonify({"status": "already running"}), 409
 
     try:
-        remaining = _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
-                                    year_crawl=year_crawl, era_crawl=era_crawl,
-                                    limit=limit, hunt_ids=hunt_ids)
+        if not (year_crawl or era_crawl or hunt_ids) and config.DAILY_PIPELINE_FEED:
+            # DEFAULT daily scan: feed the Gemini pipeline (detect → Gemini → CLIP
+            # via process_pipeline_lot), the promoted default. /crawl is the manual
+            # one-off. The year/era/hunt market-DB variants stay on the CLIP path
+            # below; DAILY_PIPELINE_FEED=0 reverts the default to the CLIP scan.
+            effective_dry = config.DRY_RUN if dry_run_param is None else dry_run_param
+            n = limit if limit > 0 else config.DAILY_PIPELINE_N
+            remaining = _run_crawl(n, source="daily", ignore_seen=ignore_seen,
+                                   dry_run=effective_dry)
+        else:
+            remaining = _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
+                                        year_crawl=year_crawl, era_crawl=era_crawl,
+                                        limit=limit, hunt_ids=hunt_ids)
     finally:
         _scan_lock.release()
 
@@ -1264,7 +1274,7 @@ def _evaluate_listing(
     from . import clip_matcher as _cm
 
     item_id = listing["item_id"]
-    mode    = "crawl500" if command in ("/crawl", "/crawl500") else "scan"
+    mode    = "crawl500" if command in ("/crawl", "/crawl500", "daily") else "scan"
     bank    = listing.get("search_era") or ""
 
     per_photo_cap  = max(config.MAX_CROPS_PER_PHOTO, title_count or 0)
@@ -1791,26 +1801,10 @@ def _run_daily_scan(
         # with no year/era crawl), since the hunt supplies its own listings.
         if ebay_app_id and ebay_cert_id:
             try:
-                ebay_listings = ebay_client.find_all_listings(
-                    client_id=ebay_app_id,
-                    client_secret=ebay_cert_id,
-                    queries=config.EBAY_SEARCH_QUERIES,
-                    excluded_sellers=config.EXCLUDED_SELLERS,
-                    max_results=config.EBAY_MAX_RESULTS,
-                )
+                ebay_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
                 all_listings.extend(ebay_listings)
-                # PSU queries restricted to Sports Memorabilia to avoid electronics
-                psu_listings = ebay_client.find_all_listings(
-                    client_id=ebay_app_id,
-                    client_secret=ebay_cert_id,
-                    queries=config.PSU_SEARCH_QUERIES,
-                    excluded_sellers=config.EXCLUDED_SELLERS,
-                    max_results=config.EBAY_MAX_RESULTS,
-                    category_ids=config.SPORTS_MEMO_CATEGORY_ID,
-                )
-                all_listings.extend(psu_listings)
-                print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
-                      f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
+                print(f">>> SCAN: eBay returned {len(ebay_listings)} listings "
+                      f"(general + PSU/sports).", flush=True)
             except Exception as exc:
                 print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
         else:
@@ -2151,21 +2145,52 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
     return key
 
 
-def _run_crawl(n: int) -> int:
-    """Feed the fixed on-demand2 search (config.CRAWL500_QUERIES) into the Gemini
-    pipeline, capped at N lots. Applies the SAME eBay safeguards as the daily/auto
-    scan — excluded sellers, apparel/noise keywords, and the excluded categories
-    (11450) — all from the shared config so the two search paths stay in sync.
+def _collect_ebay_listings(ebay_app_id, ebay_cert_id):
+    """The daily eBay pull (used by the daily CLIP scan and the daily pipeline
+    feed — NOT by /crawl, which has its own search): the general queries
+    (EBAY_SEARCH_QUERIES) plus the PSU queries restricted to Sports-Mem (drops
+    Power-Supply-Unit noise), with the standard seller/keyword/category
+    safeguards from config. Returns a combined (not-yet-deduped) list; callers
+    dedup."""
+    out = ebay_client.find_all_listings(
+        client_id=ebay_app_id, client_secret=ebay_cert_id,
+        queries=config.EBAY_SEARCH_QUERIES,
+        excluded_sellers=config.EXCLUDED_SELLERS,
+        max_results=config.EBAY_MAX_RESULTS,
+    )
+    out += ebay_client.find_all_listings(
+        client_id=ebay_app_id, client_secret=ebay_cert_id,
+        queries=config.PSU_SEARCH_QUERIES,
+        excluded_sellers=config.EXCLUDED_SELLERS,
+        max_results=config.EBAY_MAX_RESULTS,
+        category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+    )
+    return out
+
+
+def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
+               dry_run: bool = False) -> int:
+    """Feed an eBay pull into the Gemini pipeline, capped at N lots; the pipeline
+    does detection → Gemini → CLIP → deal-posting → auto-staging.
+
+    The daily scan and /crawl keep SEPARATE searches (they serve different
+    purposes), selected by ``source``:
+      - "daily"  → the daily pull (_collect_ebay_listings: EBAY_SEARCH_QUERIES +
+                   PSU restricted to Sports-Mem, with config safeguards).
+      - "/crawl" → the fixed on-demand search (CRAWL500_QUERIES, OR-expanded),
+                   with the SAME eBay safeguards as the daily scan (excluded
+                   sellers + keywords + categories, all from shared config).
+    ``source`` also tags the lots in the pipeline (→ detection mode + scan_log
+    `command`) and the Slack summary. ``ignore_seen`` feeds every fetched lot
+    regardless of seen_items; ``dry_run`` reports the count without feeding or
+    mutating state.
 
     SEEN-aware: each lot's primary photo is pushed into the pipeline (watcher →
-    Gem → GCS → /pipeline/notify); detection, matching, deal-posting, auto-
-    staging, and the per-lot logs (scan_log.jsonl + marking the lot seen) all
-    happen asynchronously in process_pipeline_lot as each Gem read returns. A lot
-    is marked seen ONLY on confirmation, so a lot the Gem never answers is
-    retried, never lost.
-
-    First run (per the GCS marker) may re-feed already-seen lots to reach N;
-    every run after feeds only unseen lots. Returns the number of lots fed.
+    Gem → GCS → /pipeline/notify); everything else happens asynchronously in
+    process_pipeline_lot. A lot is marked seen ONLY on confirmation, so a lot the
+    Gem never answers is retried, never lost. First run (per the GCS marker) — or
+    ignore_seen — feeds already-seen lots too; every run after feeds only unseen.
+    Returns the number of lots fed (or that would be fed, for dry_run).
     """
     from . import ebay_client, seen_items as seen_store
 
@@ -2173,62 +2198,74 @@ def _run_crawl(n: int) -> int:
         ebay_app_id  = _get_secret("EBAY_APP_ID")
         ebay_cert_id = _get_secret("EBAY_CERT_ID")
     except Exception as exc:
-        print(f"!!! CRAWL: eBay credentials unavailable — aborting: {exc}", flush=True)
-        notifier.send_warning(_slack_token, _channel_id, "/crawl: no eBay credentials.")
+        print(f"!!! FEED[{source}]: eBay credentials unavailable — aborting: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, f"{source}: no eBay credentials.")
         return 0
 
     first_run = not seen_store.ondemand2_first_run_done()
-    print(f">>> CRAWL: starting (n={n}, first_run={first_run}) over "
-          f"{len(config.CRAWL500_QUERIES)} OR-expanded queries.", flush=True)
+    feed_all = first_run or ignore_seen
+    print(f">>> FEED[{source}]: starting (n={n}, first_run={first_run}, "
+          f"ignore_seen={ignore_seen}, dry_run={dry_run}).", flush=True)
 
-    # OR-expansion → one <=200 window per (bank x type); same safeguards as auto.
     try:
-        all_listings = ebay_client.find_all_listings(
-            client_id=ebay_app_id, client_secret=ebay_cert_id,
-            queries=config.CRAWL500_QUERIES,
-            # Same eBay safeguards as the daily/auto scan — one shared source of
-            # truth in config. Sellers were previously NOT excluded here; as crawl
-            # scales it must match auto mode. (Category 11450 is dropped inside
-            # find_listings from config.EXCLUDED_CATEGORY_IDS regardless.)
-            excluded_sellers=config.EXCLUDED_SELLERS,
-            excluded_keywords=config.EXCLUDED_KEYWORDS,
-            max_results=200,
-        )
+        if source == "daily":
+            all_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
+        else:
+            # /crawl: its own fixed on-demand search — deliberately separate from
+            # the daily queries. OR-expansion → one <=200 window per (bank x type),
+            # with the same eBay safeguards as the daily/auto scan (excluded
+            # sellers + keywords; category 11450 dropped inside find_listings via
+            # config.EXCLUDED_CATEGORY_IDS regardless).
+            all_listings = ebay_client.find_all_listings(
+                client_id=ebay_app_id, client_secret=ebay_cert_id,
+                queries=config.CRAWL500_QUERIES,
+                excluded_sellers=config.EXCLUDED_SELLERS,
+                excluded_keywords=config.EXCLUDED_KEYWORDS,
+                max_results=200,
+            )
     except Exception as exc:
-        print(f"!!! CRAWL: search failed: {exc}", flush=True)
-        notifier.send_warning(_slack_token, _channel_id, f"/crawl search failed: {exc}")
+        print(f"!!! FEED[{source}]: search failed: {exc}", flush=True)
+        notifier.send_warning(_slack_token, _channel_id, f"{source} search failed: {exc}")
         return 0
 
     all_listings = dedup_listings(all_listings)
     seen = seen_store.load_seen()
 
-    # Skip lots already run (in `seen`); on the very first run feed everything to
-    # reach the N cap. `seen` is marked on confirmation (process_pipeline_lot),
-    # never here, so failed/un-answered lots stay re-feedable.
-    if first_run:
+    # Skip lots already run (in `seen`) unless feed_all. `seen` is marked on
+    # confirmation (process_pipeline_lot), never here, so failed/un-answered lots
+    # stay re-feedable.
+    if feed_all:
         candidate = all_listings
     else:
         candidate = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
     new_listings = candidate[: n]
-    print(f">>> CRAWL: {len(all_listings)} unique found; feeding "
-          f"{len(new_listings)} into the pipeline (cap {n}).", flush=True)
+    print(f">>> FEED[{source}]: {len(all_listings)} unique found; "
+          f"{'WOULD feed' if dry_run else 'feeding'} {len(new_listings)} (cap {n}).",
+          flush=True)
 
     if not new_listings:
         notifier.send_warning(_slack_token, _channel_id,
-                              "/crawl: no lots to feed this run.")
-        if first_run:
+                              f"{source}: no new lots to feed this run.")
+        if first_run and not dry_run:
             seen_store.mark_ondemand2_first_run_done()
         return 0
+
+    if dry_run:
+        notifier.send_warning(
+            _slack_token, _channel_id,
+            f"🔎 `{source}` dry run: would feed {len(new_listings)} lot(s) "
+            f"(cap {n}). Nothing fed, nothing marked seen.")
+        return len(new_listings)
 
     fed = 0
     for listing in new_listings:
         item_id = listing["item_id"]
         seller  = listing.get("seller", "")
         try:
-            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, "/crawl"):
+            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, source):
                 fed += 1
         except Exception as exc:
-            print(f"!!! CRAWL: feed failed for {item_id} [{seller}]: {exc}", flush=True)
+            print(f"!!! FEED[{source}]: feed failed for {item_id} [{seller}]: {exc}", flush=True)
             traceback.print_exc()
 
     if first_run:
@@ -2236,13 +2273,12 @@ def _run_crawl(n: int) -> int:
 
     notifier.send_warning(
         _slack_token, _channel_id,
-        f"🔎 `/crawl {n}`: fed {fed}/{len(new_listings)} lot(s) into the Gemini "
-        f"pipeline{' (first run — included already-seen lots)' if first_run else ''}. "
+        f"🔎 `{source}`: fed {fed}/{len(new_listings)} lot(s) into the Gemini "
+        f"pipeline{' (first run — included already-seen lots)' if feed_all else ''}. "
         f"Deals (needed buttons / undervalued lots) post here as each Gem read "
         f"returns; confirmed lots are marked seen so they are never re-run."
     )
-    print(f">>> CRAWL: feed complete — fed={fed}/{len(new_listings)} "
-          f"(n={n}, first_run={first_run}).", flush=True)
+    print(f">>> FEED[{source}]: feed complete — fed={fed}/{len(new_listings)}.", flush=True)
     return fed
 
 
