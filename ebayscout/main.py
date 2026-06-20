@@ -2146,11 +2146,12 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
 
 
 def _collect_ebay_listings(ebay_app_id, ebay_cert_id):
-    """The shared eBay pull used by BOTH the daily scan and /crawl, so the two
-    never search different sets: the general queries (EBAY_SEARCH_QUERIES) plus
-    the PSU queries restricted to Sports-Mem (drops Power-Supply-Unit noise),
-    with the standard seller/keyword/category safeguards from config. Returns a
-    combined (not-yet-deduped) list; callers dedup."""
+    """The daily eBay pull (used by the daily CLIP scan and the daily pipeline
+    feed — NOT by /crawl, which has its own search): the general queries
+    (EBAY_SEARCH_QUERIES) plus the PSU queries restricted to Sports-Mem (drops
+    Power-Supply-Unit noise), with the standard seller/keyword/category
+    safeguards from config. Returns a combined (not-yet-deduped) list; callers
+    dedup."""
     out = ebay_client.find_all_listings(
         client_id=ebay_app_id, client_secret=ebay_cert_id,
         queries=config.EBAY_SEARCH_QUERIES,
@@ -2169,13 +2170,17 @@ def _collect_ebay_listings(ebay_app_id, ebay_cert_id):
 
 def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
                dry_run: bool = False) -> int:
-    """Feed the shared eBay pull (_collect_ebay_listings — the SAME search the
-    daily scan and /crawl use) into the Gemini pipeline, capped at N lots; the
-    pipeline does detection → Gemini → CLIP → deal-posting → auto-staging.
+    """Feed an eBay pull into the Gemini pipeline, capped at N lots; the pipeline
+    does detection → Gemini → CLIP → deal-posting → auto-staging.
 
-    ``source`` tags the lots both in the pipeline (→ detection mode + scan_log
-    `command`) and in the Slack summary: "daily" for the automated daily scan,
-    "/crawl" for the manual one-off. ``ignore_seen`` feeds every fetched lot
+    The daily scan and /crawl keep SEPARATE searches (they serve different
+    purposes), selected by ``source``:
+      - "daily"  → the daily pull (_collect_ebay_listings: EBAY_SEARCH_QUERIES +
+                   PSU restricted to Sports-Mem, with config safeguards).
+      - "/crawl" → the fixed on-demand search (CRAWL500_QUERIES, OR-expanded, no
+                   seller exclusion; apparel-keyword/Clothing-category filters on).
+    ``source`` also tags the lots in the pipeline (→ detection mode + scan_log
+    `command`) and the Slack summary. ``ignore_seen`` feeds every fetched lot
     regardless of seen_items; ``dry_run`` reports the count without feeding or
     mutating state.
 
@@ -2202,7 +2207,19 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
           f"ignore_seen={ignore_seen}, dry_run={dry_run}).", flush=True)
 
     try:
-        all_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
+        if source == "daily":
+            all_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
+        else:
+            # /crawl: its own fixed on-demand search — deliberately separate from
+            # the daily queries. OR-expansion → one <=200 window per (bank x type);
+            # NO seller exclusion (apparel-keyword + Clothing-category filters stay).
+            all_listings = ebay_client.find_all_listings(
+                client_id=ebay_app_id, client_secret=ebay_cert_id,
+                queries=config.CRAWL500_QUERIES,
+                excluded_sellers=[],
+                excluded_keywords=config.EXCLUDED_KEYWORDS,
+                max_results=200,
+            )
     except Exception as exc:
         print(f"!!! FEED[{source}]: search failed: {exc}", flush=True)
         notifier.send_warning(_slack_token, _channel_id, f"{source} search failed: {exc}")
