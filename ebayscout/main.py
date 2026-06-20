@@ -1791,26 +1791,10 @@ def _run_daily_scan(
         # with no year/era crawl), since the hunt supplies its own listings.
         if ebay_app_id and ebay_cert_id:
             try:
-                ebay_listings = ebay_client.find_all_listings(
-                    client_id=ebay_app_id,
-                    client_secret=ebay_cert_id,
-                    queries=config.EBAY_SEARCH_QUERIES,
-                    excluded_sellers=config.EXCLUDED_SELLERS,
-                    max_results=config.EBAY_MAX_RESULTS,
-                )
+                ebay_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
                 all_listings.extend(ebay_listings)
-                # PSU queries restricted to Sports Memorabilia to avoid electronics
-                psu_listings = ebay_client.find_all_listings(
-                    client_id=ebay_app_id,
-                    client_secret=ebay_cert_id,
-                    queries=config.PSU_SEARCH_QUERIES,
-                    excluded_sellers=config.EXCLUDED_SELLERS,
-                    max_results=config.EBAY_MAX_RESULTS,
-                    category_ids=config.SPORTS_MEMO_CATEGORY_ID,
-                )
-                all_listings.extend(psu_listings)
-                print(f">>> SCAN: eBay returned {len(ebay_listings) + len(psu_listings)} listings "
-                      f"({len(ebay_listings)} main + {len(psu_listings)} PSU/sports).", flush=True)
+                print(f">>> SCAN: eBay returned {len(ebay_listings)} listings "
+                      f"(general + PSU/sports).", flush=True)
             except Exception as exc:
                 print(f"!!! SCAN: eBay query failed: {exc}", flush=True)
         else:
@@ -2151,10 +2135,33 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
     return key
 
 
+def _collect_ebay_listings(ebay_app_id, ebay_cert_id):
+    """The shared eBay pull used by BOTH the daily scan and /crawl, so the two
+    never search different sets: the general queries (EBAY_SEARCH_QUERIES) plus
+    the PSU queries restricted to Sports-Mem (drops Power-Supply-Unit noise),
+    with the standard seller/keyword/category safeguards from config. Returns a
+    combined (not-yet-deduped) list; callers dedup."""
+    out = ebay_client.find_all_listings(
+        client_id=ebay_app_id, client_secret=ebay_cert_id,
+        queries=config.EBAY_SEARCH_QUERIES,
+        excluded_sellers=config.EXCLUDED_SELLERS,
+        max_results=config.EBAY_MAX_RESULTS,
+    )
+    out += ebay_client.find_all_listings(
+        client_id=ebay_app_id, client_secret=ebay_cert_id,
+        queries=config.PSU_SEARCH_QUERIES,
+        excluded_sellers=config.EXCLUDED_SELLERS,
+        max_results=config.EBAY_MAX_RESULTS,
+        category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+    )
+    return out
+
+
 def _run_crawl(n: int) -> int:
-    """Feed the fixed on-demand2 search (config.CRAWL500_QUERIES) into the Gemini
-    pipeline, capped at N lots. NO seller exclusion (apparel-keyword +
-    Clothing-category filters stay on).
+    """Feed the daily eBay pull — the SAME search as the 9am scan (general + PSU/
+    sports queries via _collect_ebay_listings, same seller/keyword/category
+    safeguards) — into the Gemini pipeline, capped at N lots. /crawl and the daily
+    scan therefore search identical sets; only the cap + processing differ.
 
     SEEN-aware: each lot's primary photo is pushed into the pipeline (watcher →
     Gem → GCS → /pipeline/notify); detection, matching, deal-posting, auto-
@@ -2177,18 +2184,11 @@ def _run_crawl(n: int) -> int:
         return 0
 
     first_run = not seen_store.ondemand2_first_run_done()
-    print(f">>> CRAWL: starting (n={n}, first_run={first_run}) over "
-          f"{len(config.CRAWL500_QUERIES)} OR-expanded queries.", flush=True)
+    print(f">>> CRAWL: starting (n={n}, first_run={first_run}) — same eBay pull "
+          f"as the daily scan.", flush=True)
 
-    # OR-expansion → one <=200 window per (bank x type); NO seller exclusion.
     try:
-        all_listings = ebay_client.find_all_listings(
-            client_id=ebay_app_id, client_secret=ebay_cert_id,
-            queries=config.CRAWL500_QUERIES,
-            excluded_sellers=[],                       # do not exclude any seller
-            excluded_keywords=config.EXCLUDED_KEYWORDS,  # keep apparel/noise filter
-            max_results=200,
-        )
+        all_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
     except Exception as exc:
         print(f"!!! CRAWL: search failed: {exc}", flush=True)
         notifier.send_warning(_slack_token, _channel_id, f"/crawl search failed: {exc}")
