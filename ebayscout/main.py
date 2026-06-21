@@ -2152,6 +2152,7 @@ def _collect_ebay_listings(ebay_app_id, ebay_cert_id):
     Power-Supply-Unit noise), with the standard seller/keyword/category
     safeguards from config. Returns a combined (not-yet-deduped) list; callers
     dedup."""
+    from . import ebay_client       # lazy import — matches the other callers
     out = ebay_client.find_all_listings(
         client_id=ebay_app_id, client_secret=ebay_cert_id,
         queries=config.EBAY_SEARCH_QUERIES,
