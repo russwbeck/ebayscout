@@ -85,14 +85,25 @@ class TestMarkSeen:
         seen: dict = {}
         seen_items.mark_seen("item_abc", seen)
         assert "item_abc" in seen
-        # Date should be a valid ISO date string
         from datetime import date
-        date.fromisoformat(seen["item_abc"])  # raises ValueError if invalid
+        val = seen["item_abc"]
+        assert isinstance(val, str)
+        date.fromisoformat(val)
 
     def test_uses_provided_date(self):
         seen: dict = {}
         seen_items.mark_seen("item_xyz", seen, date_str="2024-12-25")
         assert seen["item_xyz"] == "2024-12-25"
+
+    def test_second_mark_promotes_to_list(self):
+        seen: dict = {"item_1": "2026-05-01"}
+        seen_items.mark_seen("item_1", seen, date_str="2026-06-22")
+        assert seen["item_1"] == ["2026-05-01", "2026-06-22"]
+
+    def test_third_mark_appends(self):
+        seen: dict = {"item_1": ["2026-05-01", "2026-06-22"]}
+        seen_items.mark_seen("item_1", seen, date_str="2026-07-01")
+        assert seen["item_1"] == ["2026-05-01", "2026-06-22", "2026-07-01"]
 
     def test_round_trip(self):
         """load → mark → save → load should preserve state."""
@@ -120,3 +131,78 @@ class TestMarkSeen:
 
         assert reloaded["existing_item"] == "2025-01-01"
         assert reloaded["new_item"] == "2025-05-26"
+
+    def test_round_trip_with_list_values(self):
+        """Lists survive JSON round-trip through GCS."""
+        initial_data = {"item_1": ["2026-05-01", "2026-06-22"]}
+        json_payload = [json.dumps(initial_data)]
+
+        mock_blob = MagicMock()
+        mock_blob.exists.return_value = True
+        mock_blob.download_as_text.side_effect = lambda: json_payload[0]
+        mock_bucket = MagicMock()
+        mock_bucket.blob.return_value = mock_blob
+        mock_client = MagicMock()
+        mock_client.bucket.return_value = mock_bucket
+
+        def capture_upload(content, **kwargs):
+            json_payload[0] = content
+
+        mock_blob.upload_from_string.side_effect = capture_upload
+
+        with patch("ebayscout.seen_items.storage.Client", return_value=mock_client):
+            seen = seen_items.load_seen("bucket")
+            seen_items.save_seen(seen, "bucket")
+            reloaded = seen_items.load_seen("bucket")
+
+        assert reloaded["item_1"] == ["2026-05-01", "2026-06-22"]
+
+
+class TestSeenCount:
+    def test_absent(self):
+        assert seen_items.seen_count("missing", {}) == 0
+
+    def test_string_value(self):
+        assert seen_items.seen_count("x", {"x": "2026-01-01"}) == 1
+
+    def test_list_value(self):
+        assert seen_items.seen_count("x", {"x": ["2026-01-01", "2026-06-22"]}) == 2
+
+
+class TestFirstSeenDate:
+    def test_absent(self):
+        assert seen_items.first_seen_date("missing", {}) is None
+
+    def test_string_value(self):
+        assert seen_items.first_seen_date("x", {"x": "2026-05-01"}) == "2026-05-01"
+
+    def test_list_value(self):
+        assert seen_items.first_seen_date("x", {"x": ["2026-05-01", "2026-06-22"]}) == "2026-05-01"
+
+
+class TestIsCrawlUnseen:
+    CUTOFF = "2026-06-21"
+
+    def test_never_seen(self):
+        assert seen_items.is_crawl_unseen("new", {}, cutoff=self.CUTOFF) is True
+
+    def test_pre_cutoff_seen_once(self):
+        seen = {"old": "2026-05-15"}
+        assert seen_items.is_crawl_unseen("old", seen, cutoff=self.CUTOFF) is True
+
+    def test_pre_cutoff_seen_twice(self):
+        seen = {"old": ["2026-05-15", "2026-06-22"]}
+        assert seen_items.is_crawl_unseen("old", seen, cutoff=self.CUTOFF) is False
+
+    def test_post_cutoff_seen_once(self):
+        seen = {"new": "2026-06-22"}
+        assert seen_items.is_crawl_unseen("new", seen, cutoff=self.CUTOFF) is False
+
+    def test_on_cutoff_date_seen_once(self):
+        seen = {"edge": "2026-06-21"}
+        assert seen_items.is_crawl_unseen("edge", seen, cutoff=self.CUTOFF) is False
+
+    def test_is_new_unaffected_by_list_values(self):
+        seen = {"item": ["2026-05-01", "2026-06-22"]}
+        assert seen_items.is_new("item", seen) is False
+        assert seen_items.is_new("other", seen) is True

@@ -2234,11 +2234,14 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
 
     # Skip lots already run (in `seen`) unless feed_all. `seen` is marked on
     # confirmation (process_pipeline_lot), never here, so failed/un-answered lots
-    # stay re-feedable.
+    # stay re-feedable. /crawl uses a double-seen rule for pre-cutoff items
+    # (early pipeline era); daily always skips after one seen.
     if feed_all:
         candidate = all_listings
-    else:
+    elif source == "daily":
         candidate = [l for l in all_listings if seen_store.is_new(l["item_id"], seen)]
+    else:
+        candidate = [l for l in all_listings if seen_store.is_crawl_unseen(l["item_id"], seen)]
     new_listings = candidate[: n]
     print(f">>> FEED[{source}]: {len(all_listings)} unique found; "
           f"{'WOULD feed' if dry_run else 'feeding'} {len(new_listings)} (cap {n}).",
