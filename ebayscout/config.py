@@ -85,6 +85,12 @@ SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
 # only unseen lots (still capped at 500). See seen_items.py load/save helpers.
 ONDEMAND2_STATE_BLOB = "ebay_scout/ondemand2_state.json"
 
+# --- /crawl double-seen cutoff (temporary) ---
+# Items first seen before this date were matched with early/incomplete pipeline
+# code; /crawl requires them to be seen TWICE before skipping. Items first seen
+# on or after this date are skipped normally (one seen). Daily scan is unaffected.
+CRAWL_DOUBLE_SEEN_CUTOFF = "2026-06-21"
+
 # --- eBay Browse API ---
 # Replaces the Finding + Shopping APIs, both decommissioned by eBay 2025-02-05.
 # Browse requires an OAuth application token (client-credentials grant) built

@@ -314,18 +314,62 @@ def sweep_pipeline_temp(ttl_days: int = config.PIPELINE_TTL_DAYS,
     return deleted
 
 
-def is_new(item_id: str, seen: dict[str, str]) -> bool:
+def is_new(item_id: str, seen: dict) -> bool:
     """Return True if item_id has not been processed before."""
     return item_id not in seen
 
 
 def mark_seen(
     item_id: str,
-    seen: dict[str, str],
+    seen: dict,
     date_str: str | None = None,
 ) -> None:
+    """Record item_id in the seen dict (in-place), accumulating dates.
+
+    First call for an item stores a plain date string (backward compatible).
+    Second call promotes the value to a list of dates. Subsequent calls append.
     """
-    Record item_id in the seen dict (in-place).
-    Uses today's ISO date string if date_str is not provided.
+    ds = date_str or date.today().isoformat()
+    prev = seen.get(item_id)
+    if prev is None:
+        seen[item_id] = ds
+    elif isinstance(prev, str):
+        seen[item_id] = [prev, ds]
+    else:
+        prev.append(ds)
+
+
+def seen_count(item_id: str, seen: dict) -> int:
+    """How many times item_id has been marked seen (0, 1, or N)."""
+    val = seen.get(item_id)
+    if val is None:
+        return 0
+    if isinstance(val, str):
+        return 1
+    return len(val)
+
+
+def first_seen_date(item_id: str, seen: dict) -> str | None:
+    """Return the ISO date string of the item's first SEEN mark, or None."""
+    val = seen.get(item_id)
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val
+    return val[0] if val else None
+
+
+def is_crawl_unseen(item_id: str, seen: dict,
+                    cutoff: str = config.CRAWL_DOUBLE_SEEN_CUTOFF) -> bool:
+    """Return True if item_id should be re-fed by /crawl.
+
+    Items first seen before ``cutoff`` were processed with early pipeline code;
+    they need two SEEN marks before /crawl skips them. Items first seen on or
+    after the cutoff are trusted and skipped after one.
     """
-    seen[item_id] = date_str or date.today().isoformat()
+    if item_id not in seen:
+        return True
+    first = first_seen_date(item_id, seen)
+    if first is not None and first < cutoff:
+        return seen_count(item_id, seen) < 2
+    return False
