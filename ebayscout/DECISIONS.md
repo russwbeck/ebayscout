@@ -837,3 +837,31 @@ with quotation marks must use single quotes inside the value (a raw `"` such as
 `PSU Dots The "I" In Win` breaks `json.loads`, leaving the lot to retry until the
 per-worker `gem_empty_limit` halt). Full schema lives in
 `PIPELINE_WATCHER_CONTRACT.md`.
+
+## 30. Daily scan promoted to the Gemini pipeline; daily/`crawl` searches kept separate
+
+**The default daily `/run-scan` now feeds the Gemini pipeline, not the CLIP-only
+scan** (PR #37). The same `_run_crawl` mechanism that `/crawl` uses (push each
+lot's primary photo into the watcher → Gemini → GCS → `/pipeline/notify`, where
+`process_pipeline_lot` runs detection + CLIP + deal-posting + auto-staging
+asynchronously) is now the daily default; `/crawl <N>` is just the manual one-off.
+`_run_crawl(n, source, ignore_seen, dry_run)` selects behavior by `source`
+(`"daily"` vs `"/crawl"`), which also tags the detection mode and `scan_log.command`
+so the two are distinguishable in log analysis. Gated by `DAILY_PIPELINE_FEED`
+(env, default on; `0` reverts to the CLIP scan with no redeploy) and capped by
+`DAILY_PIPELINE_N` (1000). The `year_crawl`/`era_crawl`/`hunt_ids` market-DB
+variants stay on the CLIP path.
+
+Rationale: the pipeline (Gemini-gated detection + CLIP) is the better analyzer; the
+daily scan should use it by default rather than only on a manual `/crawl`. The
+async feed keeps CPU off the request after the push, and seen-awareness means daily
+runs only feed the day's new lots.
+
+**The daily and `/crawl` query term-sets are kept SEPARATE — deliberately.** A
+prior commit on this branch unified them (both pulling `EBAY_SEARCH_QUERIES` + PSU
+via a shared `_collect_ebay_listings`); the user reverted that: the two processes
+serve different purposes and their search features are built as such. Daily =
+`_collect_ebay_listings` (`EBAY_SEARCH_QUERIES` + PSU restricted to Sports-Mem);
+`/crawl` = its own `CRAWL500_QUERIES` (with the shared seller/keyword/category
+safeguards from config, folded in via merged PR #36). Do not re-unify the term
+sets. See `SEARCH_TERMS_AUTO_VS_CRAWL.md`.

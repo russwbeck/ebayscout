@@ -6,7 +6,46 @@ the "what we did today + where it stands + what's next" layer on top.
 
 ---
 
-## 2026-06-19 — `/crawl10` + `/crawl500` consolidated into `/crawl <N>`; two-worker Gem pipeline live
+## 2026-06-20 — daily scan promoted to the Gemini pipeline; `/crawl` stays a manual one-off (PR #37, MERGED + deployed)
+
+Branch `claude/crawl-unify-with-daily-pull` (PR #37, merged into `main`).
+
+**The 9am daily `/run-scan` now FEEDS THE GEMINI PIPELINE by default** (detection →
+Gemini → CLIP via `process_pipeline_lot`) instead of the legacy CLIP-only scan.
+The daily scan is the automated default going forward; `/crawl <N>` is the manual
+one-off. Key points:
+
+- `_run_crawl(n, source, ignore_seen, dry_run)` is the shared feed. `source`
+  selects the search and tags lots (pipeline detection mode + `scan_log.command`
+  + Slack label): `"daily"` → the daily pull (`_collect_ebay_listings`:
+  `EBAY_SEARCH_QUERIES` + PSU restricted to Sports-Mem); `"/crawl"` → its own
+  `CRAWL500_QUERIES`. **The two query sets stay SEPARATE on purpose** (a
+  unification attempt was reverted at the user's request — see
+  `SEARCH_TERMS_AUTO_VS_CRAWL.md` and DECISIONS #30).
+- `run_scan()` default pass → `_run_crawl(config.DAILY_PIPELINE_N, source="daily",
+  …)`, honoring `?ignore_seen` / `?dry_run` / `?limit` and `config.DRY_RUN`. The
+  `year_crawl` / `era_crawl` / `hunt_ids` market-DB variants stay on the CLIP path.
+- New config: **`DAILY_PIPELINE_FEED`** (env, default ON — set `0` to revert the
+  daily run to the CLIP scan with no redeploy, e.g. if the watcher workers are
+  down) and **`DAILY_PIPELINE_N=1000`** (seen-aware → daily increments are just
+  the day's new listings; caps the first run).
+
+**Operator state / next steps:**
+- Cloud Scheduler job `ebay-scout-daily` (us-east1) was **resumed** (was PAUSED).
+  ⚠️ Its `attemptDeadline` is still **180s** — a large first feed won't finish in
+  3 min and Scheduler will mark it failed + retry (the `_scan_lock` makes retries
+  a 409 no-op, so no double-run, but the logs show failures). Recommend bumping:
+  `gcloud scheduler jobs update http ebay-scout-daily --location=us-east1
+  --attempt-deadline=1800s`.
+- First daily run size depends on the shared first-run marker
+  (`gs://60d488c5-9c8e-4acc-aac-button-data/ebay_scout/ondemand2_state.json`): if a
+  prior `/crawl` already tripped it → small incremental; if unset → feeds up to
+  1000 in one synchronous request (preview with `POST /run-scan?dry_run=1`).
+- The feed is async: deals post as the two Chromebook watcher workers process each
+  lot; if workers are down, lots queue (nothing lost; `DAILY_PIPELINE_FEED=0` is
+  the escape hatch). Both workers (0 and 1) must be running.
+
+
 
 Branch `claude/buttonmatcher-gemini-ebayscout-vs0f83` (PR #32).
 

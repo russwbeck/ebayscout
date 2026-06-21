@@ -1,8 +1,12 @@
-# Search term sets: daily/auto scan vs `/crawl` — for later consideration
+# Search term sets: daily/auto scan vs `/crawl` — kept separate (decided)
 
-> **Status: notes only. No change made.** This documents how the eBay query
-> *terms* differ between the always-on daily scan and the on-demand `/crawl <N>`
-> so we can decide later whether to reconcile them.
+> **Status (2026-06-20): DECIDED — keep them separate.** A PR #37 commit unified
+> the term sets (both pulling the daily `EBAY_SEARCH_QUERIES` + PSU); the user
+> reverted it — the daily scan and `/crawl` serve different purposes and their
+> search features are built as such. Do **not** re-unify the query phrases. (The
+> daily→Gemini-pipeline promotion in the same PR was kept; only the search
+> unification was undone — see DECISIONS #30.) This documents how the eBay query
+> *terms* differ between the always-on daily scan and the on-demand `/crawl <N>`.
 >
 > Separate from **safeguards** (excluded sellers / keywords / categories), which
 > are now shared from `config` across both paths — see the seller-safeguard PR.
