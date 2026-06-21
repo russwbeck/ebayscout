@@ -10,6 +10,13 @@ the "what we did today + where it stands + what's next" layer on top.
 
 Branch `claude/crawl-unify-with-daily-pull` (PR #37, merged into `main`).
 
+> ⚠️ **Hotfix follow-up (2026-06-21, PR #39):** as first deployed, the daily feed
+> crashed every run — `FEED[daily]: search failed: name 'ebay_client' is not
+> defined`. `_collect_ebay_listings` used `ebay_client` without the lazy
+> `from . import ebay_client` the other callers use. Fixed in **PR #39** (also
+> clears the same latent break on the CLIP daily path). **Daily feed only works
+> once #39 is merged + deployed.**
+
 **The 9am daily `/run-scan` now FEEDS THE GEMINI PIPELINE by default** (detection →
 Gemini → CLIP via `process_pipeline_lot`) instead of the legacy CLIP-only scan.
 The daily scan is the automated default going forward; `/crawl <N>` is the manual
