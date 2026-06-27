@@ -386,3 +386,35 @@ def format_manual_result(
         lines.append(f"\n⭐ *Needed buttons in this lot:* {need_list}")
 
     return "\n".join(lines)
+
+
+def is_safe_fetch_url(url: str | None) -> bool:
+    """SSRF guard for server-side fetches of caller-supplied URLs.
+
+    Returns True only when the URL is http(s) and its hostname resolves
+    exclusively to public IPs. Rejects loopback, private, link-local (incl. the
+    cloud metadata server 169.254.169.254), reserved, multicast and unspecified
+    addresses, and any non-http(s) scheme. Best-effort: there is a DNS
+    TOCTOU/rebinding gap, but paired with an auth gate on the calling endpoint
+    this blocks the metadata-server / internal-host class of SSRF.
+
+    Pure (stdlib only) so it lives here and can be unit-tested without importing
+    main.py's GCP/Slack module-level setup.
+    """
+    if not url:
+        return False
+    try:
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        for _fam, _type, _proto, _canon, sockaddr in socket.getaddrinfo(parsed.hostname, None):
+            ip = ipaddress.ip_address(sockaddr[0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                return False
+        return True
+    except Exception:
+        return False

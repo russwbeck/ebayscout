@@ -45,6 +45,20 @@ try:
 except Exception as _exc:   # pragma: no cover
     print(f">>> CLIP: thread pin skipped ({_exc})", flush=True)
 
+# vectors.pt / text_features.pt are loaded below with weights_only=True so the
+# restricted unpickler can't execute arbitrary code — important because these
+# blobs come from a shared GCS bucket (a write to that bucket must not become
+# RCE in this process). The payloads are torch tensors plus Python lists, with
+# numpy scalars/arrays possible in the metadata, so we allow-list ONLY numpy's
+# safe reconstruction helpers. Anything else stays blocked and fails closed.
+try:
+    import numpy.core.multiarray as _np_mar
+    torch.serialization.add_safe_globals(
+        [_np_mar._reconstruct, _np_mar.scalar, np.ndarray, np.dtype]
+    )
+except Exception as _exc:   # pragma: no cover
+    print(f">>> CLIP: numpy safe-globals registration skipped ({_exc})", flush=True)
+
 # ---------------------------------------------------------------------------
 # Module-level state (populated by init())
 # ---------------------------------------------------------------------------
@@ -104,7 +118,7 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             text_path = os.path.join(tmpdir, "text_features.pt")
             print(">>> CLIP: Downloading text_features.pt...", flush=True)
             bucket.blob("text_features.pt").download_to_filename(text_path)
-            cached = torch.load(text_path, weights_only=False, map_location="cpu")
+            cached = torch.load(text_path, weights_only=True, map_location="cpu")
             _text_features = cached["features"]
             _text_phrases  = list(cached["phrases"])
             _text_years    = [int(y) for y in cached["years"]]
@@ -115,7 +129,7 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             vec_path = os.path.join(tmpdir, "vectors.pt")
             print(">>> CLIP: Downloading vectors.pt...", flush=True)
             bucket.blob("vectors.pt").download_to_filename(vec_path)
-            cached_vecs = torch.load(vec_path, weights_only=False, map_location="cpu")
+            cached_vecs = torch.load(vec_path, weights_only=True, map_location="cpu")
             _ref_vectors = cached_vecs["vectors"]
             _ref_labels  = list(cached_vecs["labels"])
             print(f">>> CLIP: Image reference vectors loaded — {len(_ref_labels)} entries.", flush=True)

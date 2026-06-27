@@ -13,6 +13,7 @@ Interaction flow:
 
 import contextlib
 import datetime
+import hmac
 import ipaddress
 import os
 import time
@@ -49,6 +50,7 @@ from .utils import (
     extract_lot_count,
     dedup_listings,
     select_hunt_ids,
+    is_safe_fetch_url,
 )
 
 # clip_matcher and image_proc import torch/clip/cv2 — loaded lazily so
@@ -248,6 +250,19 @@ def run_scan():
     """
     global buy_rules
 
+    # AUTH: /run-scan launches paid eBay-API + CLIP/Gemini work, so it must not
+    # be callable by anonymous internet traffic (the service is public ingress).
+    # Accept the Cloud Scheduler OIDC token, the per-startup internal secret, or
+    # a localhost caller (local dev). RUN_SCAN_INVOKER_SA optionally pins the SA.
+    provided = request.headers.get("X-Internal-Secret", "")
+    authed = (
+        _verify_oidc_bearer(os.environ.get("RUN_SCAN_INVOKER_SA") or None)
+        or hmac.compare_digest(provided, _INTERNAL_SECRET)
+        or _is_localhost(request.remote_addr)
+    )
+    if not authed:
+        return jsonify({"status": "forbidden"}), 403
+
     def _truthy(v: str | None) -> bool:
         return (v or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -387,6 +402,35 @@ def _is_localhost(remote_addr: str | None) -> bool:
         return ipaddress.ip_address(remote_addr or "").is_loopback
     except ValueError:
         return False
+
+
+def _verify_oidc_bearer(expected_sa: str | None = None) -> bool:
+    """Verify a Google-signed OIDC bearer token (Cloud Scheduler / Cloud Run
+    invoker). Returns True only for a token that validates against Google's
+    public keys; a random internet caller cannot forge one. If `expected_sa`
+    is set, the token's email claim must also match it. Mirrors the OIDC check
+    in buttonmatcher/main.py:pipeline_notify."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    token = auth.split(" ", 1)[1]
+    try:
+        from google.oauth2 import id_token as _idtok
+        from google.auth.transport import requests as _greq
+        claims = _idtok.verify_oauth2_token(token, _greq.Request())
+    except Exception as exc:
+        print(f"!!! AUTH: bad OIDC token: {exc}", flush=True)
+        return False
+    if expected_sa and claims.get("email") != expected_sa:
+        print(f"!!! AUTH: OIDC SA mismatch ({claims.get('email')})", flush=True)
+        return False
+    return True
+
+
+# SSRF guard for /test-clip's server-side image fetch — defined in utils.py
+# (pure stdlib) so it's unit-testable without importing this module's GCP/Slack
+# setup. Aliased here for local readability.
+_is_safe_fetch_url = is_safe_fetch_url
 
 
 @flask_app.route("/internal/crawl", methods=["POST"])
@@ -976,6 +1020,14 @@ def test_clip():
       curl "https://<service>/test-clip?item_id=v1|318369928679|0"
       curl "https://<service>/test-clip?url=<image_url>"
     """
+    # AUTH: debug endpoint — fetches a caller-supplied URL server-side and runs
+    # CLIP, so gate it behind the internal secret / localhost (the service is
+    # public ingress). Without this it was an unauthenticated SSRF + compute sink.
+    provided = request.headers.get("X-Internal-Secret", "")
+    if not (hmac.compare_digest(provided, _INTERNAL_SECRET)
+            or _is_localhost(request.remote_addr)):
+        return jsonify({"error": "forbidden"}), 403
+
     item_id   = request.args.get("item_id")
     image_url = request.args.get("url")
     if not item_id and not image_url:
@@ -1000,6 +1052,11 @@ def test_clip():
                 return jsonify({"error": "no images found for that item_id"}), 404
             image_url = urls[0]
 
+        # SSRF guard: only fetch public http(s) hosts (blocks metadata server,
+        # private/loopback/link-local ranges).
+        if not _is_safe_fetch_url(image_url):
+            return jsonify({"error": "url not allowed"}), 400
+
         resp = req.get(image_url, timeout=20)
         resp.raise_for_status()
         image_bytes = resp.content
@@ -1021,9 +1078,10 @@ def test_clip():
             "best_overall": round(best, 4),
             "details": results,
         })
-    except Exception as exc:
+    except Exception:
+        # Log full detail server-side; don't leak exception text to the caller.
         traceback.print_exc()
-        return jsonify({"error": str(exc), "type": type(exc).__name__}), 500
+        return jsonify({"error": "internal error"}), 500
 
 
 # ---------------------------------------------------------------------------
