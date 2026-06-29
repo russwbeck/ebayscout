@@ -554,6 +554,16 @@ def detect_and_crop(
                 if diag["raw_hough"] is not None:
                     diag["circles_rejected"] = max(0, diag["raw_hough"] - len(final_circles))
                 diag["detector_used"] = "hough"
+                # Detection-tuning instrumentation: the count-implied radius (the
+                # #1 Hough knob) + the fixed Hough params and the radius window
+                # base_r drives in _hough_p2. (param2 varies per scan pass and the
+                # rejected-radius set spans passes, so those are left unset here.)
+                diag["expected_radius"] = int(base_r)
+                diag["hough_dp"]        = 1.3
+                diag["hough_param1"]    = 120
+                diag["hough_mindist"]   = max(8, int(base_r * 1.7))
+                diag["hough_minradius"] = int(base_r * 0.7)
+                diag["hough_maxradius"] = int(base_r * 1.3)
                 return _ret(_bgr_to_pil(crops_bgr))
 
     # --- Whole-image fallback ---
