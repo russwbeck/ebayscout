@@ -232,6 +232,12 @@ def build_detection_diag(
     buttons_per_megapixel=None,
     expected_radius=None,
     mask_components=None,
+    # Detection-tuning instrumentation: the Hough params actually used per image
+    # (so dense-miss failures trace to minDist/param2) + the radii of the circles
+    # the filters REJECTED (so the concentric/glare-ring over-count is visible).
+    hough_dp=None, hough_mindist=None, hough_param1=None, hough_param2=None,
+    hough_minradius=None, hough_maxradius=None,
+    rej_radius_min=None, rej_radius_median=None, rej_radius_max=None,
     # Priority 5: per-stage filter breakdown (how many circles each stage dropped)
     border_removed=None,
     fill_removed=None,
@@ -346,6 +352,16 @@ def build_detection_diag(
         "buttons_per_megapixel": _f(buttons_per_megapixel, 1),
         "expected_radius": _i(expected_radius),
         "mask_components": _i(mask_components),
+        # Detection-tuning instrumentation (Hough params + rejected-circle radii).
+        "hough_dp": _f(hough_dp, 2),
+        "hough_mindist": _i(hough_mindist),
+        "hough_param1": _i(hough_param1),
+        "hough_param2": _i(hough_param2),
+        "hough_minradius": _i(hough_minradius),
+        "hough_maxradius": _i(hough_maxradius),
+        "rej_radius_min": _i(rej_radius_min),
+        "rej_radius_median": _i(rej_radius_median),
+        "rej_radius_max": _i(rej_radius_max),
         # Priority 4: whole-image quality signals.
         "edge_density": _f(edge_density, 4),
         "brightness_std": _f(brightness_std, 2),
@@ -521,6 +537,10 @@ MATCH_HEADER = [
     "rerank_json",
     # --- appended: Gemini-pipeline reconciliation (Phase 2) ---
     "gemini_button_count", "n_recovered", "reconcile_misses_json",
+    # --- appended: detection-tuning instrumentation (Hough params + rejected radii) ---
+    "det_hough_dp", "det_hough_mindist", "det_hough_param1", "det_hough_param2",
+    "det_hough_minradius", "det_hough_maxradius",
+    "det_rej_radius_min", "det_rej_radius_median", "det_rej_radius_max",
 ]
 
 CONFIRM_HEADER = [
@@ -606,6 +626,12 @@ def flatten_match_record(rec):
         # --- appended: Gemini-pipeline reconciliation (Phase 2) ---
         _cell(d.get("gemini_button_count")), _cell(d.get("n_recovered")),
         json.dumps(d.get("reconcile_misses") or [], default=str),
+        # --- appended: detection-tuning instrumentation ---
+        _cell(d.get("hough_dp")), _cell(d.get("hough_mindist")),
+        _cell(d.get("hough_param1")), _cell(d.get("hough_param2")),
+        _cell(d.get("hough_minradius")), _cell(d.get("hough_maxradius")),
+        _cell(d.get("rej_radius_min")), _cell(d.get("rej_radius_median")),
+        _cell(d.get("rej_radius_max")),
     ]
 
 
