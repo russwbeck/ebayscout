@@ -193,6 +193,18 @@ threshold. These items close the remaining risk:
   `tools/audit_reference_coverage.py` against GCS (requires GCP access — run it
   locally, not from a web session) to produce the gap list, then fill from
   `reference/_staging/` or manual uploads.
+- **4d — football pre-filter (`/scout`/`/inventory`): DECIDED 2026-07-02 — keep
+  as-is for now; revisit after the next crawl batch.** Measured on Logger_2's
+  2,590 match rows (both leaderboards + sport types): unfiltered shadow #1
+  agrees with the restricted #1 91%; a non-football candidate would take #1 on
+  ~15% of crawl crops but almost always below the auto threshold — only 0.6%
+  at ≥0.85 (the silent-auto zone), 0 on the daily feed, 0 in Logger_3's 41
+  confirmed rows. Cost of the filter: it forces typed entry for non-football
+  buttons (all 3 typed slogans in Logger_3 were already #1 unfiltered). If
+  revisited, the recommended shape is a SPLIT, not removal: unfiltered
+  *suggestions* for humans, football-gated (or Gemini-agreement-gated)
+  *auto-confirm*. Verify first on a confirmed-truth export at scale (Logger_5's
+  ~329 leaderboard confirmations, or the next crawl's confirm rows).
 - **4c — measured auto-confirm error rate: blocked on human data that doesn't
   exist yet.** No `correction`/`skip_correction` rows have ever been logged, so
   auto-path precision is inferred, not measured. To cross: when an auto-confirm
