@@ -535,3 +535,77 @@ def test_shadow_pass_enabled_env():
     os.environ["BUTTONMATCHER_SHADOW_PASS"] = "1"
     assert ml.shadow_pass_enabled() is True
     os.environ.pop("BUTTONMATCHER_SHADOW_PASS", None)
+
+
+def test_dt_peak_columns_present_and_flattened():
+    # Count-free over-merge signal (log_analysis.md gap 5): raw blob count +
+    # summed per-blob DT-peak count, appended at the END of the header.
+    assert ml.MATCH_HEADER[-3:] == ["det_mask_blobs_raw", "det_dt_peaks_total",
+                                    "det_mask_coverage"]
+
+    diag = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=3, hough_retry_count=None, final_count_user=26,
+        final_count_noinput=3, user_count=None, detector_used="grid", n_crops=26,
+        mask_components=1, mask_blobs_raw=4, dt_peaks_total=24, mask_coverage=0.8931,
+    )
+    assert diag["mask_blobs_raw"] == 4
+    assert diag["dt_peaks_total"] == 24
+    assert diag["mask_coverage"] == 0.8931
+
+    rec = ml.build_match_record(
+        service="ebayscout", command="/crawl-pipeline", mode="pipeline", job_id="j",
+        thread_ts=None, channel_id="ch", user_id=None, crop_num=1, check_id="k",
+        detection=diag, bank=None, restricted_top=[], shadow_top=[],
+        shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    assert row[ml.MATCH_HEADER.index("det_mask_blobs_raw")] == 4
+    assert row[ml.MATCH_HEADER.index("det_dt_peaks_total")] == 24
+    assert row[ml.MATCH_HEADER.index("det_mask_coverage")] == 0.8931
+
+
+def test_dt_peak_columns_default_blank():
+    # Callers that don't compute the DT signal (legacy /scout path) → blank cells.
+    diag = ml.build_detection_diag(
+        h=1, w=1, bg_brightness=10, bg_is_white=False, mask_path="blue_or_white",
+        hough_pass1_count=0, hough_retry_count=None, final_count_user=1,
+        final_count_noinput=None, user_count=None, detector_used="grid", n_crops=1,
+    )
+    assert diag["mask_blobs_raw"] is None
+    assert diag["dt_peaks_total"] is None
+    rec = ml.build_match_record(
+        service="s", command="/c", mode="inventory", job_id="j", thread_ts="t",
+        channel_id="ch", user_id="u", crop_num=1, check_id="k", detection=diag,
+        bank="all", restricted_top=[], shadow_top=[], shadow_enabled=False,
+    )
+    row = ml.flatten_match_record(rec)
+    assert row[ml.MATCH_HEADER.index("det_mask_blobs_raw")] == ""
+    assert row[ml.MATCH_HEADER.index("det_dt_peaks_total")] == ""
+    assert row[ml.MATCH_HEADER.index("det_mask_coverage")] == ""
+
+
+def test_noinput_diag_flattens_ni_columns_on_pipeline_record():
+    # Gap 1: the pipeline path now passes the unguided shadow diag; its fields
+    # must land in the ni_* columns of the flattened row.
+    diag = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=1, hough_retry_count=1, final_count_user=1,
+        final_count_noinput=1, user_count=None, detector_used="hough", n_crops=1,
+        noinput_diag={"conservative": 1, "standard": 1, "aggressive": 3,
+                      "selected": 1, "confidence": 0.94, "pass_winner": "standard"},
+        count_source="gemini", gemini_button_count=1,
+    )
+    rec = ml.build_match_record(
+        service="ebayscout", command="daily-pipeline", mode="pipeline", job_id="j",
+        thread_ts=None, channel_id="ch", user_id=None, crop_num=1, check_id="k",
+        detection=diag, bank=None, restricted_top=[], shadow_top=[],
+        shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    assert row[ml.MATCH_HEADER.index("ni_selected")] == 1
+    assert row[ml.MATCH_HEADER.index("ni_confidence")] == 0.94
+    assert row[ml.MATCH_HEADER.index("ni_pass_winner")] == "standard"
+    assert row[ml.MATCH_HEADER.index("det_count_noinput")] == 1

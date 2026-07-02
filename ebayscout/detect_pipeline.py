@@ -185,16 +185,53 @@ def _prepare_detection_image(image_bgr, diag_out=None):
     # Mask connected-component count (cheap localization-quality signal):
     #   components >> count → mask fragments buttons; << count → buttons merged.
     mask_components = None
+    mask_blobs_raw  = None
+    dt_peaks_total  = None
     try:
-        _n_lbl, _, _stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        _n_lbl, _labels, _stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         _min_area = max(1, int(h * w * 0.001))
         mask_components = int(sum(
             1 for _i in range(1, _n_lbl) if _stats[_i, cv2.CC_STAT_AREA] >= _min_area
         ))
+        mask_blobs_raw = int(_n_lbl - 1)
+        # Count-free over-merge signal (log_analysis.md gap 5): per-blob
+        # distance-transform peak count.  A blob of N fused buttons keeps its
+        # DT maximum ≈ one button radius (the neck between touching circles
+        # stays shallower), so thresholding each blob's DT at 0.55× its own
+        # max — the blob-buster's core convention — splits it into ~one core
+        # per button with NO expected count.  The summed core count is a
+        # count-free estimate of how many buttons the mask holds; grade it
+        # against gemini_button_count per lot-size bucket.
+        _dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+        _peaks = 0
+        for _i in range(1, _n_lbl):
+            if _stats[_i, cv2.CC_STAT_AREA] < _min_area:
+                continue
+            _x0 = _stats[_i, cv2.CC_STAT_LEFT]
+            _y0 = _stats[_i, cv2.CC_STAT_TOP]
+            _bw = _stats[_i, cv2.CC_STAT_WIDTH]
+            _bh = _stats[_i, cv2.CC_STAT_HEIGHT]
+            _bl = (_labels[_y0:_y0 + _bh, _x0:_x0 + _bw] == _i)
+            _bd = np.where(_bl, _dist[_y0:_y0 + _bh, _x0:_x0 + _bw], 0.0)
+            _rmax = float(_bd.max())
+            if _rmax <= 0:
+                continue
+            _cores = (_bd >= 0.55 * _rmax).astype(np.uint8)
+            _n_cores, _ = cv2.connectedComponents(_cores, connectivity=8)
+            _peaks += max(1, int(_n_cores - 1))
+        dt_peaks_total = int(_peaks)
     except Exception as _cc_err:
         print(f">>> DETECT: connectedComponents failed: {_cc_err}", flush=True)
+    # Mask coverage: fraction of the image the mask calls foreground. Near 1.0
+    # means the mask saturated (background bled in — e.g. a cream blanket passing
+    # the "white" range) and every mask-driven stage downstream is blind; the
+    # trigger condition for the blue-only saturation fallback (defect C).
+    mask_coverage = round(cv2.countNonZero(mask) / float(h * w), 4) if (h * w) else None
     if diag_out is not None:
         diag_out["mask_components"] = mask_components
+        diag_out["mask_blobs_raw"]  = mask_blobs_raw
+        diag_out["dt_peaks_total"]  = dt_peaks_total
+        diag_out["mask_coverage"]   = mask_coverage
 
     return {
         "img": img,
@@ -1245,10 +1282,12 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         diag_out["buttons_per_megapixel"] = round(expected / ((h * w) / 1_000_000), 1) if (h * w) else None
     print(f">>> DETECT: expected_r={expected_r}, min_r={min_r}, max_r={max_r}", flush=True)
     print(">>> DETECT: HoughCircles...", flush=True)
+    _hough_dp, _hough_param1, _hough_param2 = 1.3, 120, 24
+    _hough_mindist = int(expected_r * 1.7)
     circles = cv2.HoughCircles(
-        gray, cv2.HOUGH_GRADIENT, dp=1.3,
-        minDist=int(expected_r * 1.7),
-        param1=120, param2=24,
+        gray, cv2.HOUGH_GRADIENT, dp=_hough_dp,
+        minDist=_hough_mindist,
+        param1=_hough_param1, param2=_hough_param2,
         minRadius=min_r,
         maxRadius=max_r
     )
@@ -1257,6 +1296,16 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
     print(f">>> DETECT: HoughCircles done. Found: {len(circles) if circles is not None else 0}", flush=True)
     if diag_out is not None:
         diag_out["hough_pass1_count"] = int(len(circles)) if circles is not None else 0
+        # Detection-tuning instrumentation: the Hough params actually used (so
+        # dense-miss failures trace to minDist/param2). Set here, beside the
+        # already-logged expected_radius (line above), so they log on every path
+        # where Hough runs — including when it finds nothing.
+        diag_out["hough_dp"]         = _hough_dp
+        diag_out["hough_mindist"]    = _hough_mindist
+        diag_out["hough_param1"]     = _hough_param1
+        diag_out["hough_param2"]     = _hough_param2
+        diag_out["hough_minradius"]  = int(min_r) if min_r is not None else None
+        diag_out["hough_maxradius"]  = int(max_r) if max_r is not None else None
     det_raw_hough     = len(circles) if circles is not None else 0
     det_count_noinput = None
     det_count_auto    = None
@@ -1274,9 +1323,15 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         # sums to circles_rejected (raw_hough - survivors).
         _n_pre_margin       = len(circles)
         margin  = int(min(h, w) * 0.05)
-        circles = [(x, y, r) for (x, y, r) in circles
+        _all_circles = list(circles)
+        circles = [(x, y, r) for (x, y, r) in _all_circles
                    if margin < x < w - margin and margin < y < h - margin]
         _det_border_removed = _n_pre_margin - len(circles)
+        # Radii of circles the filters REJECT (border + fill + overlap) — the
+        # over-count signal (glare/concentric rims are a different size than the
+        # real button; feeds the rejected-radius telemetry).
+        _rej_radii = [int(r) for (x, y, r) in _all_circles
+                      if not (margin < x < w - margin and margin < y < h - margin)]
 
         _det_fill_removed    = 0
         _det_overlap_removed = 0
@@ -1291,6 +1346,7 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
             fill_ratio  = blue_area / (np.pi * r * r)
             if fill_ratio < _fill_threshold:
                 _det_fill_removed += 1
+                _rej_radii.append(int(r))
                 continue
 
             # Deduplicate nearby circles
@@ -1298,6 +1354,7 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                 filtered.append((x, y, r))
             else:
                 _det_overlap_removed += 1
+                _rej_radii.append(int(r))
 
         det_count_noinput = len(filtered)
 
@@ -1382,6 +1439,12 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
             diag_out["radius_max"]       = det_radius_max
             diag_out["radius_mean"]      = det_radius_mean
             diag_out["radius_std"]       = det_radius_std
+            # Rejected-circle radii (the over-count / concentric-ring signal) —
+            # only meaningful when Hough returned circles, so set here.
+            if _rej_radii:
+                diag_out["rej_radius_min"]    = int(min(_rej_radii))
+                diag_out["rej_radius_median"] = int(np.median(_rej_radii))
+                diag_out["rej_radius_max"]    = int(max(_rej_radii))
 
         print(f">>> DETECT: After dedup: {len(filtered)}, after inner-remove+radius: {len(cleaned)}", flush=True)
 

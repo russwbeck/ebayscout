@@ -238,6 +238,12 @@ def build_detection_diag(
     hough_dp=None, hough_mindist=None, hough_param1=None, hough_param2=None,
     hough_minradius=None, hough_maxradius=None,
     rej_radius_min=None, rej_radius_median=None, rej_radius_max=None,
+    # Count-free over-merge signal (log_analysis.md gap 5): raw mask blob count
+    # (no min-area filter) + summed per-blob distance-transform peak count —
+    # the count-free estimate of how many buttons the mask holds. Drives the
+    # dense-lot (defect A) DT-peak blob-split work. mask_coverage is the
+    # saturation trigger (defect C): near 1.0 = mask blind, background bled in.
+    mask_blobs_raw=None, dt_peaks_total=None, mask_coverage=None,
     # Priority 5: per-stage filter breakdown (how many circles each stage dropped)
     border_removed=None,
     fill_removed=None,
@@ -362,6 +368,10 @@ def build_detection_diag(
         "rej_radius_min": _i(rej_radius_min),
         "rej_radius_median": _i(rej_radius_median),
         "rej_radius_max": _i(rej_radius_max),
+        # Count-free over-merge signal (DT peaks per mask blob) + saturation.
+        "mask_blobs_raw": _i(mask_blobs_raw),
+        "dt_peaks_total": _i(dt_peaks_total),
+        "mask_coverage": _f(mask_coverage, 4),
         # Priority 4: whole-image quality signals.
         "edge_density": _f(edge_density, 4),
         "brightness_std": _f(brightness_std, 2),
@@ -541,6 +551,9 @@ MATCH_HEADER = [
     "det_hough_dp", "det_hough_mindist", "det_hough_param1", "det_hough_param2",
     "det_hough_minradius", "det_hough_maxradius",
     "det_rej_radius_min", "det_rej_radius_median", "det_rej_radius_max",
+    # --- appended: count-free over-merge signal (DT peaks per mask blob) +
+    # mask saturation (the defect-C trigger) ---
+    "det_mask_blobs_raw", "det_dt_peaks_total", "det_mask_coverage",
 ]
 
 CONFIRM_HEADER = [
@@ -632,6 +645,10 @@ def flatten_match_record(rec):
         _cell(d.get("hough_minradius")), _cell(d.get("hough_maxradius")),
         _cell(d.get("rej_radius_min")), _cell(d.get("rej_radius_median")),
         _cell(d.get("rej_radius_max")),
+        # --- appended: count-free over-merge signal (DT peaks per mask blob) +
+        # mask saturation (the defect-C trigger) ---
+        _cell(d.get("mask_blobs_raw")), _cell(d.get("dt_peaks_total")),
+        _cell(d.get("mask_coverage")),
     ]
 
 

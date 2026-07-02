@@ -716,9 +716,19 @@ def process_pipeline_lot(job_id: str) -> None:
     # 3) Hough detection, INDEPENDENT of the JSON (radius from full-button count)
     full_count = (gem_count - len(flagged)) if gem_count > 0 else 0
     expected   = full_count if full_count > 0 else None
+    # Shadow unguided pass (log_analysis.md gap 1): the TRUE no-input count,
+    # logged on every pipeline lot so unguided accuracy is measurable against
+    # Gemini's count — the rollout gate for dropping guidance. ~15 extra Hough
+    # calls inside this already-CPU-hot request; BUTTONMATCHER_SHADOW_PASS=0
+    # is the kill switch. Doubles as the count estimate when Gemini gave none.
+    _noinput_count, _noinput_diag = None, None
+    if mlog.shadow_pass_enabled() or expected is None:
+        try:
+            _noinput_count, _noinput_diag = _dp.count_circles_unguided(image_bgr)
+        except Exception as _sp_err:
+            print(f">>> PIPELINE: shadow unguided pass failed: {_sp_err}", flush=True)
     if expected is None:
-        _n, _ = _dp.count_circles_unguided(image_bgr)
-        expected = _n if (_n and _n > 0) else None
+        expected = _noinput_count if (_noinput_count and _noinput_count > 0) else None
     if expected is None:
         print(f">>> PIPELINE: no buttons found in {image_name} — skipped.", flush=True)
         seen_items.delete_pending_context(key) if key else None
@@ -881,7 +891,8 @@ def process_pipeline_lot(job_id: str) -> None:
                 mask_path=_diag.get("mask_path"),
                 hough_pass1_count=_diag.get("hough_pass1_count") or 0,
                 hough_retry_count=_diag.get("hough_retry_count"),
-                final_count_user=len(crops), final_count_noinput=None,
+                final_count_user=len(crops), final_count_noinput=_noinput_count,
+                noinput_diag=_noinput_diag,
                 user_count=None, detector_used=_diag.get("detector_used"),
                 n_crops=len(crops),
                 raw_hough=_diag.get("raw_hough"),
@@ -899,6 +910,9 @@ def process_pipeline_lot(job_id: str) -> None:
                 rej_radius_min=_diag.get("rej_radius_min"),
                 rej_radius_median=_diag.get("rej_radius_median"),
                 rej_radius_max=_diag.get("rej_radius_max"),
+                mask_blobs_raw=_diag.get("mask_blobs_raw"),
+                dt_peaks_total=_diag.get("dt_peaks_total"),
+                mask_coverage=_diag.get("mask_coverage"),
                 border_removed=_diag.get("border_removed"),
                 fill_removed=_diag.get("fill_removed"),
                 overlap_removed=_diag.get("overlap_removed"),
@@ -1380,6 +1394,9 @@ def _evaluate_listing(
             rej_radius_min=det_diag.get("rej_radius_min"),
             rej_radius_median=det_diag.get("rej_radius_median"),
             rej_radius_max=det_diag.get("rej_radius_max"),
+            mask_blobs_raw=det_diag.get("mask_blobs_raw"),
+            dt_peaks_total=det_diag.get("dt_peaks_total"),
+            mask_coverage=det_diag.get("mask_coverage"),
             # Priority 5 (per-stage breakdown) + Priority 4 (whole-image quality)
             border_removed=det_diag.get("border_removed"),
             fill_removed=det_diag.get("fill_removed"),
