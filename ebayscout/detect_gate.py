@@ -38,8 +38,19 @@ def grid_is_consistent(selected, est_rows, est_cols):
     return total - (est_cols - 1) <= selected <= total
 
 
-def gate_decision(*, confidence, layout_conf, selected, est_rows, est_cols):
-    """Map unguided-detector diagnostics to "auto" | "suggest" | "manual"."""
+def gate_decision(*, confidence, layout_conf, selected, est_rows, est_cols,
+                  scale_path=None):
+    """Map unguided-detector diagnostics to "auto" | "suggest" | "manual".
+
+    ``scale_path`` (optional): which radius estimator produced the winning set —
+    "scale_first" | "scale_second_chance" | "sweep_fallback".  Logger_4
+    (2026-07-02, 265 graded lots) split gate=auto accuracy cleanly on this:
+    scale_first autos were 40/40 exact (100%) while ALL six wrong autos came
+    from the fallback paths (sweep_fallback 76% exact, the one
+    scale_second_chance auto was wrong).  So AUTO now additionally requires
+    scale_first; fallback-path detections cap at SUGGEST.  Callers that don't
+    pass it (None) keep the old behavior.
+    """
     try:
         confidence = float(confidence)
     except (TypeError, ValueError):
@@ -58,6 +69,7 @@ def gate_decision(*, confidence, layout_conf, selected, est_rows, est_cols):
         and layout_conf >= GATE_AUTO_LAYOUT
         and selected >= 1
         and grid_is_consistent(selected, est_rows, est_cols)
+        and (scale_path is None or scale_path == "scale_first")
     ):
         return GATE_AUTO
     if confidence >= GATE_SUGGEST_CONFIDENCE and selected >= 1:

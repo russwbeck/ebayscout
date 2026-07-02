@@ -95,3 +95,27 @@ def test_hough_small_lot_acceptance_floor():
     # boundary: a 6-button lot with 5 circles still defers to grid
     assert accepts(5, 6) is False
     assert accepts(6, 6) is True
+
+
+def test_auto_requires_scale_first_when_path_given():
+    # Phase 3.5 (Logger_4): scale_first autos were 40/40 exact; every wrong
+    # auto came from a fallback path — those now cap at SUGGEST.
+    base = dict(confidence=0.9, layout_conf=0.95, selected=6,
+                est_rows=2, est_cols=3)
+    assert dgate.gate_decision(**base, scale_path="scale_first") == dgate.GATE_AUTO
+    assert dgate.gate_decision(**base, scale_path="sweep_fallback") == dgate.GATE_SUGGEST
+    assert dgate.gate_decision(**base, scale_path="scale_second_chance") == dgate.GATE_SUGGEST
+
+
+def test_scale_path_none_keeps_old_behavior():
+    base = dict(confidence=0.9, layout_conf=0.95, selected=6,
+                est_rows=2, est_cols=3)
+    assert dgate.gate_decision(**base) == dgate.GATE_AUTO
+    assert dgate.gate_decision(**base, scale_path=None) == dgate.GATE_AUTO
+
+
+def test_scale_path_does_not_rescue_low_confidence():
+    # scale_first is necessary for AUTO, never sufficient.
+    assert dgate.gate_decision(confidence=0.5, layout_conf=0.95, selected=6,
+                         est_rows=2, est_cols=3,
+                         scale_path="scale_first") == dgate.GATE_MANUAL

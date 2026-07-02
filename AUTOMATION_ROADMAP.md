@@ -16,10 +16,10 @@ buybot** — every change below lands in all three.
 | Phase | What | Status | Blocked on |
 |---|---|---|---|
 | 1 | Instrumentation completion (gaps 1/2/5 + saturation signal) | ✅ **merged (PRs #43/#104), deployed, validated on the 300-lot run** | — |
-| 2a | Defect C: mask-saturation fallback (blue-only + hole-fill retry) | ✅ implementable now — **measured at 19.2% of the pool**, fix verified on both real failed lots | nothing |
-| 2b | Defect A: DT-radius-led re-Hough on fused lots (revised — DT peaks are the radius source, not the counter) | ✅ data collected (25 fused lots) — implementable | nothing |
-| 3 | Defect B: concentric/radius dedup (small-lot overcount) | ✅ data collected (147 overcount singles; dominant mode = exactly +1) — implementable | nothing |
-| 3.5 | Tighten `ni_gate=auto` (`scale_conf`/`r_est` sanity) | ✅ implementable now — 5 of 6 wrong autos carry the signals | nothing |
+| 2a | Defect C: mask-saturation fallback (blue-only + hole-fill retry) | ✅ **implemented on this branch** — real 35-lot: guided 35/35 (was grid-fallback); 26-lot: 23/23 blue | — |
+| 2b | Defect A: DT-radius-led re-Hough on fused lots (revised — DT peaks are the radius source, not the counter) | ◐ largely covered by 2a (saturation was the fusion driver in both real lots); re-measure residual non-saturated fusion on the next batch | next batch |
+| 3 | Defect B: concentric/radius dedup (small-lot overcount) | ✅ **implemented on this branch** — 0.7–1.3×median band + concentric collapse (keep better fill) on the unguided selection | — |
+| 3.5 | Tighten `ni_gate=auto` | ✅ **implemented on this branch** — AUTO now requires `scale_path=scale_first` (Logger_4: 40/40 exact vs 6/6 wrong autos on fallback paths) | — |
 | 4a | Low-res guard (thumbnail auto-confirm) | ✅ implementable immediately | nothing |
 | 4b | Reference coverage for 0.00-scoring slogans | ⏸ data (exists, needs a run) | one `audit_reference_coverage` run vs GCS |
 | 4c | Measured auto-confirm error rate | ⏸ human data | `correction` rows in confirm_log (~100 auto-confirms reviewed) |

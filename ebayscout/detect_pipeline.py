@@ -180,6 +180,50 @@ def _prepare_detection_image(image_bgr, diag_out=None):
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+    # --- Saturation fallback (Phase 2a / defect C) --------------------------
+    # A light-but-not-"white" background (cream blanket, batting) passes the
+    # white HSV range, so the blue_or_white mask calls ~everything foreground
+    # and every mask-driven stage goes blind: Hough sees no circular edges and
+    # the scale voter reads the background sheet as one giant button.  Logger_4
+    # measured this on 19.2% of pipeline lots (guided exact 19.6% inside vs
+    # 64.5% outside).  Fallback: rebuild as BLUE-ONLY + hole-fill and adopt it
+    # when it is materially less saturated.  Verified on both real failed lots
+    # (35/35 and 23-blue-of-26 recovered at the correct radius).  White buttons
+    # are invisible to the fallback by construction — the white-rescue pass and
+    # Gemini reconcile cover that deficit.
+    _SAT_COVERAGE = 0.75
+    _cov0 = (cv2.countNonZero(mask) / float(h * w)) if (h * w) else 0.0
+    if _cov0 > _SAT_COVERAGE:
+        _fb = cv2.inRange(hsv, lower_blue, upper_blue)
+        _fb = cv2.morphologyEx(_fb, cv2.MORPH_CLOSE, kernel)
+        _fb = cv2.morphologyEx(_fb, cv2.MORPH_OPEN, kernel)
+        # Hole-fill: flood the background from an empty corner and add back
+        # the unreached interior.  Without it the slogan text punches holes
+        # that cap the distance transform at the text-gap size (r_est 19.6 vs
+        # 38 on the real failed 35-lot), poisoning every radius consumer.
+        _seed = next(((sx, sy) for (sx, sy) in
+                      ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))
+                      if _fb[sy, sx] == 0), None)
+        if _seed is not None:
+            _ff = _fb.copy()
+            cv2.floodFill(_ff, np.zeros((h + 2, w + 2), np.uint8), _seed, 255)
+            _fb = cv2.bitwise_or(_fb, cv2.bitwise_not(_ff))
+        _covf = (cv2.countNonZero(_fb) / float(h * w)) if (h * w) else 0.0
+        if 0.02 <= _covf <= _SAT_COVERAGE:
+            print(f">>> DETECT: mask saturated (coverage={_cov0:.2f}) -> "
+                  f"blue-only hole-filled fallback adopted "
+                  f"(coverage={_covf:.2f}).", flush=True)
+            mask = _fb
+            fill_threshold = 0.30   # blue-only: same threshold as the white-bg path
+            if diag_out is not None:
+                diag_out["mask_path"] = (
+                    (diag_out.get("mask_path") or "") + "+satfallback")
+        else:
+            print(f">>> DETECT: mask saturated (coverage={_cov0:.2f}); "
+                  f"blue-only fallback unusable (coverage={_covf:.2f}) — "
+                  f"keeping original mask.", flush=True)
+
     gray = cv2.GaussianBlur(mask, (9, 9), 2)
 
     # Mask connected-component count (cheap localization-quality signal):
@@ -526,6 +570,40 @@ def _merge_circle_sets(primary, secondary, fill_threshold, mask):
             continue
         merged.append((sx, sy, sr))
     return merged
+
+
+def _circle_fill(mask, x, y, r):
+    """Fraction of the circle's area covered by the mask."""
+    cm = np.zeros(mask.shape, dtype=np.uint8)
+    cv2.circle(cm, (int(x), int(y)), int(r), 255, -1)
+    area = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=cm))
+    return area / max(1.0, math.pi * float(r) * float(r))
+
+
+def _collapse_concentric(circles, mask):
+    """Collapse near-concentric detections of the same button (Phase 3 /
+    defect B).  Logger_4: 68% of single-button lots overcounted unguided, with
+    exactly +1 as the dominant mode (69/216) — a glare ring or printed inner
+    circle detected alongside the true rim.  Two circles whose centres sit
+    within 0.35x the larger radius cannot be adjacent buttons (adjacent
+    centres are >= ~1.4r apart), so they are the same button: keep the
+    better-filled one.
+    """
+    kept = []
+    for c in sorted(circles, key=lambda c: c[2], reverse=True):
+        x, y, r = c
+        clash = None
+        for i, (kx, ky, kr) in enumerate(kept):
+            if math.hypot(x - kx, y - ky) < 0.35 * max(r, kr):
+                clash = i
+                break
+        if clash is None:
+            kept.append(c)
+            continue
+        kx, ky, kr = kept[clash]
+        if _circle_fill(mask, x, y, r) > _circle_fill(mask, kx, ky, kr):
+            kept[clash] = c
+    return kept
 
 
 def _distance_peak_proposals(mask, expected_r, min_r, max_r, margin, h, w):
@@ -1108,11 +1186,36 @@ def _detect_unguided_once(image_bgr):
             if len(candidate) >= len(winner_circ) * 0.80:
                 inlier_circles = candidate
 
+        # --- Phase 3 (defect B): radius-consistency + concentric dedup ----
+        # Genuine buttons in one lot share a radius; a detection whose radius
+        # is far off the set median is glare/print/background.  Mirrors the
+        # guided path's 0.7-1.3x-median cleanup (>=3 circles so the median is
+        # meaningful), then collapses near-concentric duplicates of the same
+        # button (the dominant single-lot overcount mode in Logger_4).
+        _pre_band = len(inlier_circles)
+        if len(inlier_circles) >= 3:
+            _bmed = float(np.median([c[2] for c in inlier_circles]))
+            _band = [c for c in inlier_circles
+                     if 0.7 * _bmed < c[2] < 1.3 * _bmed]
+            if _band:
+                inlier_circles = _band
+        _pre_conc = len(inlier_circles)
+        inlier_circles = _collapse_concentric(inlier_circles, mask)
+        if len(inlier_circles) != _pre_band:
+            print(f">>> DETECT_UNGUIDED: radius/concentric dedup "
+                  f"{_pre_band} -> {len(inlier_circles)} "
+                  f"(band -{_pre_band - _pre_conc}, "
+                  f"concentric -{_pre_conc - len(inlier_circles)})", flush=True)
+
         selected_count = len(inlier_circles)
 
+        # Phase 3.5: AUTO additionally requires the scale-first radius path —
+        # Logger_4 split gate=auto cleanly on it (scale_first 40/40 exact;
+        # all six wrong autos came from the fallback paths).
         gate = dgate.gate_decision(
             confidence=winner_score, layout_conf=layout_conf,
             selected=selected_count, est_rows=est_rows, est_cols=est_cols,
+            scale_path=scale_path,
         )
 
         diag = {
