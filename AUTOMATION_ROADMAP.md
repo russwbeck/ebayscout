@@ -4,7 +4,9 @@
 review on the happy path.
 **Grounding data:** `buttonmatcher/log_analysis.md` (Logger_5: 2,891 match rows /
 615 images; +788-lot instrumented follow-up) and the Logger_3 validation batch
-(2026-07-01: five `/sort` lots with user counts + 13 daily-pipeline lots).
+(2026-07-01: five `/sort` lots with user counts + 13 daily-pipeline lots), and
+the **Logger_4 instrumented 300-lot run** (2026-07-02 — the measured baseline
+below).
 **Convention:** detection (`detect.py` ↔ `ebayscout/detect_pipeline.py`) and
 `match_logging.py` are kept in lockstep across **buttonmatcher, ebayscout, and
 buybot** — every change below lands in all three.
@@ -13,14 +15,48 @@ buybot** — every change below lands in all three.
 
 | Phase | What | Status | Blocked on |
 |---|---|---|---|
-| 1 | Instrumentation completion (gaps 1/2/5 + saturation signal) | ✅ **implemented on this branch** | nothing — deploy it |
-| 2a | Defect C: mask-saturation fallback (blue-only + hole-fill retry) | ✅ **implementable immediately** — fix verified on the real failed 35-lot | nothing (optionally one shadow batch) |
-| 2b | Defect A: DT-peak blob split + DT-informed radius (fused dense lots) | ⏸ data | ~100 post-Phase-1 pipeline lots incl. ~20 dense (7+) |
-| 3 | Defect B: radius-consistency / concentric dedup (small-lot overcount) | ⏸ data | ~50 overcounted small lots with Phase-1 columns |
+| 1 | Instrumentation completion (gaps 1/2/5 + saturation signal) | ✅ **merged (PRs #43/#104), deployed, validated on the 300-lot run** | — |
+| 2a | Defect C: mask-saturation fallback (blue-only + hole-fill retry) | ✅ **implemented on this branch** — real 35-lot: guided 35/35 (was grid-fallback); 26-lot: 23/23 blue | — |
+| 2b | Defect A: DT-radius-led re-Hough on fused lots (revised — DT peaks are the radius source, not the counter) | ◐ largely covered by 2a (saturation was the fusion driver in both real lots); re-measure residual non-saturated fusion on the next batch | next batch |
+| 3 | Defect B: concentric/radius dedup (small-lot overcount) | ✅ **implemented on this branch** — 0.7–1.3×median band + concentric collapse (keep better fill) on the unguided selection | — |
+| 3.5 | Tighten `ni_gate=auto` | ✅ **implemented on this branch** — AUTO now requires `scale_path=scale_first` (Logger_4: 40/40 exact vs 6/6 wrong autos on fallback paths) | — |
 | 4a | Low-res guard (thumbnail auto-confirm) | ✅ implementable immediately | nothing |
 | 4b | Reference coverage for 0.00-scoring slogans | ⏸ data (exists, needs a run) | one `audit_reference_coverage` run vs GCS |
 | 4c | Measured auto-confirm error rate | ⏸ human data | `correction` rows in confirm_log (~100 auto-confirms reviewed) |
-| 5 | Rollout: drop the guided count | ⏸ data | per-bucket gates on a few hundred Phase-1 lots |
+| 5 | Rollout: drop the guided count (revised: gate-scoped, not bucket-scoped) | ⏸ re-measure after 2a/2b/3 land | next instrumented batch |
+
+## Measured baseline — Logger_4 (2026-07-02, the 300-lot `ignore_seen` run)
+
+First batch with the Phase-1 instrumentation live: 298/300 lots processed,
+every new column populated on every row; 265 lots had a usable Gemini count.
+What it changed:
+
+- **True unguided is much weaker than the old numbers implied.** `ni_selected`
+  exact = 34% overall (singles 31.5%, with 36% overcounting by 2+). The earlier
+  "~80% on singles" figure was `det_hough_pass1` — Gemini-radius-seeded, i.e.
+  guided. The radius seed was doing far more work than believed; dropping
+  guidance rests on fixing the radius estimate, not on Hough itself.
+- **The confidence gate works.** `ni_gate=auto` selected 23.4% of lots and was
+  **90.3% exact** (93.5% ±1) on them; `suggest`/`manual` correctly quarantined
+  the rest (16–21% exact). Zero saturated lots reached `auto`. Five of the six
+  wrong `auto` lots carry telltale signals (`ni_scale_conf` = 0 or an
+  implausible `ni_r_est`) — Phase 3.5 tightens on exactly those.
+- **Saturation (defect C) is 19.2% of the pool** and devastating inside it:
+  guided exact 19.6% vs 64.5% on normal masks; 62.7% grid-fallback. Phase 2a is
+  the biggest single detection lever.
+- **DT peaks are NOT a counter in the wild** — 12% exact on the 25 fused lots,
+  over-splits everywhere. They ARE the radius/fusion signal; the working design
+  (verified on both real failed lots) is Hough re-run at the DT-corrected
+  radius. Phase 2b is revised accordingly.
+- **Defect B has a dominant simple mode**: 68% of singles overcount unguided,
+  and the largest cluster is exactly +1 (69 of 216) — the concentric/glare rim.
+  Uncorrelated with saturation (mean coverage ≈0.50 in both groups) — an
+  independent defect with its own fix.
+- **Rollout shape revised (Phase 5): gate-scoped, not bucket-scoped.** Trust
+  unguided only where `ni_gate=auto` — 23% of lots today at 90%+, a share that
+  grows as 2a/2b/3 land and more lots earn `auto` — and keep Gemini on the
+  rest. Safer than per-bucket flips because the gate already refuses the
+  saturated/fused failure modes.
 
 ---
 
@@ -193,6 +229,18 @@ threshold. These items close the remaining risk:
   `tools/audit_reference_coverage.py` against GCS (requires GCP access — run it
   locally, not from a web session) to produce the gap list, then fill from
   `reference/_staging/` or manual uploads.
+- **4d — football pre-filter (`/scout`/`/inventory`): DECIDED 2026-07-02 — keep
+  as-is for now; revisit after the next crawl batch.** Measured on Logger_2's
+  2,590 match rows (both leaderboards + sport types): unfiltered shadow #1
+  agrees with the restricted #1 91%; a non-football candidate would take #1 on
+  ~15% of crawl crops but almost always below the auto threshold — only 0.6%
+  at ≥0.85 (the silent-auto zone), 0 on the daily feed, 0 in Logger_3's 41
+  confirmed rows. Cost of the filter: it forces typed entry for non-football
+  buttons (all 3 typed slogans in Logger_3 were already #1 unfiltered). If
+  revisited, the recommended shape is a SPLIT, not removal: unfiltered
+  *suggestions* for humans, football-gated (or Gemini-agreement-gated)
+  *auto-confirm*. Verify first on a confirmed-truth export at scale (Logger_5's
+  ~329 leaderboard confirmations, or the next crawl's confirm rows).
 - **4c — measured auto-confirm error rate: blocked on human data that doesn't
   exist yet.** No `correction`/`skip_correction` rows have ever been logged, so
   auto-path precision is inferred, not measured. To cross: when an auto-confirm
