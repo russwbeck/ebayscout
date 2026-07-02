@@ -86,6 +86,22 @@ and a fix verified end-to-end on that image:
   `dt_peaks_total=35`, radius 38.2, and Hough at that radius finds exactly 35
   circles.** Total recovery of a lot that collapsed to 1.
 
+**Second confirmation — the failed 26-button lot (white batting in a display
+box).** Same signature: `det_mask_coverage=0.81`, mask fused to 1 component,
+`r_est=269` (the whole batting sheet read as one giant button), unguided passes
+all 0 → collapsed to 5. The same blue-only + hole-fill fallback: coverage drops
+to 40%, blob median radius **45.6 (correct)**, and Hough at that radius finds
+**24 of the 23 blue buttons (+1 extra)**. The 3 *white* buttons are invisible to
+a blue-only mask by construction — that's precisely the existing white-rescue
+pass's job (it fires on the remaining deficit using image gradients), plus
+Gemini reconcile as the pipeline safety net. Both Logger_3 dense-lot collapses
+are therefore the SAME defect, and both recover under this one fallback.
+
+Caveat learned from the 26-lot: `det_dt_peaks_total` over-split its irregular
+fused blobs (33 vs 23) — so treat the DT signal as the *radius* source and
+fusion flag, and let Hough-at-corrected-radius do the counting; the Phase-2b
+data will quantify this distinction.
+
 **No data hole.** The trigger (`det_mask_coverage > ~0.75`) only fires where the
 current path is already blind, so the fallback can't regress a working lot.
 Optional belt-and-braces: ship it shadow-first for one batch (log what the
