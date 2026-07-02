@@ -241,6 +241,16 @@ threshold. These items close the remaining risk:
   *suggestions* for humans, football-gated (or Gemini-agreement-gated)
   *auto-confirm*. Verify first on a confirmed-truth export at scale (Logger_5's
   ~329 leaderboard confirmations, or the next crawl's confirm rows).
+  **UPDATE (2026-07-02, same day): events overtook the wait — an entire
+  basketball lot auto-confirmed through `/sort` as football twins (basketball
+  "Slash the Flash" → football "Trash the Flash", "Boot the Hoots" → "Boot the
+  Hoot", 5 wrong AUTOs). The auto-confirm half of the split is now implemented
+  in buttonmatcher: score-only AUTO is blocked whenever the unrestricted
+  (shadow) leaderboard's #1 is a different, non-Football candidate — the crop
+  falls to human review instead. The unfiltered-suggestions half (showing the
+  non-football candidate on the review card without typing) remains open; if
+  misses persist because the shadow #1 stays football, widen the gate to "any
+  non-football candidate in shadow top-3 outscoring the football top".
 - **4c — measured auto-confirm error rate: blocked on human data that doesn't
   exist yet.** No `correction`/`skip_correction` rows have ever been logged, so
   auto-path precision is inferred, not measured. To cross: when an auto-confirm
