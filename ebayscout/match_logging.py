@@ -196,6 +196,10 @@ def trim_top(results, n=10):
             "image_score": _round_or_none(r.get("image_score")),
             "text_score": _round_or_none(r.get("text_score", r.get("slogan_score"))),
             "type": r.get("type"),
+            # Entry-level reference-photo similarity (None when the entry has
+            # no reference photos) — logged so the visual-mismatch penalty can
+            # be calibrated on confirmed outcomes (Plaster Pitt incident).
+            "ref_sim": _round_or_none(r.get("ref_sim")),
         })
     return out
 

@@ -489,9 +489,13 @@ def _apply_ref_photo_check(ranked: list[dict], image_sims: np.ndarray) -> list[d
     """Always-on entry-level reference-photo visual check (buttonmatcher's
     REF_CHECK step, buttonmatcher/main.py:1631-1671). For each candidate, take
     the crop's max similarity to THAT (year, slogan) entry's reference photos and
-    nudge `overall += REF_CHECK_WEIGHT * ref_sim`, then re-sort. Entries with no
-    matching reference photos are left untouched (no bonus, no penalty).
-    Fail-open: returns `ranked` unchanged on any error."""
+    apply a CENTERED nudge `overall += REF_CHECK_WEIGHT * (ref_sim - mean)`,
+    then re-sort. Centering (2026-07-03, "Plaster Pitt" incident, synced with
+    buttonmatcher) makes the check comparative: the old bonus-only form never
+    deprioritized a candidate whose references look nothing like the crop,
+    because in-domain CLIP sims cluster 0.75-0.95 and everyone with refs
+    collected most of the bonus. Entries with no matching reference photos are
+    left untouched. Fail-open: returns `ranked` unchanged on any error."""
     try:
         # Per-entry (year, normalized-slogan) max crop↔ref similarity.
         entry_sims: dict[tuple, float] = {}
@@ -516,8 +520,15 @@ def _apply_ref_photo_check(ranked: list[dict], image_sims: np.ndarray) -> list[d
             esim = entry_sims.get((yr, normalize.normalize_key(r.get("slogan", ""))))
             r["ref_sim"] = esim
             if esim is not None:
-                r["overall"] = min(1.0, r["overall"] + config.REF_CHECK_WEIGHT * esim)
                 any_ref = True
+        if any_ref:
+            _rs = [r["ref_sim"] for r in ranked if r.get("ref_sim") is not None]
+            _rs_mu = sum(_rs) / len(_rs)
+            for r in ranked:
+                if r.get("ref_sim") is not None:
+                    r["overall"] = min(1.0, max(0.0,
+                        r["overall"]
+                        + config.REF_CHECK_WEIGHT * (r["ref_sim"] - _rs_mu)))
         if any_ref:
             ranked.sort(key=lambda x: (x["overall"], x.get("slogan_score", 0)),
                         reverse=True)
