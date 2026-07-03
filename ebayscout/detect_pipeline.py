@@ -195,34 +195,54 @@ def _prepare_detection_image(image_bgr, diag_out=None):
     _SAT_COVERAGE = 0.75
     _cov0 = (cv2.countNonZero(mask) / float(h * w)) if (h * w) else 0.0
     if _cov0 > _SAT_COVERAGE:
-        _fb = cv2.inRange(hsv, lower_blue, upper_blue)
-        _fb = cv2.morphologyEx(_fb, cv2.MORPH_CLOSE, kernel)
-        _fb = cv2.morphologyEx(_fb, cv2.MORPH_OPEN, kernel)
         # Hole-fill: flood the background from an empty corner and add back
         # the unreached interior.  Without it the slogan text punches holes
         # that cap the distance transform at the text-gap size (r_est 19.6 vs
         # 38 on the real failed 35-lot), poisoning every radius consumer.
-        _seed = next(((sx, sy) for (sx, sy) in
-                      ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))
-                      if _fb[sy, sx] == 0), None)
-        if _seed is not None:
-            _ff = _fb.copy()
-            cv2.floodFill(_ff, np.zeros((h + 2, w + 2), np.uint8), _seed, 255)
-            _fb = cv2.bitwise_or(_fb, cv2.bitwise_not(_ff))
-        _covf = (cv2.countNonZero(_fb) / float(h * w)) if (h * w) else 0.0
-        if 0.02 <= _covf <= _SAT_COVERAGE:
+        def _fb_finish(fb):
+            fb = cv2.morphologyEx(fb, cv2.MORPH_CLOSE, kernel)
+            fb = cv2.morphologyEx(fb, cv2.MORPH_OPEN, kernel)
+            seed = next(((sx, sy) for (sx, sy) in
+                         ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))
+                         if fb[sy, sx] == 0), None)
+            if seed is not None:
+                ff = fb.copy()
+                cv2.floodFill(ff, np.zeros((h + 2, w + 2), np.uint8), seed, 255)
+                fb = cv2.bitwise_or(fb, cv2.bitwise_not(ff))
+            return fb, (cv2.countNonZero(fb) / float(h * w)) if (h * w) else 0.0
+
+        # Variant 1 — blue-only: blue buttons on a light background (the
+        # quilt/batting lots).  Variant 2 — brighter-than-background, low
+        # saturation: WHITE buttons on a mid-tone background (white Mellon
+        # buttons on a gray mat), where blue-only keeps only the slogan text
+        # (~5% speck coverage) and detection hunted text fragments.
+        _fb1, _cov1 = _fb_finish(cv2.inRange(hsv, lower_blue, upper_blue))
+        _fb2, _cov2 = _fb_finish(((hsv[:, :, 2] > bg_mean_v + 60)
+                                  & (hsv[:, :, 1] < 80)).astype(np.uint8) * 255)
+        # Adopt the first PLAUSIBLE variant: buttons occupy a real fraction of
+        # a lot photo, so require >= 8% coverage (the old 2% floor let the
+        # text-specks mask through on the white-button lot) and stay below
+        # the saturation bound.  Blue-only preferred (dominant button colour).
+        _adopt = None
+        for _fb_lbl, _fbm, _fbc in (("blue", _fb1, _cov1),
+                                    ("bright", _fb2, _cov2)):
+            if 0.08 <= _fbc <= _SAT_COVERAGE:
+                _adopt = (_fb_lbl, _fbm, _fbc)
+                break
+        if _adopt is not None:
+            _fb_lbl, _fbm, _covf = _adopt
             print(f">>> DETECT: mask saturated (coverage={_cov0:.2f}) -> "
-                  f"blue-only hole-filled fallback adopted "
+                  f"{_fb_lbl} hole-filled fallback adopted "
                   f"(coverage={_covf:.2f}).", flush=True)
-            mask = _fb
-            fill_threshold = 0.30   # blue-only: same threshold as the white-bg path
+            mask = _fbm
+            fill_threshold = 0.30   # solid-disk fallback masks: white-bg threshold
             if diag_out is not None:
-                diag_out["mask_path"] = (
-                    (diag_out.get("mask_path") or "") + "+satfallback")
+                diag_out["mask_path"] = ((diag_out.get("mask_path") or "")
+                                         + "+satfallback_" + _fb_lbl)
         else:
-            print(f">>> DETECT: mask saturated (coverage={_cov0:.2f}); "
-                  f"blue-only fallback unusable (coverage={_covf:.2f}) — "
-                  f"keeping original mask.", flush=True)
+            print(f">>> DETECT: mask saturated (coverage={_cov0:.2f}); no "
+                  f"plausible fallback (blue={_cov1:.2f}, bright={_cov2:.2f}) "
+                  f"— keeping original mask.", flush=True)
 
     gray = cv2.GaussianBlur(mask, (9, 9), 2)
 
