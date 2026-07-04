@@ -1768,6 +1768,7 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
     print(">>> DETECT: Using projection-based grid fallback.", flush=True)
 
     # Infer rows/cols if still unknown
+    _grid_is_user = rows is not None and cols is not None
     if rows is None or cols is None:
         det_rows, det_cols = _infer_grid_from_count(expected or 1, h, w)
         rows = det_rows
@@ -1792,14 +1793,38 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                                 (_kw, 1), 0).ravel()
 
     def _band_peaks(proj, n, length):
-        """Return the index of the maximum inside each of n equal bands."""
+        """Row/col centres for an n-band grid, anchored to the BUTTON EXTENT.
+
+        Band the span where the mask is actually active — not the full frame —
+        because on a bordered board or a margined page the buttons are inset, so
+        equal-frame bands slide into the margins and every cell slips off its
+        button (the blue-on-blue display-board case).  Within each extent band
+        keep the even-lattice centre unless the mask shows a *clear* local
+        maximum (a saturated blue-on-blue mask is flat, so its argmax is noise —
+        the even centre is right; a clean mask refines to the real peak)."""
+        _thr = float(proj.max()) * 0.15
+        _nz = np.where(proj > _thr)[0]
+        lo, hi = (int(_nz[0]), int(_nz[-1])) if len(_nz) else (0, length)
+        span = max(1, hi - lo)
+        cell = span / n
         centers = []
         for i in range(n):
-            s = int(i * length / n)
-            e = int((i + 1) * length / n)
+            even_c = lo + (i + 0.5) * cell
+            s = lo + int(i * span / n)
+            e = lo + int((i + 1) * span / n)
             seg = proj[s:e]
-            centers.append(s + int(np.argmax(seg)) if seg.max() > 0
-                           else (s + e) // 2)
+            # Refine the even centre to the mask peak ONLY when the peak is a
+            # clear local max AND lands near the even centre — a light nudge for
+            # a clean mask.  A flat/saturated blue-on-blue mask has no real peak
+            # (or a far, noisy one), so the even lattice centre stands: that is
+            # what aligns the display-board grid to its buttons.
+            if seg.size and seg.max() > 0:
+                pk = s + int(np.argmax(seg))
+                strong = float(seg.max()) > 2.2 * (float(np.median(seg)) + 1e-6)
+                centers.append(pk if (strong and abs(pk - even_c) < 0.15 * cell)
+                               else int(even_c))
+            else:
+                centers.append(int(even_c))
         return centers
 
     row_centers = _band_peaks(row_proj, rows, h)
@@ -1835,13 +1860,20 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
             if crop.size == 0:
                 continue
 
-            # Skip cells with almost no button pixels (background-only cells).
-            _cell_mask = mask[y1:y2, x1:x2]
-            _fill = (cv2.countNonZero(_cell_mask) / _cell_mask.size
-                     if _cell_mask.size else 0.0)
-            if _fill < _EMPTY_CELL_FILL:
-                _skipped_empty += 1
-                continue
+            # Skip cells with almost no button pixels (background-only cells) —
+            # but ONLY when the grid was inferred from the count.  When the
+            # operator supplied rows x cols, they assert a button is in every
+            # cell, so we trust that and emit all cells: the fill test would drop
+            # real buttons whose mask is weak (a blue-on-blue board, a glare-
+            # washed cell).  Any genuine background cell is rejected downstream
+            # with "Is this a button? = No".
+            if not _grid_is_user:
+                _cell_mask = mask[y1:y2, x1:x2]
+                _fill = (cv2.countNonZero(_cell_mask) / _cell_mask.size
+                         if _cell_mask.size else 0.0)
+                if _fill < _EMPTY_CELL_FILL:
+                    _skipped_empty += 1
+                    continue
 
             crops.append(crop)
             circle_info.append({"shape": "rect", "x1": int(x1), "y1": int(y1),
