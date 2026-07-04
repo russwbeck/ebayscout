@@ -771,6 +771,30 @@ def estimate_button_scale(mask, h, w):
     return r_est, scale_conf, filled, sdiag
 
 
+WHITE_RESCUE_RIM_MIN = 0.50   # min circumference-gradient coverage to accept
+
+
+def _rim_support(gbin, cx, cy, r, n=72, band=3):
+    """Fraction of ``n`` circumference samples that have a gradient pixel within
+    +/-``band`` px of radius ``r``.  A genuine button (blue OR sparse-print white)
+    has a near-complete circular rim; textured background, glare, and printed
+    text do not.  Robust exactly where interior-edge density fails: pale buttons
+    with little print (rim strong, interior nearly blank) and textured borders
+    that inflate a background-edge reference."""
+    H, W = gbin.shape
+    hits = 0
+    for k in range(n):
+        a = 2.0 * math.pi * k / n
+        ca, sa = math.cos(a), math.sin(a)
+        for dr in range(-band, band + 1):
+            px = int(round(cx + (r + dr) * ca))
+            py = int(round(cy + (r + dr) * sa))
+            if 0 <= px < W and 0 <= py < H and gbin[py, px]:
+                hits += 1
+                break
+    return hits / float(n)
+
+
 def _white_rescue_pass(img_noglare, existing, r_est, fill_mask, h, w,
                        mask_informative=True, max_added=None):
     """Find buttons the colour mask cannot see (white button on white paper;
@@ -817,6 +841,14 @@ def _white_rescue_pass(img_noglare, existing, r_est, fill_mask, h, w,
         ])
         bg_edge = float(np.count_nonzero(_border_edges)) / max(1, _border_edges.size)
 
+        # Gradient-magnitude binary for rim-support: the RIM is the signal that
+        # survives when a button matches its background in colour (white-on-white)
+        # or has sparse print (interior-edge density near background level).
+        _gx = cv2.Sobel(gray_img, cv2.CV_32F, 1, 0, ksize=3)
+        _gy = cv2.Sobel(gray_img, cv2.CV_32F, 0, 1, ksize=3)
+        _gmag = cv2.magnitude(_gx, _gy)
+        _gbin = (_gmag >= np.percentile(_gmag, 80)).astype(np.uint8)
+
         margin = int(min(h, w) * 0.05)
         added = []
         if max_added is None:
@@ -837,8 +869,12 @@ def _white_rescue_pass(img_noglare, existing, r_est, fill_mask, h, w,
             inside = cv2.countNonZero(cv2.bitwise_and(edges, edges, mask=dm))
             disc_area = max(1.0, math.pi * (r * 0.9) ** 2)
             edge_in = inside / disc_area
-            # Printed slogans are edge-dense; bare paper/wood/cloth is not.
-            if edge_in < max(0.04, bg_edge * 1.5):
+            # Accept on EITHER a coherent circular rim (works for pale/sparse
+            # buttons the interior test misses) OR an edge-dense printed interior
+            # (the original signal).  Rim-support is background-reference-free, so
+            # a textured border can't suppress it the way it inflates bg_edge.
+            _rim = _rim_support(_gbin, x, y, r)
+            if _rim < WHITE_RESCUE_RIM_MIN and edge_in < max(0.04, bg_edge * 1.5):
                 continue
             if mask_informative:
                 # Reject discs the colour mask ALREADY covers well — those
