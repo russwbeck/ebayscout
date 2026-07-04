@@ -329,6 +329,38 @@ def _infer_grid_from_count(count, h, w):
     return best
 
 
+def _fit_lattice(coords, n, init):
+    """Snap n evenly-spaced band centres onto the buttons detection DID find.
+
+    ``init`` is the even-extent guess (already close).  Robustly fit
+    ``centre = a + b*i`` to the found ``coords`` (button x- or y-positions):
+    assign each coord to its nearest band, keep only the near ones (INLIERS, so
+    off-grid noise on a saturated blue-on-blue mask is rejected), least-squares
+    fit the origin ``a`` and pitch ``b``, and iterate.  A handful of reliable
+    anchors — the high-contrast white buttons Hough nails — pin the whole
+    lattice; with too few inliers it falls back to ``init`` unchanged."""
+    if len(coords) < 3 or len(init) < 2:
+        return init
+    coords = [float(c) for c in coords]
+    cell = float(np.median(np.diff(sorted(init)))) or 1.0
+    centers = [float(c) for c in init]
+    for _ in range(4):
+        pairs = []
+        for c in coords:
+            k = min(range(n), key=lambda i: abs(centers[i] - c))
+            if abs(centers[k] - c) <= 0.40 * cell:
+                pairs.append((k, c))
+        if len({k for k, _ in pairs}) < 2:
+            return [int(round(x)) for x in centers]
+        ii = np.array([k for k, _ in pairs], dtype=float)
+        cc = np.array([c for _, c in pairs], dtype=float)
+        a, b = np.linalg.lstsq(np.vstack([np.ones_like(ii), ii]).T, cc, rcond=None)[0]
+        if not (0.5 * cell < b < 2.0 * cell):    # reject an implausible pitch
+            return [int(round(x)) for x in centers]
+        centers = [a + b * i for i in range(n)]
+    return [int(round(x)) for x in centers]
+
+
 def _find_band_centres(coords, r_median):
     """Split sorted 1-D coordinates into bands at gaps larger than 1.5× the
     median gap (and at least 1.5 button radii); return each band's centre.
@@ -1829,6 +1861,23 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
 
     row_centers = _band_peaks(row_proj, rows, h)
     col_centers = _band_peaks(col_proj, cols, w)
+
+    # Anchor the grid to the buttons detection DID find, not just the mask
+    # extent: the even-extent guess drifts with the extent estimate (and can
+    # split a real circle), but the reliably-detected buttons — the high-contrast
+    # white buttons on a navy board especially — are exact.  Fit the lattice to
+    # them (robust to off-grid mask-Hough noise) so every cell lands on a button.
+    # ``cleaned`` is unset when Hough was never run (a trivial lot); guard it.
+    try:
+        _cleaned_src = cleaned
+    except NameError:
+        _cleaned_src = []
+    _anchor = [c for c in (_cleaned_src or [])
+               if isinstance(c, (list, tuple)) and len(c) >= 2]
+    if len(_anchor) >= 3:
+        row_centers = _fit_lattice([c[1] for c in _anchor], rows, row_centers)
+        col_centers = _fit_lattice([c[0] for c in _anchor], cols, col_centers)
+
     print(f">>> DETECT: Projection row_centers={row_centers}", flush=True)
     print(f">>> DETECT: Projection col_centers={col_centers}", flush=True)
 
