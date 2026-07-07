@@ -37,6 +37,7 @@ from . import match_logging as mlog
 from . import pipeline_ingest as ping
 from . import gemini_resolve as gres
 from . import pipeline_classify
+from . import detect_gate as dgate
 from . import normalize
 from . import seen_items
 from .utils import (
@@ -740,6 +741,13 @@ def process_pipeline_lot(job_id: str) -> None:
         image_bgr, rows=None, cols=None, expected=expected, debug=True,
         diag_out=_diag, truncate_to_expected=False,
     )
+
+    # Trust-gate loophole (Logger_10): a shadow pass that collapsed to a single
+    # circle self-certifies on lots where the guided detector itself bailed to
+    # the projection grid. Demote its gate before it is logged/consumed.
+    if _noinput_diag and _noinput_diag.get("gate") == dgate.GATE_AUTO:
+        _noinput_diag["gate"] = dgate.demote_auto_on_detector_bailout(
+            _noinput_diag["gate"], _diag.get("detector_used"))
 
     # 4) reconcile missed buttons from Gemini x/y, in detection's coord space
     _ph, _pw = debug_img.shape[:2]

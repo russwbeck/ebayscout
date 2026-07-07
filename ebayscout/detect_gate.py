@@ -38,6 +38,27 @@ def grid_is_consistent(selected, est_rows, est_cols):
     return total - (est_cols - 1) <= selected <= total
 
 
+def demote_auto_on_detector_bailout(gate, detector_used):
+    """Close the Logger_10 trust-gate loophole: an unguided pass that collapses
+    to a single circle self-certifies (scale_conf carries the 0.6 sentinel and
+    layout_conf is trivially 1.0 at n=1) — two 66/69-button lots gated "auto"
+    this way. On both, the GUIDED detector had already bailed to the projection
+    grid, and that bailout is the reliable tell (Logger_10: demotes 2/2
+    collapses while keeping 40/43 genuine singles; dt-peak corroboration was
+    tested and failed — the fused mask fools it too, 0/2). Callers apply this
+    where both facts meet — after the guided pass — since gate_decision runs
+    inside the unguided detector, which cannot see the guided outcome.
+
+    AUTO survives only when the guided detector actually engaged
+    (detector_used starts with "hough": "hough" / "hough+blob").
+    """
+    if gate == GATE_AUTO and not str(detector_used or "").startswith("hough"):
+        print(f">>> GATE: auto demoted to suggest — guided detector bailed "
+              f"(detector_used={detector_used!r}).", flush=True)
+        return GATE_SUGGEST
+    return gate
+
+
 def gate_decision(*, confidence, layout_conf, selected, est_rows, est_cols,
                   scale_path=None):
     """Map unguided-detector diagnostics to "auto" | "suggest" | "manual".
