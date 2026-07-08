@@ -43,8 +43,9 @@ from collections import Counter
 # ---------------------------------------------------------------------------
 
 def _norm(s: str) -> str:
-    """Strip punctuation, lowercase, collapse — matches sheets_client._normalize_key."""
-    return re.sub(r"[^\w\s]", "", str(s).lower()).strip()
+    """Lowercase and strip every non-alphanumeric char — matches
+    sheets_client._normalize_key (hyphen/space/joined variants collapse equal)."""
+    return re.sub(r"[^\w]", "", str(s).lower())
 
 
 def parse_image_labels(labels) -> set[tuple[str, str]]:

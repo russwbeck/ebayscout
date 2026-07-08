@@ -159,5 +159,8 @@ def parse_price(price_str: str) -> float:
 # ---------------------------------------------------------------------------
 
 def _normalize_key(s: str) -> str:
-    """Strip punctuation, lowercase, strip whitespace — identical to buybot."""
-    return re.sub(r"[^\w\s]", "", s.lower()).strip()
+    """Lowercase and strip every non-alphanumeric char (spaces, hyphens,
+    apostrophes, punctuation) so hyphen/space/joined slogan variants share one
+    identity key — 'I-Oh-Was'/'I Oh Was'/'IOhWas' all -> 'iohwas'.  Identical to
+    buttonmatcher._normalize_key / ebayscout normalize.normalize_key."""
+    return re.sub(r"[^\w]", "", s.lower())
