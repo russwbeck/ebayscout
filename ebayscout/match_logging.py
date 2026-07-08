@@ -14,8 +14,8 @@ This module is deliberately dependency-light: it imports only the standard
 library.  The Sheet write is performed through an injected ``worksheet`` object
 (anything with ``append_row`` / ``append_rows``), so the module is fully
 unit-testable with no gspread, torch, cv2 or cloud access.  The same file is
-copied verbatim into every bot (buttonmatcher, buybot, ebayscout) so there is
-*no delta* in how the slash commands log.
+copied verbatim into both bots (buttonmatcher, ebayscout — buybot was
+decommissioned 2026-07-05) so there is *no delta* in how the slash commands log.
 
 SCALE NOTE
 ----------

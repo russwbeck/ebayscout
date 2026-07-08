@@ -28,6 +28,10 @@ behavior. For the latest status and next steps, start with `ebayscout/HANDOFF.md
 
 ## Process expectations
 
+- **buybot is decommissioned (2026-07-05).** Shared files (`detect.py`/
+  `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, the shared docs)
+  sync across buttonmatcher + ebayscout only; ignore older docs that name
+  buybot as a third sync target.
 - Develop on the designated feature branch; commit + push; open a PR only when
   asked. **Always re-query the GitHub API for PR state before reporting it** —
   never assert merged/mergeable from memory.
