@@ -8,8 +8,9 @@ review on the happy path.
 the **Logger_4 instrumented 300-lot run** (2026-07-02 — the measured baseline
 below).
 **Convention:** detection (`detect.py` ↔ `ebayscout/detect_pipeline.py`) and
-`match_logging.py` are kept in lockstep across **buttonmatcher, ebayscout, and
-buybot** — every change below lands in all three.
+`match_logging.py` are kept in lockstep across **buttonmatcher and ebayscout**
+— every change below lands in both. *(buybot was decommissioned 2026-07-05;
+it is no longer a sync target.)*
 
 ## Phase status at a glance
 
@@ -98,8 +99,8 @@ the live data below.
 - Extend the `match_log` header row by hand with the three trailing columns
   (`det_mask_blobs_raw`, `det_dt_peaks_total`, `det_mask_coverage`), or delete
   the tab and let `_ensure_tab` recreate it (old rows then read as blanks — fine).
-- Copy the `detect.py` / `match_logging.py` hunks to **buybot** (not reachable
-  from this session).
+- ~~Copy the `detect.py` / `match_logging.py` hunks to buybot~~ *(buybot
+  decommissioned 2026-07-05 — no longer a sync target)*.
 - Kill switch if pipeline CPU ever bites: `BUTTONMATCHER_SHADOW_PASS=0`.
 
 ---

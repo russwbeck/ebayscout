@@ -411,11 +411,20 @@ def match_crops_with_diagnostics(
             restricted_top = _crop_leaderboard(text_sims, year_img_all, restrict_years)
             shadow_full    = _crop_leaderboard(text_sims, year_img_all, None) if shadow else []
 
+            _restricted_snap = match_logging.trim_top(restricted_top, 10)
+            _shadow_snap     = match_logging.trim_top(shadow_full, 10)
+            try:
+                _esims = _entry_ref_sims(image_sims)
+                _stamp_ref_sims(_restricted_snap, _esims)
+                _stamp_ref_sims(_shadow_snap, _esims)
+            except Exception as _rs_err:
+                print(f">>> CLIP: ref_sim stamp skipped ({_rs_err})", flush=True)
+
             out.append({
                 "candidates":     candidates,
                 "gap":            gap,
-                "restricted_top": match_logging.trim_top(restricted_top, 10),
-                "shadow_top":     match_logging.trim_top(shadow_full, 10),
+                "restricted_top": _restricted_snap,
+                "shadow_top":     _shadow_snap,
                 "shadow_full":    shadow_full,
                 "shadow_enabled": shadow,
             })
@@ -485,6 +494,40 @@ def _apply_reference_rerank(ranked: list[dict], image_sims: np.ndarray) -> list[
         return ranked
 
 
+def _entry_ref_sims(image_sims: np.ndarray) -> dict:
+    """Per-entry (year, normalized-slogan) max crop-to-reference similarity."""
+    entry_sims: dict[tuple, float] = {}
+    for i, label in enumerate(_ref_labels):
+        yr = _label_year(label)
+        if yr is None:
+            continue
+        parts  = str(label).split(None, 1)          # label = "YEAR SLOGAN..."
+        phrase = parts[1] if len(parts) > 1 else ""
+        key    = (yr, normalize.normalize_key(phrase))
+        s      = float(image_sims[i])
+        if key not in entry_sims or s > entry_sims[key]:
+            entry_sims[key] = s
+    return entry_sims
+
+
+def _stamp_ref_sims(entries: list[dict], entry_sims: dict) -> None:
+    """Attach entry-level ref_sim to leaderboard snapshot rows (in place).
+
+    Logger_10 found the ref_sim KEY shipping with null values everywhere:
+    trim_top serialized the field, but build_leaderboard rows never carried
+    it — only the live candidate dicts did. Without this the visual-mismatch
+    calibration (the Plaster Pitt follow-up) cannot run from the Sheet.
+    """
+    for e in entries or []:
+        try:
+            yr = int(str(e.get("year")).split()[0])
+        except (ValueError, IndexError, AttributeError):
+            continue
+        sim = entry_sims.get((yr, normalize.normalize_key(e.get("phrase") or "")))
+        if sim is not None:
+            e["ref_sim"] = round(float(sim), 3)
+
+
 def _apply_ref_photo_check(ranked: list[dict], image_sims: np.ndarray) -> list[dict]:
     """Always-on entry-level reference-photo visual check (buttonmatcher's
     REF_CHECK step, buttonmatcher/main.py:1631-1671). For each candidate, take
@@ -497,18 +540,7 @@ def _apply_ref_photo_check(ranked: list[dict], image_sims: np.ndarray) -> list[d
     collected most of the bonus. Entries with no matching reference photos are
     left untouched. Fail-open: returns `ranked` unchanged on any error."""
     try:
-        # Per-entry (year, normalized-slogan) max crop↔ref similarity.
-        entry_sims: dict[tuple, float] = {}
-        for i, label in enumerate(_ref_labels):
-            yr = _label_year(label)
-            if yr is None:
-                continue
-            parts  = str(label).split(None, 1)          # label = "YEAR SLOGAN..."
-            phrase = parts[1] if len(parts) > 1 else ""
-            key    = (yr, normalize.normalize_key(phrase))
-            s      = float(image_sims[i])
-            if key not in entry_sims or s > entry_sims[key]:
-                entry_sims[key] = s
+        entry_sims = _entry_ref_sims(image_sims)
 
         any_ref = False
         for r in ranked:

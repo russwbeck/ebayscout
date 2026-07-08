@@ -119,3 +119,23 @@ def test_scale_path_does_not_rescue_low_confidence():
     assert dgate.gate_decision(confidence=0.5, layout_conf=0.95, selected=6,
                          est_rows=2, est_cols=3,
                          scale_path="scale_first") == dgate.GATE_MANUAL
+
+
+def test_demote_auto_on_detector_bailout():
+    # Logger_10 loophole: the guided detector bailing to grid is the tell.
+    assert dgate.demote_auto_on_detector_bailout(
+        dgate.GATE_AUTO, "grid") == dgate.GATE_SUGGEST
+    assert dgate.demote_auto_on_detector_bailout(
+        dgate.GATE_AUTO, None) == dgate.GATE_SUGGEST
+    assert dgate.demote_auto_on_detector_bailout(
+        dgate.GATE_AUTO, "") == dgate.GATE_SUGGEST
+    # Guided detector engaged -> auto survives.
+    assert dgate.demote_auto_on_detector_bailout(
+        dgate.GATE_AUTO, "hough") == dgate.GATE_AUTO
+    assert dgate.demote_auto_on_detector_bailout(
+        dgate.GATE_AUTO, "hough+blob") == dgate.GATE_AUTO
+    # Non-auto gates pass through untouched regardless.
+    assert dgate.demote_auto_on_detector_bailout(
+        dgate.GATE_SUGGEST, "grid") == dgate.GATE_SUGGEST
+    assert dgate.demote_auto_on_detector_bailout(
+        dgate.GATE_MANUAL, "grid") == dgate.GATE_MANUAL

@@ -37,6 +37,8 @@ from . import match_logging as mlog
 from . import pipeline_ingest as ping
 from . import gemini_resolve as gres
 from . import pipeline_classify
+from . import detect_gate as dgate
+from . import label_harvest as lharv
 from . import normalize
 from . import seen_items
 from .utils import (
@@ -741,14 +743,23 @@ def process_pipeline_lot(job_id: str) -> None:
         diag_out=_diag, truncate_to_expected=False,
     )
 
+    # Trust-gate loophole (Logger_10): a shadow pass that collapsed to a single
+    # circle self-certifies on lots where the guided detector itself bailed to
+    # the projection grid. Demote its gate before it is logged/consumed.
+    if _noinput_diag and _noinput_diag.get("gate") == dgate.GATE_AUTO:
+        _noinput_diag["gate"] = dgate.demote_auto_on_detector_bailout(
+            _noinput_diag["gate"], _diag.get("detector_used"))
+
     # 4) reconcile missed buttons from Gemini x/y, in detection's coord space
     _ph, _pw = debug_img.shape[:2]
     _det_img = (image_bgr if (image_bgr.shape[0], image_bgr.shape[1]) == (_ph, _pw)
                 else cv2.resize(image_bgr, (_pw, _ph), interpolation=cv2.INTER_AREA))
+    _lh_led = False   # label-sidecar provenance: crops rebuilt at Gemini x/y
     if _diag.get("detector_used") == "grid" and gem_slogans:
         led_crops, led_info = _dp.gemini_led_crops(gem_slogans, _det_img)
         if led_crops:
             crops, circle_info = led_crops, led_info
+            _lh_led = True
     rec_crops, rec_info, crop_to_slogan, _rt = _dp.reconcile_with_gemini(
         circle_info, gem_slogans, _det_img)
     if rec_crops:
@@ -760,6 +771,51 @@ def process_pipeline_lot(job_id: str) -> None:
         _delete_pipeline_output(response_name, image_name)
         pending_jobs.pop(job_id, None)
         return
+
+    # Training-label sidecar (AUTOMATION_VISION / Logger_10 §10): persist the
+    # detection-space image + final circle set (with provenance) + Gemini's
+    # independent reading to pipeline/labels/, so every pipeline lot becomes a
+    # training label for the learned-detection track. The pipeline deletes its
+    # input/output blobs after processing, so this is the only durable copy.
+    # Fail-open; kill switch BUTTONMATCHER_LABEL_HARVEST=0. Confirmation
+    # outcomes join via confirm_log on job_id.
+    if lharv.harvest_enabled():
+        try:
+            _lh_rec_n = len(rec_info) if rec_crops else 0
+            _lh_base = ("gemini_led" if _lh_led
+                        else (_diag.get("detector_used") or "hough"))
+            _lh_sources = ([_lh_base] * (len(circle_info) - _lh_rec_n)
+                           + ["gemini_reconciled"] * _lh_rec_n)
+            _lh_rec = lharv.build_label_record(
+                job_id=job_id, service="ebayscout", command=pipeline_command,
+                image_name=image_name, item_id=item_id,
+                img_w=_pw, img_h=_ph,
+                circle_info=circle_info, circle_sources=_lh_sources,
+                detector_used=_diag.get("detector_used"),
+                mask_path=_diag.get("mask_path"),
+                mask_coverage=_diag.get("mask_coverage"),
+                ni_selected=(_noinput_diag or {}).get("selected"),
+                ni_gate=(_noinput_diag or {}).get("gate"),
+                ni_scale_path=(_noinput_diag or {}).get("scale_path"),
+                gemini_button_count=gem_count,
+                gemini_flagged_count=len(flagged),
+                gemini_slogans=gem_slogans,
+            )
+            _lh_jname, _lh_iname = lharv.label_blob_names(job_id)
+            _lh_bucket = storage.Client().bucket(config.BUCKET_NAME)
+            _lh_bucket.blob(_lh_jname).upload_from_string(
+                json.dumps(_lh_rec, default=str),
+                content_type="application/json")
+            _lh_ok, _lh_buf = cv2.imencode(
+                ".jpg", _det_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if _lh_ok:
+                _lh_bucket.blob(_lh_iname).upload_from_string(
+                    _lh_buf.tobytes(), content_type="image/jpeg")
+            print(f">>> PIPELINE: label sidecar written for {job_id} "
+                  f"({len(circle_info)} circles, base={_lh_base}).", flush=True)
+        except Exception as _lh_err:
+            print(f"!!! PIPELINE: label sidecar failed for {job_id}: "
+                  f"{_lh_err}", flush=True)
 
     # 5) CLIP matching, INDEPENDENT of the JSON
     pil_crops   = _ip._bgr_to_pil(crops)
