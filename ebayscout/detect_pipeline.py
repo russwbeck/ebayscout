@@ -1972,6 +1972,49 @@ def _circle_center_radius(c):
     return (c["x"], c["y"]), c.get("r")
 
 
+def reading_order(circle_info):
+    """Indices of ``circle_info`` in human reading order: top-to-bottom by row,
+    left-to-right within each row.
+
+    Detection/reconcile append recovered ("missed") buttons to the end of the crop
+    list, so their crop numbers land last regardless of board position.  The Gemini
+    pipeline numbers each crop by list position and draws that number on the
+    annotated image, so without this the numbers jump around the board.  Sorting the
+    crop + circle_info lists by this permutation renumbers everything into the order
+    an operator actually scans.
+
+    Rows are banded by center-y with a tolerance that absorbs the slight tilt of a
+    hand-held photo: a new row starts only when the y-gap between consecutive
+    (y-sorted) buttons exceeds ~1.2x the median radius (rows sit ~2x radius apart
+    center-to-center; within-row jitter is well under that).  Centers/radii come
+    from _circle_center_radius so both circle (x/y) and rect (cx/cy) shapes work.
+    Returns list(range(n)) unchanged when there is nothing meaningful to reorder."""
+    n = len(circle_info)
+    if n <= 1:
+        return list(range(n))
+    centers, radii = [], []
+    for c in circle_info:
+        (cx, cy), r = _circle_center_radius(c)
+        centers.append((cx, cy))
+        if r:
+            radii.append(r)
+    med_r = sorted(radii)[len(radii) // 2] if radii else 0
+    row_tol = 1.2 * med_r
+    by_y = sorted(range(n), key=lambda i: centers[i][1])
+    rows, cur = [], [by_y[0]]
+    for prev, i in zip(by_y, by_y[1:]):
+        if row_tol and centers[i][1] - centers[prev][1] > row_tol:
+            rows.append(cur)
+            cur = [i]
+        else:
+            cur.append(i)
+    rows.append(cur)
+    order = []
+    for row in rows:
+        order.extend(sorted(row, key=lambda i: centers[i][0]))
+    return order
+
+
 def _estimate_button_radius_px(centers, w, h):
     """Estimate a single button radius (px) for a lot from its button centres.
 
