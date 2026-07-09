@@ -540,8 +540,8 @@ def test_shadow_pass_enabled_env():
 def test_dt_peak_columns_present_and_flattened():
     # Count-free over-merge signal (log_analysis.md gap 5): raw blob count +
     # summed per-blob DT-peak count, appended at the END of the header.
-    assert ml.MATCH_HEADER[-3:] == ["det_mask_blobs_raw", "det_dt_peaks_total",
-                                    "det_mask_coverage"]
+    assert ml.MATCH_HEADER[-4:] == ["det_mask_blobs_raw", "det_dt_peaks_total",
+                                    "det_mask_coverage", "det_white_recovered"]
 
     diag = ml.build_detection_diag(
         h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",

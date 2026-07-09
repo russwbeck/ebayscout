@@ -969,6 +969,7 @@ def process_pipeline_lot(job_id: str) -> None:
                 mask_blobs_raw=_diag.get("mask_blobs_raw"),
                 dt_peaks_total=_diag.get("dt_peaks_total"),
                 mask_coverage=_diag.get("mask_coverage"),
+                white_recovered=_diag.get("white_rescue"),
                 border_removed=_diag.get("border_removed"),
                 fill_removed=_diag.get("fill_removed"),
                 overlap_removed=_diag.get("overlap_removed"),
