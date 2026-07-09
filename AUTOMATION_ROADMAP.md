@@ -303,3 +303,76 @@ gold-standard rows on top. No crawls required.
   by `gemini_button_count`, compare `ni_selected` / `det_dt_peaks_total` /
   `det_hough_pass1`, and split fused lots out via
   `det_mask_components < gemini_button_count`.
+
+---
+
+## Status update — 2026-07-09 (Layer-1/Layer-2 log analysis absorbed)
+
+Source: the two analysis layers on `buttonmatcher/log_analysis.md` (branch
+`claude/log-analysis-hough-gate`, since reviewed) — Layer 1 graded n=329
+instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
+**human review truth** (all Gemini confirmations visually verified).
+
+**What the data settled:**
+
+- **Trust the PATH, not the score (Layer 1, n=329).** `ni_gate=auto` +
+  `ni_scale_path=scale_first` is the trustworthy stratum: **96% exact / 100%
+  within ±1**. Confidence scores alone do not reach that; the gate + path
+  combination does. This is the Stage-B entry condition.
+- **A gate loophole was found and patched.** `ni_gate=auto` could survive even
+  when the guided detector bailed to grid/Gemini-led (the unguided shadow
+  numbers then describe a detector that wasn't used). Fixed by
+  `demote_auto_on_detector_bailout` — AUTO demotes to SUGGEST unless
+  `detector_used` starts with `hough` (merged: buttonmatcher #116 /
+  ebayscout #50). Post-patch, gated shadow-vs-truth disagreement on the
+  organic feed measured **0%** (was 2.6% with the loophole open).
+- **Grade Stage B against HUMAN truth, not Gemini per-lot.** Layer 2 measured
+  Gemini at 96.5% per-button but only **74% per-lot** — per-lot Gemini
+  agreement is too noisy to certify a ≥98% entry gate. Against operator review
+  truth, auto+scale_first was 8/9 at n=9 — right direction, tiny n.
+- **Count-exact ≠ button-exact** (lot `1855dcee`): detection can find the
+  right number of circles while one is a non-button and one button is missed.
+  Per-button review taps (`not_a_button`, `missed_button`) are the only signal
+  that catches this — and each tap is a labeled training example for the §10
+  learned-detection track.
+- **DT peaks stay rejected as a counter** (median error 7–21 depending on
+  bucket); they remain the radius/fusion signal only — consistent with the
+  Logger_4 finding, now at larger n.
+
+**Shipped since the last table refresh:**
+
+- Label harvester (`label_harvest.py`, both repos): every pipeline lot now
+  writes `pipeline/labels/<job_id>.json` + `.jpg` sidecars (detection-space
+  image + circles with provenance + Gemini reading verbatim); confirms join
+  via `confirm_log.job_id`. Kill switch `BUTTONMATCHER_LABEL_HARVEST=0`.
+- `ref_sim` now actually flows into the trim_top leaderboard snapshots
+  (stamped at the source in `match_crops_with_diagnostics`; the earlier
+  serializer-only wiring logged 0/300 non-null).
+- Whitepass telemetry (**pending merge: buttonmatcher #118 / ebayscout #51**):
+  the guided white-rescue pass now tags `mask_path += "+whitepass"` and logs
+  `det_white_recovered` (one trailing Sheet column to hand-append) — the
+  white-on-white rescue becomes measurable instead of invisible.
+- Real-lot regression fixtures (`tests/fixtures/lots/` +
+  `test_detect_fixtures.py`, 9 lots incl. the quilt-35 / batting-26 /
+  basketball-35 / white-8 photos) pin the mask-fallback behavior.
+
+**Stage-B rollout position (gate-scoped Phase 5):**
+
+- Entry gate: **≥98% exact vs human review truth on auto+scale_first lots**,
+  measured over enough volume to mean something. Current standing: 8/9 vs
+  human (n=9), 100% vs Gemini on the post-patch organic gated slice.
+  `scale_first` share of the feed is ~33% — volume is the constraint.
+- Rollback monitor once flipped: gated shadow-vs-truth disagreement **>2%
+  over any 50-lot window** reverts the flip (chosen because
+  `auto_overridden` has no UI affordance yet, so per-lot override rates
+  can't be the tripwire).
+- Fastest path to volume (zero compute cost): dense + single lots through
+  `/sort` — typed counts are gold truth and every row carries the full
+  instrumentation.
+
+**Still waiting on operator-side data (unchanged asks):**
+
+- First `correction` rows in confirm_log (Phase 4c is still at zero — the
+  auto-confirm error rate remains inferred, not measured).
+- A durable record of the 759/759 `gemini_auto` visual audit (currently only
+  attested in chat; a one-line note in HANDOFF or the Sheet makes it citable).
