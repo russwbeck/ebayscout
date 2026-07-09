@@ -52,6 +52,12 @@ def _blob_buster_enabled():
     return _flag_on("EBAYSCOUT_BLOB_BUSTER", "BUTTONMATCHER_BLOB_BUSTER")
 
 
+def _hole_invert_enabled():
+    """Dark-buttons-on-light-background mask inversion is on by default;
+    EBAYSCOUT_HOLE_INVERT=0 (or BUTTONMATCHER_HOLE_INVERT=0) disables it."""
+    return _flag_on("EBAYSCOUT_HOLE_INVERT", "BUTTONMATCHER_HOLE_INVERT")
+
+
 def _auto_detect_enabled():
     """Auto detection (no count prompt) — default OFF until the gate is
     calibrated; BUTTONMATCHER_AUTO_DETECT=1 enables."""
@@ -61,6 +67,50 @@ def _auto_detect_enabled():
 
 
 # --- SHARED IMAGE PREP --------------------------------------------------------
+
+def _buttons_as_holes(mask, h, w):
+    """Detect the "dark buttons on a light background" inversion and return the
+    button disks.
+
+    Near-black buttons on a white matte match neither the blue nor the white HSV
+    range, so the colour mask captures the bright matte as foreground and each
+    button becomes an enclosed HOLE.  Every mask-driven stage then rejects
+    on-button circles (their interior isn't foreground) and lands crops in the
+    white pockets BETWEEN buttons — the "negative space" failure.
+
+    Flood-fill the background inward from the four corners; whatever stays 0 is
+    enclosed.  Keep only button-plausible holes — circular (area vs. its bounding
+    circle >= 0.6), roughly square bbox, and >= 0.2% of the frame — so slogan-text
+    holes and thin gaps are dropped.  Returns (holes_mask, n_kept, coverage).  The
+    caller inverts only when several such holes appear, which is the signature of
+    buttons-as-holes; it does not occur when the buttons ARE the foreground (the
+    background then reaches the border and nothing is enclosed)."""
+    ff = mask.copy()
+    seed_buf = np.zeros((h + 2, w + 2), np.uint8)
+    for sx, sy in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        if ff[sy, sx] == 0:
+            cv2.floodFill(ff, seed_buf, (sx, sy), 255)
+    holes = cv2.bitwise_not(ff)
+    holes = cv2.morphologyEx(holes, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    n_lbl, labels, stats, _ = cv2.connectedComponentsWithStats(holes, connectivity=8)
+    min_area = max(1, int(h * w * 0.002))
+    kept = np.zeros_like(holes)
+    n_kept = 0
+    for i in range(1, n_lbl):
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < min_area:
+            continue
+        bw = stats[i, cv2.CC_STAT_WIDTH]
+        bh = stats[i, cv2.CC_STAT_HEIGHT]
+        r = (bw + bh) / 4.0
+        circ = area / (np.pi * r * r + 1e-6)
+        aspect = bw / max(1, bh)
+        if circ >= 0.6 and 0.5 <= aspect <= 2.0:
+            kept[labels == i] = 255
+            n_kept += 1
+    coverage = cv2.countNonZero(kept) / float(h * w) if (h * w) else 0.0
+    return kept, n_kept, coverage
+
 
 def _prepare_detection_image(image_bgr, diag_out=None):
     """Shared preprocessing for BOTH the guided and unguided detectors.
@@ -243,6 +293,27 @@ def _prepare_detection_image(image_bgr, diag_out=None):
             print(f">>> DETECT: mask saturated (coverage={_cov0:.2f}); no "
                   f"plausible fallback (blue={_cov1:.2f}, bright={_cov2:.2f}) "
                   f"— keeping original mask.", flush=True)
+
+    # --- Dark-buttons-on-light-background inversion (buttons-as-holes) -------
+    # Near-black buttons on a white matte match neither the blue nor the white
+    # HSV range, so the mask above holds the bright matte as foreground and each
+    # button is an enclosed hole; every mask-driven stage then rejects on-button
+    # circles and lands crops in the white pockets between buttons.  When the mask
+    # holds several button-sized circular enclosed holes, invert to them so the
+    # buttons become foreground.  This signature does not arise when the buttons
+    # ARE the foreground (the background then reaches the border, enclosing
+    # nothing), so ordinary blue/white/navy lots are untouched.
+    if _hole_invert_enabled():
+        _holes, _n_holes, _hole_cov = _buttons_as_holes(mask, h, w)
+        if _n_holes >= 4 and 0.03 <= _hole_cov <= 0.75:
+            print(f">>> DETECT: dark-on-light inversion — {_n_holes} circular "
+                  f"button-holes (cov={_hole_cov:.2f}) → mask inverted to holes.",
+                  flush=True)
+            mask = _holes
+            fill_threshold = 0.30   # solid-disk mask: white-bg fill threshold
+            if diag_out is not None:
+                diag_out["mask_path"] = ((diag_out.get("mask_path") or "")
+                                         + "+holeinvert")
 
     gray = cv2.GaussianBlur(mask, (9, 9), 2)
 
