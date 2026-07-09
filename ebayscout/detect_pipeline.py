@@ -1706,6 +1706,12 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                       f"(deficit was {_deficit})", flush=True)
                 if diag_out is not None:
                     diag_out["white_rescue"] = len(_added)
+                    # Layer-2 measurability (log_analysis Logger_11 gap): tag
+                    # the mask path so rim-rescued lots are queryable, and the
+                    # recovered count flows to det_white_recovered — without
+                    # these the white-on-white fix is invisible in production.
+                    diag_out["mask_path"] = ((diag_out.get("mask_path") or "")
+                                             + "+whitepass")
                 if debug:
                     for (x, y, r) in _added:
                         cv2.circle(debug_img, (x, y), r, (0, 165, 255), 1)

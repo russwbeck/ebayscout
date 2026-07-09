@@ -247,7 +247,10 @@ def build_detection_diag(
     # the count-free estimate of how many buttons the mask holds. Drives the
     # dense-lot (defect A) DT-peak blob-split work. mask_coverage is the
     # saturation trigger (defect C): near 1.0 = mask blind, background bled in.
-    mask_blobs_raw=None, dt_peaks_total=None, mask_coverage=None,
+    mask_blobs_raw=None, dt_peaks_total=None,
+    # White-rescue rim pass: circles recovered on the image gradient after the
+    # colour mask missed them (white-on-white). None when the pass didn't fire.
+    white_recovered=None, mask_coverage=None,
     # Priority 5: per-stage filter breakdown (how many circles each stage dropped)
     border_removed=None,
     fill_removed=None,
@@ -375,6 +378,7 @@ def build_detection_diag(
         # Count-free over-merge signal (DT peaks per mask blob) + saturation.
         "mask_blobs_raw": _i(mask_blobs_raw),
         "dt_peaks_total": _i(dt_peaks_total),
+        "white_recovered": _i(white_recovered),
         "mask_coverage": _f(mask_coverage, 4),
         # Priority 4: whole-image quality signals.
         "edge_density": _f(edge_density, 4),
@@ -558,6 +562,8 @@ MATCH_HEADER = [
     # --- appended: count-free over-merge signal (DT peaks per mask blob) +
     # mask saturation (the defect-C trigger) ---
     "det_mask_blobs_raw", "det_dt_peaks_total", "det_mask_coverage",
+    # --- appended: white-rescue rim-pass recovery count (Layer-2 gap) ---
+    "det_white_recovered",
 ]
 
 CONFIRM_HEADER = [
@@ -653,6 +659,7 @@ def flatten_match_record(rec):
         # mask saturation (the defect-C trigger) ---
         _cell(d.get("mask_blobs_raw")), _cell(d.get("dt_peaks_total")),
         _cell(d.get("mask_coverage")),
+        _cell(d.get("white_recovered")),
     ]
 
 
