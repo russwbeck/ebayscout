@@ -272,10 +272,18 @@ live plan is **gate-scoped**: trust the unguided count only on lots where the
 shadow pass says `ni_gate=auto` + `ni_scale_path=scale_first` (96%/100%±1 at
 n=329), and keep Gemini guiding everything else.
 
-- **Entry gate:** ≥98% exact **vs human review truth** on gated lots at real
-  volume (NOT per-lot Gemini agreement — Gemini is only 74% per-lot).
-  Standing: 8/9 vs human, 0% gated disagreement on the post-patch feed.
-- **Rollback:** gated shadow-vs-truth disagreement >2% over any 50 lots.
+- **Entry gate (corrected 2026-07-10):** ≥98% gated-unguided **count
+  agreement with Gemini** at real volume — passive accrual. Gemini's count
+  is a valid ruler in the reviewed flow: the operator visually confirms
+  every Gemini decision and overwrites errors; the earlier "74% per-lot"
+  objection measured pipeline cleanliness (Hough-misplaced circles,
+  non-button objects), not Gemini count error. Standing: 0% gated
+  disagreement post-patch; 8/9 vs human (n=9).
+- **Rollback:** gated count disagreement vs Gemini >2% over any 50 lots.
+- **Blind spot to instrument before flipping:** a count gate can't see
+  misplaced circles or non-button objects — log the Hough-only unmatched
+  circles `plan_reconciliation` already computes (currently discarded) as
+  the passive placement metric.
 
 When it enters, flip gated lots to Hough-primary with Gemini demoted to
 auditor (the `BUTTONMATCHER_AUTO_DETECT` / `gate_decision` scaffolding already
@@ -326,10 +334,15 @@ instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
   `detector_used` starts with `hough` (merged: buttonmatcher #116 /
   ebayscout #50). Post-patch, gated shadow-vs-truth disagreement on the
   organic feed measured **0%** (was 2.6% with the loophole open).
-- **Grade Stage B against HUMAN truth, not Gemini per-lot.** Layer 2 measured
-  Gemini at 96.5% per-button but only **74% per-lot** — per-lot Gemini
-  agreement is too noisy to certify a ≥98% entry gate. Against operator review
-  truth, auto+scale_first was 8/9 at n=9 — right direction, tiny n.
+- ~~**Grade Stage B against HUMAN truth, not Gemini per-lot.**~~ **CORRECTED
+  2026-07-10 (operator):** every Gemini decision is visually confirmed and
+  overwritten when wrong, so Gemini can be assumed correct in the reviewed
+  flow. The Layer-2 "74% per-lot" figure measured *pipeline* per-lot
+  cleanliness — the typical intervention was a Hough-misplaced circle or a
+  non-button object, with Gemini's count right. The Stage-B count gate is
+  therefore certifiable against Gemini count agreement (passive); placement
+  errors need their own per-button instrument (see Phase 5). Against
+  operator review truth, auto+scale_first was 8/9 at n=9.
 - **Count-exact ≠ button-exact** (lot `1855dcee`): detection can find the
   right number of circles while one is a non-button and one button is missed.
   Per-button review taps (`not_a_button`, `missed_button`) are the only signal

@@ -90,9 +90,14 @@ revert.**
 
 Truth sources, ranked:
 1. **User-typed counts and slogans** (gold — `/sort` with the typed count;
-   `typed_search` confirms carry exact truth incl. sport).
-2. **Gemini's count** (silver — hallucinates: one 600×800 photo "had" 346
-   buttons; clamp at ≤60 and treat 104×104 thumbnails as untrusted).
+   `typed_search` confirms carry exact truth incl. sport). The operator
+   visually confirms every Gemini decision and overwrites errors, so
+   confirmed rows are gold regardless of source.
+2. **Gemini's reads and counts** (assume correct in the operator-reviewed
+   flow — per the operator, 2026-07-10: when a lot needed intervention it
+   was typically a Hough-misplaced circle or a non-button object, with
+   Gemini right. On *unreviewed/raw* inputs keep the guards: one 600×800
+   photo "had" 346 buttons; clamp at ≤60, distrust 104×104 thumbnails).
 3. **Agreement** (structural — CLIP and Gemini agreeing independently is
    stronger than either's confidence; it defeated the 0.968 visual twin).
 4. **Confidence scores are NOT truth.** The 0.968 wrestling pin and the 0.87
@@ -159,13 +164,19 @@ patched (`demote_auto_on_detector_bailout`). Everything is logged.
 **Stage B — detection stands alone on gated lots.** On lots where the shadow
 pass says `auto`+`scale_first`, use the unguided count as primary and demote
 Gemini's count to a cross-check.
-*Enter when:* gated unguided is ≥98% exact **against human review truth**
-(passive accrual — no crawls needed). Do NOT certify against per-lot Gemini
-agreement: Gemini measured 96.5% per-button but only **74% per-lot**
-(`tested_hypothesis.md` Part II) — too noisy a ruler for a 98% gate. Current
-standing: 8/9 vs human (n=9), 0% gated disagreement on the post-patch
-organic feed; `scale_first` is ~33% of volume, so volume is the constraint.
-*Rollback when:* gated shadow-vs-truth disagreement exceeds 2% over any 50
+*Enter when:* gated unguided **count** agrees with Gemini's count on ≥98% of
+gated lots at real volume (passive accrual — no crawls needed; Gemini's
+count is a valid ruler in the reviewed flow, per the operator 2026-07-10 —
+the earlier "74% per-lot" objection measured pipeline cleanliness, not
+Gemini count error). Current standing: **0% gated disagreement on the
+post-patch organic feed**; 8/9 vs human (n=9); `scale_first` is ~33% of
+volume.
+*Blind spot a count gate cannot see:* misplaced circles and non-button
+objects — the operator's actual dominant error mode. Grade placement
+separately against Gemini's per-button x/y (the matching already runs in
+`plan_reconciliation`; log the Hough-only unmatched circles instead of
+discarding them) plus `not_a_button`/`missed_button` taps.
+*Rollback when:* gated count disagreement vs Gemini exceeds 2% over any 50
 lots (`auto_overridden` has no UI affordance yet, so it cannot be the
 tripwire). *Prize:* radius/count independence; Gemini load unchanged but now
 redundant on ~⅓ of lots (growing as mask variants land).
@@ -227,10 +238,14 @@ broken — 0/300 non-null — and was fixed at the source, so its calibration
 clock starts now. See `tested_hypothesis.md` Parts I–II for the verdicts
 behind this list.)*
 
-1. **Grow the Stage-B sample against human truth** — `/sort` batches with
-   typed counts are gold and free; the entry gate needs ≥98% at real volume
-   (currently 8/9). Watch `+whitepass` / `+satfallback_*` frequency on the
-   same exports (is the chooser choosing well? is the rim rescue real?).
+1. **Let the Stage-B count gate accrue passively** (gated-unguided vs Gemini
+   count agreement — 0% disagreement post-patch; needs sustained volume),
+   and **instrument the placement blind spot**: log the Hough-only
+   unmatched circles `plan_reconciliation` already computes, so misplaced
+   circles and non-button objects — the operator's dominant error mode —
+   become a measurable per-lot number. Watch `+whitepass` /
+   `+satfallback_*` frequency on the same exports (is the chooser choosing
+   well? is the rim rescue real?).
 2. **Land the white-on-white variant** (§2, the known-but-uncured case):
    promote `_white_rescue_pass`'s gradient logic into a first-class mask
    variant in the chooser — blocked on Layer-1 radius trust and owing the

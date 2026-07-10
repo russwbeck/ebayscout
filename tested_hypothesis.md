@@ -246,11 +246,23 @@ branch `claude/log-analysis-hough-gate`).*
   `demote_auto_on_detector_bailout`: AUTO demotes to SUGGEST unless
   `detector_used` starts with `hough` (merged buttonmatcher #116 /
   ebayscout #50). **Post-patch the gated organic disagreement is 0%.**
-- **Gemini truth is per-button strong, per-lot weak: 96.5% vs 74%.** Direct
-  consequence, adopted as doctrine: **Stage B is graded against HUMAN review
-  truth, not per-lot Gemini agreement** — a ≥98% entry gate cannot be
-  certified with a 74%-accurate ruler. Against human truth, auto+scale_first
-  measured **8/9** (n=9 — right direction, needs volume).
+- **Gemini per-button reads: 96.5% correct raw** (the operator overwrote the
+  rest — confirmed rows ARE truth). ~~Per-lot Gemini is weak (74%), so grade
+  Stage B against human truth only~~ — **CORRECTED 2026-07-10 by the
+  operator**: every Gemini decision is visually confirmed and overwritten
+  when wrong, so **Gemini can be assumed correct in the reviewed flow**. The
+  74% "per-lot" figure was mis-attributed — it measured *pipeline* per-lot
+  cleanliness, and the typical intervention was a **Hough-misplaced circle
+  or a non-button object in the photo**, with Gemini's count right. Revised
+  doctrine: the Stage-B **count** gate may be certified against Gemini count
+  agreement (passive, accrues free); **placement/identity** errors are what
+  a count ruler cannot see — grade those per-button (review taps, and
+  Gemini's per-button x/y as a passive placement ruler:
+  `gemini_geometry.plan_reconciliation` already computes the Hough-only
+  unmatched-circle list and currently discards it). Against human truth,
+  auto+scale_first measured 8/9 (n=9). The raw-crawl guards stay for
+  unreviewed inputs (the 346-button hallucination, thumbnail distrust,
+  ≤60 clamp).
 - **Count-exact ≠ button-exact** (lot `1855dcee`): detection found the right
   *number* of circles while one was a non-button and one real button was
   missed. Per-button review taps (`not_a_button` / `missed_button`) are the
