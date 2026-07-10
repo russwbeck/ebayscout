@@ -470,6 +470,7 @@ def build_confirm_record(
     typed_top=None,
     rank_image_only=None,
     rank_rerank=None,
+    edition_shadow=None,
 ):
     """One record per user confirmation, written when the human picks an answer.
 
@@ -491,6 +492,15 @@ def build_confirm_record(
     ``restricted_top`` / ``shadow_top`` are the full top-10 leaderboards at
     match time, included here so over-scoring can be analysed without joining
     to match_log.
+
+    ``edition_shadow`` (edition_twins guard, appended column): for a twin-family
+    confirmation (source="edition_pick"/"edition_pick_unknown"), the reference-
+    photo shadow arbitration computed at match time — which family edition's
+    reference photos looked most similar to the crop, e.g.
+    {"family_key": "plasterpitt", "shadow_year": 1979, "shadow_type":
+    "Basketball", "sims": {...}}. Measurement only (never influenced the
+    ranking/auto-confirm); lets confirm_log compare the human's pick to the
+    shadow's pick. None for every non-twin confirmation.
     """
     return {
         "schema": SCHEMA_CONFIRM,
@@ -524,6 +534,9 @@ def build_confirm_record(
         # typed-search / missed-button / Dussellbot re-rank), kept separate so it
         # never overwrites the originals above.
         "typed_top": typed_top or [],
+        # edition_twins guard: see docstring above. {} (not None) so
+        # flatten_confirm_record always has a dict to json.dumps.
+        "edition_shadow": edition_shadow or {},
     }
 
 
@@ -587,6 +600,10 @@ CONFIRM_HEADER = [
     # --- Appended columns (extend existing tab headers by hand) ---
     # Rank of the confirmed year in the unrestricted+rerank leaderboard
     "rank_rerank",
+    # --- appended: edition_twins guard — reference-photo shadow arbitration
+    # for twin-family confirmations (source=edition_pick/edition_pick_unknown).
+    # {} for every non-twin confirmation.
+    "edition_shadow_json",
 ]
 
 
@@ -693,6 +710,7 @@ def flatten_confirm_record(rec):
         json.dumps(rec.get("typed_top") or [], default=str),
         _cell(rec.get("rank_image_only")),
         _cell(rec.get("rank_rerank")),
+        json.dumps(rec.get("edition_shadow") or {}, default=str),
     ]
 
 
