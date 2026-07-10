@@ -90,9 +90,14 @@ revert.**
 
 Truth sources, ranked:
 1. **User-typed counts and slogans** (gold — `/sort` with the typed count;
-   `typed_search` confirms carry exact truth incl. sport).
-2. **Gemini's count** (silver — hallucinates: one 600×800 photo "had" 346
-   buttons; clamp at ≤60 and treat 104×104 thumbnails as untrusted).
+   `typed_search` confirms carry exact truth incl. sport). The operator
+   visually confirms every Gemini decision and overwrites errors, so
+   confirmed rows are gold regardless of source.
+2. **Gemini's reads and counts** (assume correct in the operator-reviewed
+   flow — per the operator, 2026-07-10: when a lot needed intervention it
+   was typically a Hough-misplaced circle or a non-button object, with
+   Gemini right. On *unreviewed/raw* inputs keep the guards: one 600×800
+   photo "had" 346 buttons; clamp at ≤60, distrust 104×104 thumbnails).
 3. **Agreement** (structural — CLIP and Gemini agreeing independently is
    stronger than either's confidence; it defeated the 0.968 visual twin).
 4. **Confidence scores are NOT truth.** The 0.968 wrestling pin and the 0.87
@@ -112,13 +117,13 @@ The headline metrics and what they answer:
 
 **The regression battery.** Before shipping ANY detector change, run the real
 failed lots through the actual edited functions (opencv-python-headless
-installs fine in web sessions; torch does not). The four founding photos are
-the quilt-35, batting-26, basketball-35, and white-8 lots — as of this
-writing they live only in session uploads. **High-value cheap task: commit
-them (downscaled) under `tests/fixtures/lots/` with expected counts, and a CI
-test that asserts detect_buttons/count_circles_unguided outputs.** Every
-future mask variant must keep all four green plus synthetics (single, spread
-5×5, touching 5×5 — see the session's `phase_verify.py` pattern).
+installs fine in web sessions; torch does not). *(Done 2026-07-04:)* the
+founding photos — quilt-35, batting-26, basketball-35, white-8, plus five
+more — are committed under `tests/fixtures/lots/` with a manifest, and
+`tests/test_detect_fixtures.py` locks the unguided snapshot and the Layer-1
+safety property (non-`scale_first` never reaches `gate=auto`). Every future
+mask variant must keep all nine green plus synthetics (single, spread 5×5,
+touching 5×5).
 
 **Ship-safety rules, each paid for in blood this week:**
 - **Execute, don't just compile.** The cross-sport gate shipped compile-clean
@@ -151,16 +156,30 @@ steps; the gates are cheap because the telemetry already flows.
 **Stage A — where we are.** Pipeline detection is Gemini-count-guided;
 auto-confirm requires agreement (pipeline) or score+gates (`/sort`);
 `ni_gate=auto` + `scale_path=scale_first` identifies self-certified unguided
-lots (100% exact on the only batch measured). Everything is logged.
+lots — **96% exact / 100% ±1 at n=329** (the early "100% exact" was a
+20-image sampling artifact; see `tested_hypothesis.md` Part I §3.1), and the
+detector-bailout loophole that let stale shadow numbers reach `auto` is
+patched (`demote_auto_on_detector_bailout`). Everything is logged.
 
 **Stage B — detection stands alone on gated lots.** On lots where the shadow
 pass says `auto`+`scale_first`, use the unguided count as primary and demote
 Gemini's count to a cross-check.
-*Enter when:* gated unguided matches Gemini exactly on ≥98% of ~200
-consecutive lots (passive accrual — no crawls needed).
-*Rollback when:* `auto_overridden`/disagreement rate exceeds 2% over any 50
-lots. *Prize:* radius/count independence; Gemini load unchanged but now
-redundant on ~¼ of lots (growing as mask variants land).
+*Enter when:* gated unguided **count** agrees with Gemini's count on ≥98% of
+gated lots at real volume (passive accrual — no crawls needed; Gemini's
+count is a valid ruler in the reviewed flow, per the operator 2026-07-10 —
+the earlier "74% per-lot" objection measured pipeline cleanliness, not
+Gemini count error). Current standing: **0% gated disagreement on the
+post-patch organic feed**; 8/9 vs human (n=9); `scale_first` is ~33% of
+volume.
+*Blind spot a count gate cannot see:* misplaced circles and non-button
+objects — the operator's actual dominant error mode. Grade placement
+separately against Gemini's per-button x/y (the matching already runs in
+`plan_reconciliation`; log the Hough-only unmatched circles instead of
+discarding them) plus `not_a_button`/`missed_button` taps.
+*Rollback when:* gated count disagreement vs Gemini exceeds 2% over any 50
+lots (`auto_overridden` has no UI affordance yet, so it cannot be the
+tripwire). *Prize:* radius/count independence; Gemini load unchanged but now
+redundant on ~⅓ of lots (growing as mask variants land).
 
 **Stage C — Gemini becomes an auditor, not a guide.** Call the Gem only when
 (a) the gate is below `auto`, (b) CLIP's match lacks reference agreement
@@ -213,22 +232,32 @@ already learned:
 
 ## 6. What I would do next, in order
 
-1. **Commit the regression fixture lots + CI test** (§3). One hour, permanent
-   protection for every future mask change.
+*(Updated 2026-07-09 — items 1 and 3 from the original list are done: the
+fixture battery is committed (§3), and the `ref_sim` wiring turned out to be
+broken — 0/300 non-null — and was fixed at the source, so its calibration
+clock starts now. See `tested_hypothesis.md` Parts I–II for the verdicts
+behind this list.)*
+
+1. **Let the Stage-B count gate accrue passively** (gated-unguided vs Gemini
+   count agreement — 0% disagreement post-patch; needs sustained volume),
+   and **instrument the placement blind spot**: log the Hough-only
+   unmatched circles `plan_reconciliation` already computes, so misplaced
+   circles and non-button objects — the operator's dominant error mode —
+   become a measurable per-lot number. Watch `+whitepass` /
+   `+satfallback_*` frequency on the same exports (is the chooser choosing
+   well? is the rim rescue real?).
 2. **Land the white-on-white variant** (§2, the known-but-uncured case):
    promote `_white_rescue_pass`'s gradient logic into a first-class mask
-   variant in the chooser, so white-on-white lots stop depending on a
-   deficit-triggered patch. Test: build the fixture photo first.
-3. **Read the first post-#110/#46 Logger export** for `ref_sim` on confirmed
+   variant in the chooser — blocked on Layer-1 radius trust and owing the
+   contained-fragment dedup fix (`tested_hypothesis.md` Part I §2).
+3. **Read the first post-fix Logger export** for `ref_sim` on confirmed
    outcomes → set or reject the absolute mismatch threshold (§5).
-4. **Watch two numbers for a week:** gated-unguided vs Gemini agreement
-   (Stage B's entry gate) and `+satfallback_*` frequency by variant (is the
-   chooser choosing well?).
-5. **Start using the correction flow religiously** — auto precision is the
+4. **Start using the correction flow religiously** — auto precision is the
    only load-bearing number still inferred rather than measured, and Stage D
-   is gated on it.
-6. When Stage B enters: flip the unguided count to primary on gated lots
-   behind an env flag, shadow-log Gemini disagreement for two weeks, then
+   is gated on it. (The 759/759 `gemini_auto` audit deserves a durable
+   record too.)
+5. When Stage B enters: flip the unguided count to primary on gated lots
+   behind an env flag, shadow-log disagreement vs truth for two weeks, then
    stop guiding those lots.
 
 ---

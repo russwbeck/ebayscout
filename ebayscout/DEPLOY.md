@@ -76,7 +76,7 @@ is two steps: upload a photo → reply `$price | source` → the bot replies
 echo -n "YOUR_EBAY_APP_ID"  | gcloud secrets create EBAY_APP_ID  --data-file=-
 echo -n "YOUR_EBAY_CERT_ID" | gcloud secrets create EBAY_CERT_ID --data-file=-
 
-# The following already exist from buybot — no action needed:
+# The following already exist (created for the original buybot, since decommissioned) — no action needed:
 # GOOGLE_SHEETS_JSON, SPREADSHEET_ID
 ```
 
@@ -124,7 +124,7 @@ gcloud artifacts repositories create buttons \
 Build and push the image manually for the first deploy (Cloud Build trigger
 handles subsequent deploys automatically):
 ```bash
-cd /path/to/buybot   # repo root
+cd /path/to/ebayscout   # repo root (doc originally said buybot — that repo is decommissioned)
 
 docker build \
   -f ebayscout/Dockerfile \

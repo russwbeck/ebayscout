@@ -100,6 +100,38 @@ def test_plan_reconciliation_no_double_count_when_covered():
     assert len(out["covered"]) == 1
 
 
+def test_plan_reconciliation_unmatched_crops_happy_path():
+    # Three detected circles; Gemini only backs two of them → the third is a
+    # Hough placement/non-button blind spot.
+    detected_centers = [(100, 100), (300, 300), (700, 700)]
+    detected_radii = [20, 20, 20]
+    gemini = [
+        {"index": 1, "slogan": "A", "x": 10, "y": 10, "size": None, "confidence": 0.9},
+        {"index": 2, "slogan": "B", "x": 30, "y": 30, "size": None, "confidence": 0.9},
+    ]
+    out = gg.plan_reconciliation(detected_centers, detected_radii, gemini, 1000, 1000)
+    assert out["unmatched_crops"] == [2]
+    assert out["telemetry"]["n_unmatched_crops"] == 1
+
+
+def test_plan_reconciliation_unmatched_crops_unknown_when_match_cannot_run():
+    detected_centers = [(100, 100), (300, 300), (700, 700)]
+    gemini = [
+        {"index": 1, "slogan": "A", "x": 10, "y": 10, "size": None, "confidence": 0.9},
+    ]
+    # No median radius (no detected radii) → cover_dist is None → unknown, not
+    # "all circles unmatched".
+    out = gg.plan_reconciliation(detected_centers, [], gemini, 1000, 1000)
+    assert out["unmatched_crops"] is None
+    assert out["telemetry"]["n_unmatched_crops"] is None
+
+    # Zero Gemini points with valid coordinates → unknown, not "all unmatched".
+    gemini_no_coords = [{"index": 1, "slogan": "A", "x": None, "y": None, "confidence": 0.9}]
+    out2 = gg.plan_reconciliation(detected_centers, [20, 20, 20], gemini_no_coords, 1000, 1000)
+    assert out2["unmatched_crops"] is None
+    assert out2["telemetry"]["n_unmatched_crops"] is None
+
+
 def test_deficit_cap_prevents_double_count_when_coverage_misaligns():
     # Image-2 case: Hough found all 5, Gemini reports 5, but the coverage test
     # mis-aligns (tiny median radius → nothing counts as "covered"). The deficit

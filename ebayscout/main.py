@@ -800,6 +800,10 @@ def process_pipeline_lot(job_id: str) -> None:
                 gemini_button_count=gem_count,
                 gemini_flagged_count=len(flagged),
                 gemini_slogans=gem_slogans,
+                # unmatched_crop_indices indexes into circle_info AT RECONCILE
+                # TIME (before rec_info was appended) — the same list order
+                # preserved above, so per-circle indices still line up here.
+                unmatched_crop_indices=(_rt or {}).get("unmatched_crop_indices"),
             )
             _lh_jname, _lh_iname = lharv.label_blob_names(job_id)
             _lh_bucket = storage.Client().bucket(config.BUCKET_NAME)
@@ -981,6 +985,8 @@ def process_pipeline_lot(job_id: str) -> None:
                 gemini_button_count=gem_count,
                 n_recovered=len(rec_crops),
                 reconcile_misses=(_rt or {}).get("misses"),
+                gem_unmatched=(_rt or {}).get("n_unmatched_crops"),
+                gem_unmatched_indices=(_rt or {}).get("unmatched_crop_indices"),
             )
             _records = [
                 mlog.build_match_record(

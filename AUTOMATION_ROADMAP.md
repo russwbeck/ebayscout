@@ -6,7 +6,8 @@ review on the happy path.
 615 images; +788-lot instrumented follow-up) and the Logger_3 validation batch
 (2026-07-01: five `/sort` lots with user counts + 13 daily-pipeline lots), and
 the **Logger_4 instrumented 300-lot run** (2026-07-02 — the measured baseline
-below).
+below). Verdicts on every hypothesis that has since been tested live in
+**`tested_hypothesis.md`** — check there before re-proposing anything.
 **Convention:** detection (`detect.py` ↔ `ebayscout/detect_pipeline.py`) and
 `match_logging.py` are kept in lockstep across **buttonmatcher and ebayscout**
 — every change below lands in both. *(buybot was decommissioned 2026-07-05;
@@ -17,10 +18,10 @@ it is no longer a sync target.)*
 | Phase | What | Status | Blocked on |
 |---|---|---|---|
 | 1 | Instrumentation completion (gaps 1/2/5 + saturation signal) | ✅ **merged (PRs #43/#104), deployed, validated on the 300-lot run** | — |
-| 2a | Defect C: mask-saturation fallback (blue-only + hole-fill retry) | ✅ **implemented on this branch** — real 35-lot: guided 35/35 (was grid-fallback); 26-lot: 23/23 blue | — |
+| 2a | Defect C: mask-saturation fallback (blue-only + bright two-variant chooser, hole-fill, 8–75% plausibility) | ✅ **merged + deployed** — real 35-lot: guided 35/35 (was grid-fallback); 26-lot: 23/23 blue; white-8: recovered | — |
 | 2b | Defect A: DT-radius-led re-Hough on fused lots (revised — DT peaks are the radius source, not the counter) | ◐ largely covered by 2a (saturation was the fusion driver in both real lots); re-measure residual non-saturated fusion on the next batch | next batch |
-| 3 | Defect B: concentric/radius dedup (small-lot overcount) | ✅ **implemented on this branch** — 0.7–1.3×median band + concentric collapse (keep better fill) on the unguided selection | — |
-| 3.5 | Tighten `ni_gate=auto` | ✅ **implemented on this branch** — AUTO now requires `scale_path=scale_first` (Logger_4: 40/40 exact vs 6/6 wrong autos on fallback paths) | — |
+| 3 | Defect B: concentric/radius dedup (small-lot overcount) | ✅ **merged + deployed** — 0.7–1.3×median band + concentric collapse (keep better fill) on the unguided selection | — |
+| 3.5 | Tighten `ni_gate=auto` | ✅ **merged + deployed** — AUTO requires `scale_path=scale_first` AND a non-bailed guided detector (`demote_auto_on_detector_bailout`, #116/#50); validated at n=329: 96%/100%±1 | — |
 | 4a | Low-res guard (thumbnail auto-confirm) | ✅ implementable immediately | nothing |
 | 4b | Reference coverage for 0.00-scoring slogans | ⏸ data (exists, needs a run) | one `audit_reference_coverage` run vs GCS |
 | 4c | Measured auto-confirm error rate | ⏸ human data | `correction` rows in confirm_log (~100 auto-confirms reviewed) |
@@ -263,24 +264,31 @@ threshold. These items close the remaining risk:
 
 ---
 
-## Phase 5 — Rollout: drop the guided count
+## Phase 5 — Rollout: drop the guided count (gate-scoped Stage B)
 
-**Blocked on Phase-1 data by design.** The gate table, computed per lot-size
-bucket over a few hundred post-Phase-1 pipeline lots (`ni_selected` — and after
-Phase 2, `det_dt_peaks_total` — vs `gemini_button_count`):
+**The original per-bucket gate table is SUPERSEDED** — Logger_4 showed the
+per-bucket flip is the wrong shape (see `tested_hypothesis.md` Part I). The
+live plan is **gate-scoped**: trust the unguided count only on lots where the
+shadow pass says `ni_gate=auto` + `ni_scale_path=scale_first` (96%/100%±1 at
+n=329), and keep Gemini guiding everything else.
 
-| Bucket | Gate to flip |
-|---|---|
-| 1 button | ≥90% exact |
-| 2–6 | ≥85% exact |
-| 7+ | ≥80% within ±1 |
+- **Entry gate (corrected 2026-07-10):** ≥98% gated-unguided **count
+  agreement with Gemini** at real volume — passive accrual. Gemini's count
+  is a valid ruler in the reviewed flow: the operator visually confirms
+  every Gemini decision and overwrites errors; the earlier "74% per-lot"
+  objection measured pipeline cleanliness (Hough-misplaced circles,
+  non-button objects), not Gemini count error. Standing: 0% gated
+  disagreement post-patch; 8/9 vs human (n=9).
+- **Rollback:** gated count disagreement vs Gemini >2% over any 50 lots.
+- **Blind spot to instrument before flipping:** a count gate can't see
+  misplaced circles or non-button objects — log the Hough-only unmatched
+  circles `plan_reconciliation` already computes (currently discarded) as
+  the passive placement metric.
 
-When a bucket sustains its gate, flip that bucket to Hough-primary with Gemini
-demoted to auditor (the `BUTTONMATCHER_AUTO_DETECT` / `gate_decision`
-scaffolding already exists; `ni_gate=auto` was correct on all five Logger_3
-`/sort` lots, including refusing the two collapsed dense lots). End state:
-Gemini consulted only on disagreement — which also cuts Gem-worker load. Keep
-`reconcile_with_gemini` as the safety net throughout.
+When it enters, flip gated lots to Hough-primary with Gemini demoted to
+auditor (the `BUTTONMATCHER_AUTO_DETECT` / `gate_decision` scaffolding already
+exists). End state: Gemini consulted only on disagreement — which also cuts
+Gem-worker load. Keep `reconcile_with_gemini` as the safety net throughout.
 
 **Collection is passive:** normal daily feeds. At Logger_3's rate (~13
 images/day), ~2–4 weeks per few hundred lots; any `/sort` and `/scout` use adds
@@ -303,3 +311,81 @@ gold-standard rows on top. No crawls required.
   by `gemini_button_count`, compare `ni_selected` / `det_dt_peaks_total` /
   `det_hough_pass1`, and split fused lots out via
   `det_mask_components < gemini_button_count`.
+
+---
+
+## Status update — 2026-07-09 (Layer-1/Layer-2 log analysis absorbed)
+
+Source: the two analysis layers on `buttonmatcher/log_analysis.md` (branch
+`claude/log-analysis-hough-gate`, since reviewed) — Layer 1 graded n=329
+instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
+**human review truth** (all Gemini confirmations visually verified).
+
+**What the data settled:**
+
+- **Trust the PATH, not the score (Layer 1, n=329).** `ni_gate=auto` +
+  `ni_scale_path=scale_first` is the trustworthy stratum: **96% exact / 100%
+  within ±1**. Confidence scores alone do not reach that; the gate + path
+  combination does. This is the Stage-B entry condition.
+- **A gate loophole was found and patched.** `ni_gate=auto` could survive even
+  when the guided detector bailed to grid/Gemini-led (the unguided shadow
+  numbers then describe a detector that wasn't used). Fixed by
+  `demote_auto_on_detector_bailout` — AUTO demotes to SUGGEST unless
+  `detector_used` starts with `hough` (merged: buttonmatcher #116 /
+  ebayscout #50). Post-patch, gated shadow-vs-truth disagreement on the
+  organic feed measured **0%** (was 2.6% with the loophole open).
+- ~~**Grade Stage B against HUMAN truth, not Gemini per-lot.**~~ **CORRECTED
+  2026-07-10 (operator):** every Gemini decision is visually confirmed and
+  overwritten when wrong, so Gemini can be assumed correct in the reviewed
+  flow. The Layer-2 "74% per-lot" figure measured *pipeline* per-lot
+  cleanliness — the typical intervention was a Hough-misplaced circle or a
+  non-button object, with Gemini's count right. The Stage-B count gate is
+  therefore certifiable against Gemini count agreement (passive); placement
+  errors need their own per-button instrument (see Phase 5). Against
+  operator review truth, auto+scale_first was 8/9 at n=9.
+- **Count-exact ≠ button-exact** (lot `1855dcee`): detection can find the
+  right number of circles while one is a non-button and one button is missed.
+  Per-button review taps (`not_a_button`, `missed_button`) are the only signal
+  that catches this — and each tap is a labeled training example for the §10
+  learned-detection track.
+- **DT peaks stay rejected as a counter** (median error 7–21 depending on
+  bucket); they remain the radius/fusion signal only — consistent with the
+  Logger_4 finding, now at larger n.
+
+**Shipped since the last table refresh:**
+
+- Label harvester (`label_harvest.py`, both repos): every pipeline lot now
+  writes `pipeline/labels/<job_id>.json` + `.jpg` sidecars (detection-space
+  image + circles with provenance + Gemini reading verbatim); confirms join
+  via `confirm_log.job_id`. Kill switch `BUTTONMATCHER_LABEL_HARVEST=0`.
+- `ref_sim` now actually flows into the trim_top leaderboard snapshots
+  (stamped at the source in `match_crops_with_diagnostics`; the earlier
+  serializer-only wiring logged 0/300 non-null).
+- Whitepass telemetry (**pending merge: buttonmatcher #118 / ebayscout #51**):
+  the guided white-rescue pass now tags `mask_path += "+whitepass"` and logs
+  `det_white_recovered` (one trailing Sheet column to hand-append) — the
+  white-on-white rescue becomes measurable instead of invisible.
+- Real-lot regression fixtures (`tests/fixtures/lots/` +
+  `test_detect_fixtures.py`, 9 lots incl. the quilt-35 / batting-26 /
+  basketball-35 / white-8 photos) pin the mask-fallback behavior.
+
+**Stage-B rollout position (gate-scoped Phase 5):**
+
+- Entry gate: **≥98% exact vs human review truth on auto+scale_first lots**,
+  measured over enough volume to mean something. Current standing: 8/9 vs
+  human (n=9), 100% vs Gemini on the post-patch organic gated slice.
+  `scale_first` share of the feed is ~33% — volume is the constraint.
+- Rollback monitor once flipped: gated shadow-vs-truth disagreement **>2%
+  over any 50-lot window** reverts the flip (chosen because
+  `auto_overridden` has no UI affordance yet, so per-lot override rates
+  can't be the tripwire).
+- Fastest path to volume (zero compute cost): dense + single lots through
+  `/sort` — typed counts are gold truth and every row carries the full
+  instrumentation.
+
+**Still waiting on operator-side data (unchanged asks):**
+
+- First `correction` rows in confirm_log (Phase 4c is still at zero — the
+  auto-confirm error rate remains inferred, not measured).
+- A durable record of the 759/759 `gemini_auto` visual audit (currently only
+  attested in chat; a one-line note in HANDOFF or the Sheet makes it citable).

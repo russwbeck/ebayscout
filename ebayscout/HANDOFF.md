@@ -6,6 +6,25 @@ the "what we did today + where it stands + what's next" layer on top.
 
 ---
 
+## 2026-07-09 — where the live work actually is
+
+The dated entries below end at 2026-06-20; the active work stream since then
+is the **detection/matching automation program**, tracked in repo-root docs
+shared byte-identical with buttonmatcher:
+
+- **`AUTOMATION_ROADMAP.md`** — live phase status (start here).
+- **`AUTOMATION_VISION.md`** — the strategy (mask blindness, measurement
+  doctrine, the Stage A→D rollout staircase).
+- **`tested_hypothesis.md`** — consolidated confirmed/refuted hypotheses;
+  check it before re-proposing anything.
+- `HOUGH_AND_LOGGING_UPDATES.md` is historical (frozen); `match_logging.py`
+  is the canonical log schema.
+
+buybot was decommissioned 2026-07-05 — shared files sync across
+buttonmatcher + ebayscout only.
+
+---
+
 ## 2026-06-20 — daily scan promoted to the Gemini pipeline; `/crawl` stays a manual one-off (PR #37, MERGED + deployed)
 
 Branch `claude/crawl-unify-with-daily-pull` (PR #37, merged into `main`).

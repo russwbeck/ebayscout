@@ -1,11 +1,21 @@
 # Hough Detection & Logging Updates
 
+> **HISTORICAL (frozen 2026-07-09).** This is the design record of the
+> original multi-pass Hough phases and the early logging schema. Everything
+> here shipped and was later superseded as the frontier moved to the mask and
+> the radius estimate — see `tested_hypothesis.md` Part III for the verdicts,
+> `AUTOMATION_VISION.md`/`AUTOMATION_ROADMAP.md` for live strategy. The
+> schema below (54 columns) is outdated — `match_logging.py` is the canonical
+> schema (79 columns as of 2026-07-09); buybot was decommissioned 2026-07-05;
+> the file names `main__3_.py`/`main__4_.py` are pre-refactor. The deployment
+> checklist at the bottom was executed long ago — do not re-run it.
+
 **Goal:** automate eBay button identification by measuring and improving every stage
 of the detection and matching pipeline, with no changes to the user-facing flow.
 
 ---
 
-## Architecture overview
+## Architecture overview *(as of writing — buybot since decommissioned)*
 
 Three bots share the same core detection and logging infrastructure:
 
