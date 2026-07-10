@@ -539,9 +539,10 @@ def test_shadow_pass_enabled_env():
 
 def test_dt_peak_columns_present_and_flattened():
     # Count-free over-merge signal (log_analysis.md gap 5): raw blob count +
-    # summed per-blob DT-peak count, appended at the END of the header.
-    assert ml.MATCH_HEADER[-4:] == ["det_mask_blobs_raw", "det_dt_peaks_total",
-                                    "det_mask_coverage", "det_white_recovered"]
+    # summed per-blob DT-peak count, appended at the END of the header (at the
+    # time this assertion was written — det_gem_unmatched(_json) now follow).
+    assert ml.MATCH_HEADER[-6:-2] == ["det_mask_blobs_raw", "det_dt_peaks_total",
+                                      "det_mask_coverage", "det_white_recovered"]
 
     diag = ml.build_detection_diag(
         h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
@@ -584,6 +585,54 @@ def test_dt_peak_columns_default_blank():
     assert row[ml.MATCH_HEADER.index("det_mask_blobs_raw")] == ""
     assert row[ml.MATCH_HEADER.index("det_dt_peaks_total")] == ""
     assert row[ml.MATCH_HEADER.index("det_mask_coverage")] == ""
+
+
+def test_gem_unmatched_columns_are_the_header_tail():
+    # Hough circles unbacked by any Gemini point (placement/non-button
+    # blind-spot metric) — the newest appended columns, at the VERY end.
+    assert ml.MATCH_HEADER[-2:] == ["det_gem_unmatched", "det_gem_unmatched_json"]
+
+
+def test_gem_unmatched_columns_flatten_known_count():
+    diag = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=3, hough_retry_count=None, final_count_user=3,
+        final_count_noinput=3, user_count=None, detector_used="hough", n_crops=3,
+        gem_unmatched=1, gem_unmatched_indices=[2],
+    )
+    assert diag["gem_unmatched"] == 1
+    assert diag["gem_unmatched_indices"] == [2]
+
+    rec = ml.build_match_record(
+        service="ebayscout", command="/crawl-pipeline", mode="pipeline", job_id="j",
+        thread_ts=None, channel_id="ch", user_id=None, crop_num=1, check_id="k",
+        detection=diag, bank=None, restricted_top=[], shadow_top=[],
+        shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    assert row[ml.MATCH_HEADER.index("det_gem_unmatched")] == 1
+    assert row[ml.MATCH_HEADER.index("det_gem_unmatched_json")] == json.dumps([2])
+
+
+def test_gem_unmatched_columns_blank_when_unknown():
+    # Match couldn't meaningfully run (no median radius / no Gemini coords) →
+    # None, flattened as a BLANK cell — never mistaken for a real zero.
+    diag = ml.build_detection_diag(
+        h=1, w=1, bg_brightness=10, bg_is_white=False, mask_path="blue_or_white",
+        hough_pass1_count=0, hough_retry_count=None, final_count_user=1,
+        final_count_noinput=None, user_count=None, detector_used="grid", n_crops=1,
+    )
+    assert diag["gem_unmatched"] is None
+    assert diag["gem_unmatched_indices"] is None
+    rec = ml.build_match_record(
+        service="s", command="/c", mode="inventory", job_id="j", thread_ts="t",
+        channel_id="ch", user_id="u", crop_num=1, check_id="k", detection=diag,
+        bank="all", restricted_top=[], shadow_top=[], shadow_enabled=False,
+    )
+    row = ml.flatten_match_record(rec)
+    assert row[ml.MATCH_HEADER.index("det_gem_unmatched")] == ""
+    assert row[ml.MATCH_HEADER.index("det_gem_unmatched_json")] == "[]"
 
 
 def test_noinput_diag_flattens_ni_columns_on_pipeline_record():

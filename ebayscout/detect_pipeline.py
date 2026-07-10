@@ -2134,6 +2134,9 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
     telemetry["unmatched_gemini_slogans"] = [
         gemini_slogans[i].get("slogan") for i in unmatched_gemini
     ]
+    # n_unmatched_crops already flowed through via dict(plan["telemetry"]);
+    # unmatched_crop_indices is plan-level, not telemetry-level, so surface it too.
+    telemetry["unmatched_crop_indices"] = plan["unmatched_crops"]
     print(
         f">>> RECONCILE: hough={telemetry['hough_count']} "
         f"gemini={telemetry['gemini_count']} recovered={len(recovered_crops)} "

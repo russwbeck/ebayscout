@@ -140,8 +140,13 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
           "misses":  [ {gemini_idx, index, slogan, confidence, gx, gy,
                         r_px, box} ],              # uncovered → synthesize crop
           "covered": [ {gemini_idx, crop_idx, dist} ],
+          "unmatched_crops": [crop_idx, ...] | None,  # detected circles no
+                        # Gemini point covered (placement/non-button blind
+                        # spot); None when the match couldn't meaningfully run
+                        # (no median radius, or zero Gemini points with valid
+                        # coords) — unknown, never "all circles are unbacked".
           "telemetry": {gemini_count, hough_count, n_recovered,
-                        covered_distances, misses:[...]},
+                        n_unmatched_crops, covered_distances, misses:[...]},
         }
 
     ``gemini_idx`` is the 0-based position in ``gemini_slogans``.
@@ -161,9 +166,14 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
     # Coverage matching: only Gemini points with valid coordinates participate.
     g_points = [gemini_px[gi] for gi in valid_idx]
     cover_dist = (cover_factor * median_r) if median_r else None
-    pairs, _unmatched_crops, unmatched_g_local = match_points(
+    pairs, unmatched_crops, unmatched_g_local = match_points(
         detected_centers, g_points, max_dist=cover_dist
     )
+    if cover_dist is None or not g_points:
+        # Match couldn't meaningfully run (no median radius, or Gemini gave no
+        # usable coords) — reporting "every circle is unbacked" here would be a
+        # false alarm, not a real placement signal. Unknown, not zero/all.
+        unmatched_crops = None
 
     covered = []
     for crop_idx, local_j, dist in pairs:
@@ -224,6 +234,7 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         "deficit": deficit,
         "n_uncovered": len(unmatched_g_local),
         "n_recovered": len(misses),
+        "n_unmatched_crops": len(unmatched_crops) if unmatched_crops is not None else None,
         "median_r": round(median_r, 2) if median_r else None,
         "covered_distances": [c["dist"] for c in covered],
         "misses": [
@@ -237,6 +248,7 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         "gemini_px": gemini_px,
         "misses": misses,
         "covered": covered,
+        "unmatched_crops": unmatched_crops,
         "telemetry": telemetry,
     }
 

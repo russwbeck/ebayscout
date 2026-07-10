@@ -56,6 +56,33 @@ def test_build_label_record_circles_and_sources():
     assert rec["confirm_join"] == "confirm_log.job_id"
 
 
+def test_build_label_record_tags_gemini_backed_when_known():
+    circle_info = [
+        {"shape": "circle", "x": 100, "y": 100, "r": 20},
+        {"shape": "circle", "x": 300, "y": 300, "r": 20},
+        {"shape": "circle", "x": 700, "y": 700, "r": 20},
+    ]
+    rec = lh.build_label_record(
+        job_id="j3", service="ebayscout", command="daily-pipeline",
+        img_w=1000, img_h=1000,
+        circle_info=circle_info, circle_sources=["hough", "hough", "hough"],
+        unmatched_crop_indices=[2],
+    )
+    assert [c.get("gemini_backed") for c in rec["circles"]] == [True, True, False]
+
+
+def test_build_label_record_omits_gemini_backed_when_unknown():
+    # unmatched_crop_indices=None (default) → match couldn't meaningfully run;
+    # the key must be ABSENT, never guessed as True or False.
+    circle_info = [{"shape": "circle", "x": 100, "y": 100, "r": 20}]
+    rec = lh.build_label_record(
+        job_id="j4", service="ebayscout", command="daily-pipeline",
+        img_w=1000, img_h=1000,
+        circle_info=circle_info, circle_sources=["hough"],
+    )
+    assert "gemini_backed" not in rec["circles"][0]
+
+
 def test_build_label_record_empty_lot_is_fine():
     rec = lh.build_label_record(
         job_id="j2", service="buttonmatcher", command="/pipeline",

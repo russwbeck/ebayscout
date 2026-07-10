@@ -103,6 +103,7 @@ def build_label_record(
     gemini_button_count=None,
     gemini_flagged_count=None,
     gemini_slogans=None,
+    unmatched_crop_indices=None,
 ):
     """Build one lot's label record (pure dict — caller serializes/uploads).
 
@@ -111,12 +112,26 @@ def build_label_record(
     ``gemini_slogans`` is passed through as-is (the Gem's per-button entries,
     typically {index, text, x, y, size...}) so per-button text/geometry from
     the independent reader is preserved verbatim.
+
+    ``unmatched_crop_indices`` (optional) is the ``unmatched_crop_indices``/
+    ``unmatched_crops`` list from the reconcile telemetry: indices (into this
+    same ``circle_info``, at the point reconcile ran) of circles no Gemini
+    point covered. When given, every circle is tagged ``gemini_backed`` (False
+    for those indices, True otherwise — including all Gemini-recovered
+    circles, which by construction are always backed). When ``None`` (the
+    match couldn't meaningfully run), the key is left ABSENT rather than
+    guessed, so "unknown" is never mistaken for "backed" or "unbacked" in
+    training data.
     """
     circles = []
     sources = list(circle_sources or [])
+    _unmatched = set(unmatched_crop_indices) if unmatched_crop_indices is not None else None
     for i, info in enumerate(circle_info or []):
         src = sources[i] if i < len(sources) else None
-        circles.append(_circle_entry(i, info, src))
+        entry = _circle_entry(i, info, src)
+        if _unmatched is not None:
+            entry["gemini_backed"] = i not in _unmatched
+        circles.append(entry)
 
     return {
         "schema": SCHEMA,

@@ -267,9 +267,16 @@ def build_detection_diag(
     #   gemini_button_count  int   Gemini's total_button_count for the photo
     #   n_recovered          int   buttons Hough missed that Gemini x/y recovered
     #   reconcile_misses     list  per-miss telemetry [{slogan, gx, gy, r_px}]
+    #   gem_unmatched        int|None  detected Hough circles no Gemini point
+    #                                  covered (placement/non-button blind
+    #                                  spot); None = match couldn't meaningfully
+    #                                  run (unknown, NOT zero unbacked circles)
+    #   gem_unmatched_indices list|None  the unmatched crop indices themselves
     gemini_button_count=None,
     n_recovered=None,
     reconcile_misses=None,
+    gem_unmatched=None,
+    gem_unmatched_indices=None,
 ):
     """Detection diagnostics block.
 
@@ -391,6 +398,8 @@ def build_detection_diag(
         "gemini_button_count": _i(gemini_button_count),
         "n_recovered": _i(n_recovered),
         "reconcile_misses": reconcile_misses or None,
+        "gem_unmatched": _i(gem_unmatched),
+        "gem_unmatched_indices": gem_unmatched_indices or None,
     }
 
 
@@ -564,6 +573,9 @@ MATCH_HEADER = [
     "det_mask_blobs_raw", "det_dt_peaks_total", "det_mask_coverage",
     # --- appended: white-rescue rim-pass recovery count (Layer-2 gap) ---
     "det_white_recovered",
+    # --- appended: Hough circles unbacked by any Gemini point (placement/
+    # non-button blind-spot metric); count blank = match couldn't run (unknown) ---
+    "det_gem_unmatched", "det_gem_unmatched_json",
 ]
 
 CONFIRM_HEADER = [
@@ -660,6 +672,10 @@ def flatten_match_record(rec):
         _cell(d.get("mask_blobs_raw")), _cell(d.get("dt_peaks_total")),
         _cell(d.get("mask_coverage")),
         _cell(d.get("white_recovered")),
+        # --- appended: Hough circles unbacked by any Gemini point (placement/
+        # non-button blind-spot metric). Count blank when unknown (not zero).
+        _cell(d.get("gem_unmatched")),
+        json.dumps(d.get("gem_unmatched_indices") or [], default=str),
     ]
 
 
