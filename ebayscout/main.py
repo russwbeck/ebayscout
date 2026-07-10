@@ -41,6 +41,7 @@ from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
 from . import seen_items
+from . import edition_twins as edt
 from .utils import (
     extract_years,
     extract_decades,
@@ -126,6 +127,22 @@ pending_jobs: dict[str, dict] = {}
 # normalized slogan -> {years}; built once after CLIP init (see startup()).
 slogan_years: dict[str, set] = {}
 
+# Edition-twin registry (edition_twins.py): normalized slogan -> [entries],
+# built once after CLIP init (see _ensure_clip_loaded()) from the same text DB
+# used to build slogan_years above. Same slogan text reused across multiple
+# editions (different year and/or sport) can't be disambiguated by
+# text-agreement auto-confirm alone; _evaluate_listing's auto-resolve gate
+# checks this registry and routes a twin-family winner to human (yellow)
+# review instead of silently picking an edition. Kill switch:
+# BUTTONMATCHER_TWIN_GUARD=0 (shared convention with buttonmatcher).
+TWIN_REGISTRY: dict = {}
+
+
+def _twin_guard_enabled() -> bool:
+    return os.environ.get("BUTTONMATCHER_TWIN_GUARD", "1").strip() not in (
+        "0", "false", "False",
+    )
+
 
 @contextlib.contextmanager
 def _keep_cpu_hot():
@@ -189,6 +206,20 @@ def _ensure_clip_loaded() -> bool:
                 print(f">>> WAKE: slogan_years built — {len(slogan_years)} keys.", flush=True)
             except Exception as exc:
                 print(f"!!! WAKE: slogan_years build failed: {exc}", flush=True)
+            # Edition-twin registry — same text DB arrays as slogan_years above.
+            # Fail-open: a bad entry or a build exception must never block CLIP
+            # wake-up; TWIN_REGISTRY just stays {} and the guard is a no-op.
+            try:
+                global TWIN_REGISTRY
+                _twin_entries = [
+                    {"slogan": p, "year": y, "type": t}
+                    for p, y, t in zip(_phrases, _years, _types)
+                ]
+                TWIN_REGISTRY = edt.build_twin_registry(_twin_entries, normalize.normalize_key)
+                print(f">>> TWINS: {edt.registry_summary(TWIN_REGISTRY)}", flush=True)
+            except Exception as exc:
+                TWIN_REGISTRY = {}
+                print(f"!!! TWINS: registry build failed (guard fails open): {exc}", flush=True)
             return True
         except Exception as exc:
             print(f"!!! WAKE: CLIP init failed: {exc}", flush=True)
@@ -1511,6 +1542,26 @@ def _evaluate_listing(
                 _cm_confirmed = False
             else:
                 _cm_confirmed = _cm.is_confirmed(top["overall"], gap)
+
+            # Edition-twin guard (edition_twins.py): the winning slogan is a
+            # registered multi-edition family (e.g. "Crush the Orange" exists as
+            # BOTH 1972 and 1973 football) — text-agreement auto-confirm has no
+            # signal for WHICH edition, so a twin-family winner must not silently
+            # auto-confirm. Demote to the existing human-review (yellow) lane
+            # instead. The slogan identification is still trusted; only the
+            # edition choice needs the human. Fail-open: any exception here
+            # leaves _cm_confirmed (today's auto-confirm behavior) unchanged.
+            if _cm_confirmed and _twin_guard_enabled():
+                try:
+                    _twin_fam = edt.twin_family(TWIN_REGISTRY, top["slogan"], normalize.normalize_key)
+                    if _twin_fam:
+                        print(f">>> TWIN GUARD: '{top['slogan']}' has "
+                              f"{len(_twin_fam)} editions — auto-confirm "
+                              f"demoted to edition picker", flush=True)
+                        _cm_confirmed = False
+                except Exception as _twin_e:
+                    print(f"!!! TWIN GUARD check failed (failing open): "
+                          f"{_twin_e}", flush=True)
 
             # GREEN/AUTO gate — only a confirmed top match counts as a button.
             if not _cm_confirmed:
