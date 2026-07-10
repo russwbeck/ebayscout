@@ -1,4 +1,14 @@
-# Tested Hypotheses — unguided detection (white/blue on matching backgrounds + Layer-1 radius trust)
+# Tested Hypotheses — the consolidated record
+
+*This file is the single place where strategic hypotheses go once they have
+been tested — confirmed, refuted, or bounded — so the strategy docs
+(`AUTOMATION_VISION.md`, `AUTOMATION_ROADMAP.md`) stay about the future and
+this file holds the verdicts. Newest sections last. Byte-identical across
+buttonmatcher and ebayscout.*
+
+---
+
+# Part I — unguided detection (white/blue on matching backgrounds + Layer-1 radius trust)
 
 *Session 2026-07-04. Method throughout: run the REAL detector functions
 (`count_circles_unguided` / `detect_buttons` in `detect.py`) on real lot photos
@@ -173,7 +183,8 @@ tightening is safe** — 96%/100%±1 is the ceiling.
 **Pending (needs more data / images)**
 - Coin / round-clutter false positive at a *correct* radius (latent, untested).
 - The exact button-count density boundary where `scale_first` starts fusing.
-- The automatable volume % (what fraction of pipeline lots are `scale_first`).
+- ~~The automatable volume % (what fraction of pipeline lots are `scale_first`)~~
+  — **answered 2026-07-08: ~33% of the organic feed** (Part II §3).
 
 ---
 
@@ -214,3 +225,88 @@ tightening is safe** — 96%/100%±1 is the ceiling.
 4. **Then** the rim-union pass for white-on-white, once radius is trustworthy —
    with the contained-fragment dedup fix, gated behind a kill switch, re-run
    against all 9 fixtures.
+
+---
+
+# Part II — Logger_10/11 round (2026-07-08→09): the gate loophole, ref_sim, and human-truth grading
+
+*Data: Logger_10 (organic daily-feed export; operator visually audited all 759
+`gemini_auto` confirmations — 759/759 correct) and Logger_11 (8 Jul pipeline
+batch, graded against the operator's confirmed truth). Full working analysis:
+`buttonmatcher/log_analysis.md` Layer-1/Layer-2 sections (Layer-2 currently on
+branch `claude/log-analysis-hough-gate`).*
+
+**Confirmed**
+
+- **The trust gate had a loophole, and closing it works.** Hypothesis:
+  `ni_gate=auto` could survive when the *guided* detector bailed to
+  grid/Gemini-led — the shadow numbers then describe a detector that wasn't
+  used. Confirmed in Logger_10 (gated shadow-vs-truth disagreement 2.6%, and
+  the one harmful case was exactly this shape — the 66-button lot). Patch —
+  `demote_auto_on_detector_bailout`: AUTO demotes to SUGGEST unless
+  `detector_used` starts with `hough` (merged buttonmatcher #116 /
+  ebayscout #50). **Post-patch the gated organic disagreement is 0%.**
+- **Gemini truth is per-button strong, per-lot weak: 96.5% vs 74%.** Direct
+  consequence, adopted as doctrine: **Stage B is graded against HUMAN review
+  truth, not per-lot Gemini agreement** — a ≥98% entry gate cannot be
+  certified with a 74%-accurate ruler. Against human truth, auto+scale_first
+  measured **8/9** (n=9 — right direction, needs volume).
+- **Count-exact ≠ button-exact** (lot `1855dcee`): detection found the right
+  *number* of circles while one was a non-button and one real button was
+  missed. Per-button review taps (`not_a_button` / `missed_button`) are the
+  only signal that catches this — and each tap is a labeled training example
+  for the learned-detection track.
+- **The `scale_first` automatable share is ~33%** of the organic feed —
+  answers Part I's open volume question and sizes the Stage-B prize.
+- **The live-gate invariant held on fresh data:** 0 `gate=auto` rows with
+  `ni_scale_path != scale_first` in Logger_11 (0/9).
+
+**Refuted**
+
+- **"`ref_sim` has been flowing since PRs #110/#46."** 0/300 leaderboard rows
+  had it non-null — the serializer was wired but the rows never carried the
+  value. Fixed at the source (stamp entry-level sims onto both trimmed
+  snapshots in `match_crops_with_diagnostics`; merged #116/#50). The
+  `ref_sim` calibration (VISION §5) only starts accruing data from that merge.
+
+**Newly instrumented, verdict pending**
+
+- **Whitepass telemetry** (merged buttonmatcher #118 / ebayscout #51): the
+  guided white-rescue pass now tags `mask_path += "+whitepass"` and logs
+  `det_white_recovered`. Hypothesis to test on the next export: the rim
+  rescue is doing real, previously-invisible work on white-button lots.
+- **Label harvester** (`label_harvest.py`, merged): every pipeline lot writes
+  `pipeline/labels/<job_id>.json` + `.jpg` sidecars (detection-space image,
+  circles with provenance, Gemini reading verbatim; confirms join via
+  `confirm_log.job_id`). This is the data engine for the learned-segmentation
+  track — no verdict until a training set accrues.
+
+---
+
+# Part III — older strategic decisions, since validated (moved here from the strategy docs)
+
+These were once open recommendations in `log_analysis.md` /
+`HOUGH_AND_LOGGING_UPDATES.md`; they shipped and their predictions held, so
+they are now record, not strategy:
+
+- **Relax the guided Hough acceptance floor of 6** (`log_analysis.md`,
+  2026-06-19): predicted Hough would own few-button lots. **Validated live on
+  685 images** (2026-06-20→22): engagement 0%→92% on singles, **95% exact /
+  98% ±1 overall**, 99/100 singles returned exactly 1 crop.
+- **Agreement gates reference staging, not a score threshold**: the 0.90 gate
+  kept a 0.968 *wrong* crop (wrestling-pin visual twin) and blocked ~3.5×
+  more good ones. Replaced by Gemini-agreement/human-confirm saves. The
+  Logger_10 audit (759/759 `gemini_auto` correct) is the strongest evidence
+  yet that agreement-gated auto-saves are precise.
+- **Multi-pass unguided Hough (3×param2) + contour fallback + CLAHE variant**
+  (`HOUGH_AND_LOGGING_UPDATES.md` phases 1–3): shipped and long since
+  superseded as the frontier — the binding constraint moved to the mask and
+  the radius estimate (Part I), not the Hough pass structure.
+- **"DT peaks can be a count-free counter"** (hoped in the Logger_5
+  instrumentation plan): **refuted twice** — Logger_4 (12% exact on fused
+  lots) and Part I §3.2 (median |error| 7–21). DT peaks remain the
+  radius/fusion *signal* only. Kept here so nobody re-proposes it.
+- **Cross-sport auto-confirm gate + unfiltered 4th suggestion** (the 4d
+  split): shipped after a live basketball lot auto-confirmed as football
+  twins; the 4th option saved 30 of 35 typings on its first lot. The
+  football pre-filter survives as a prior on auto-confirm only.
