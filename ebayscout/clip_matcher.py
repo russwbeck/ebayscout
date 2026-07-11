@@ -143,6 +143,39 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
                 print(f">>> CLIP: text_db.json not loaded (staging will use _year_YYYY): {_exc}",
                       flush=True)
 
+            # --- staleness guard: text_features.pt vs. text_db.json ---
+            # text_features.pt (downloaded above, unconditionally) is never
+            # cross-checked against text_db.json's actual (year, slogan)
+            # content — buttonmatcher's own hydrate_data() has the same gap
+            # when its cache blob exists (buttonmatcher/main.py's /slogan
+            # admin command patches the cache in place on every edit for
+            # exactly this reason, but a stale cache from BEFORE that command
+            # existed, or a hydration that predates a given edit, would still
+            # slip through here silently).  This check changes no behavior —
+            # matching still uses whatever was loaded above — it only logs a
+            # count so a stuck-looking valuation can be traced to a stale
+            # cache instead of a mystery.  Fail-open: any error here is
+            # swallowed, never blocks init().
+            try:
+                if _slogan_key_to_entry:
+                    _cache_keys = {
+                        (int(_y), normalize.normalize_key(_p))
+                        for _p, _y in zip(_text_phrases, _text_years)
+                    }
+                    _db_keys = set(_slogan_key_to_entry.keys())
+                    _stale = len(_cache_keys - _db_keys)
+                    _pending = len(_db_keys - _cache_keys)
+                    if _stale or _pending:
+                        print(f"!!! CLIP: text_features.pt cache looks STALE relative "
+                              f"to text_db.json — {_stale} cached (year, slogan) pair(s) "
+                              f"not found in text_db.json, {_pending} text_db.json "
+                              f"entries not found in the cache. Matching still uses the "
+                              f"cache as loaded; a fresh buttonmatcher hydration (e.g. "
+                              f"after a /slogan edit) will refresh it.", flush=True)
+            except Exception as _stale_exc:
+                print(f">>> CLIP: text_features.pt staleness check skipped ({_stale_exc})",
+                      flush=True)
+
         # Build the rarity word-frequency table now that slogans are loaded
         # (buttonmatcher/main.py:680-685): freq = # of distinct slogans a word
         # appears in, so 1/freq² gives rare words a small tiebreaker boost.
