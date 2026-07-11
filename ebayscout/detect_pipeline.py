@@ -58,6 +58,13 @@ def _hole_invert_enabled():
     return _flag_on("EBAYSCOUT_HOLE_INVERT", "BUTTONMATCHER_HOLE_INVERT")
 
 
+def _fill_veto_enabled():
+    """Phantom fill-in veto (center-inside-disc + radius-band, PROBLEM_IMAGE_FINDINGS
+    validation: 5/5 phantoms vetoed -> 13/13 lot) is on by default;
+    EBAYSCOUT_FILL_VETO=0 (or BUTTONMATCHER_FILL_VETO=0) disables it."""
+    return _flag_on("EBAYSCOUT_FILL_VETO", "BUTTONMATCHER_FILL_VETO")
+
+
 def _auto_detect_enabled():
     """Auto detection (no count prompt) — default OFF until the gate is
     calibrated; BUTTONMATCHER_AUTO_DETECT=1 enables."""
@@ -665,7 +672,50 @@ def _contour_circle_proposals(mask, min_r, max_r, margin, fill_threshold, h, w):
     return proposals
 
 
-def _merge_circle_sets(primary, secondary, fill_threshold, mask):
+def _fill_veto_reason(cx, cy, cr, accepted_circles):
+    """Phantom-fill veto for a single deficit-fill PROPOSAL (never applied to
+    primary Hough pass-1 detections, and never used to drop an already-accepted
+    circle) — see PROBLEM_IMAGE_FINDINGS: measured on live lots, deficit-fill
+    mechanisms (blob-buster DT-peak proposals, white-rescue candidates) add
+    phantom circles on shadows/fabric/grass whose (a) centre lies INSIDE an
+    already-accepted circle's disc, or (b) radius is an outlier vs the accepted
+    cohort.  A prototype of this exact rule vetoed 5/5 phantoms on a failing
+    lot and produced a perfect 13/13.
+
+    Returns None when the proposal is fine, else 'center' or 'radius' naming
+    which check rejected it.
+
+    accepted_circles: (x, y, r) tuples already accepted BEFORE this proposal —
+    never circles from earlier in the same fill-in batch (they are only
+    proposals until the merge accepts them, so treating them as authoritative
+    cohort/anchor members would let the veto's own outputs feed itself).
+    """
+    if not accepted_circles:
+        return None
+    # (a) center-inside-circle: flat-lying buttons can't have a centre inside
+    # another button's disc — 0.85 x r_existing is tighter than (and layered
+    # on top of) the pre-existing 0.7 x min(r1, r2) overlap dedup, which lets
+    # a SMALL phantom fully inside a big correct circle survive today.
+    for (ax, ay, ar) in accepted_circles:
+        if ar > 0 and math.hypot(cx - ax, cy - ay) < 0.85 * ar:
+            return "center"
+    # (b) radius-band vs the accepted cohort's MEASURED median (never the
+    # count-derived expected_r — that prior is a known separate defect).
+    # Skipped with < 2 accepted circles: no cohort to anchor to.
+    if len(accepted_circles) >= 2:
+        med_r = statistics.median(r for (_, _, r) in accepted_circles)
+        if med_r > 0 and not (0.7 * med_r <= cr <= 1.3 * med_r):
+            return "radius"
+    return None
+
+
+def _fill_proposal_ok(cx, cy, cr, accepted_circles):
+    """True if a deficit-fill proposal survives the phantom veto (see
+    _fill_veto_reason)."""
+    return _fill_veto_reason(cx, cy, cr, accepted_circles) is None
+
+
+def _merge_circle_sets(primary, secondary, fill_threshold, mask, diag_out=None):
     """Merge two (x, y, r) circle lists, keeping all primary circles and adding
     secondary circles that are not already covered by a primary circle.
 
@@ -673,11 +723,19 @@ def _merge_circle_sets(primary, secondary, fill_threshold, mask):
     0.7 × min(r_primary, r_secondary) of any primary circle — the same overlap
     rule used throughout the detection pipeline.  Secondary circles that pass
     the merge are also required to pass the fill-ratio check so noise contour
-    proposals don't inflate the count.
+    proposals don't inflate the count, and — since every ``secondary`` here is
+    a deficit-fill PROPOSAL, never a primary Hough pass-1 detection — the
+    phantom veto (_fill_veto_reason): reject a proposal centred inside an
+    already-accepted circle's disc, or whose radius is an outlier vs the
+    accepted cohort's median.  EBAYSCOUT_FILL_VETO=0 (or BUTTONMATCHER_FILL_VETO=0)
+    disables it.
 
     Returns the merged list (primary circles first, then accepted secondary).
     """
     merged = list(primary)
+    veto_on = _fill_veto_enabled()
+    _center_vetoed = 0
+    _radius_vetoed = 0
     for (sx, sy, sr) in secondary:
         # Skip if overlapping with any already-accepted circle
         if any(
@@ -691,7 +749,22 @@ def _merge_circle_sets(primary, secondary, fill_threshold, mask):
         blue = cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=cm))
         if blue / max(1.0, math.pi * sr * sr) < fill_threshold:
             continue
+        if veto_on:
+            _reason = _fill_veto_reason(sx, sy, sr, merged)
+            if _reason == "center":
+                _center_vetoed += 1
+                continue
+            if _reason == "radius":
+                _radius_vetoed += 1
+                continue
         merged.append((sx, sy, sr))
+    if _center_vetoed or _radius_vetoed:
+        print(f">>> FILL_VETO: rejected {_center_vetoed + _radius_vetoed} "
+              f"proposals (center={_center_vetoed}, radius={_radius_vetoed})",
+              flush=True)
+        if diag_out is not None:
+            diag_out["fill_vetoed"] = (diag_out.get("fill_vetoed", 0)
+                                        + _center_vetoed + _radius_vetoed)
     return merged
 
 
@@ -899,7 +972,7 @@ def _rim_support(gbin, cx, cy, r, n=72, band=3):
 
 
 def _white_rescue_pass(img_noglare, existing, r_est, fill_mask, h, w,
-                       mask_informative=True, max_added=None):
+                       mask_informative=True, max_added=None, diag_out=None):
     """Find buttons the colour mask cannot see (white button on white paper;
     every button when the mask is saturated) by running Hough on the IMAGE
     gradient instead of the mask, seeded with the already-established radius.
@@ -915,6 +988,14 @@ def _white_rescue_pass(img_noglare, existing, r_est, fill_mask, h, w,
     rejection — there everything is mask-covered — and allows the set to
     double per call.  ``max_added`` overrides the addition cap (the guided
     path knows the exact deficit from the user's count).
+
+    Every candidate here is a deficit-fill PROPOSAL, so it is also subject to
+    the phantom veto (_fill_veto_reason) against ``existing`` (the accepted
+    circles at call time — never against other rescue candidates added
+    earlier in this same call): reject a candidate centred inside an
+    already-accepted circle's disc, or whose radius is an outlier vs the
+    accepted cohort's median.  EBAYSCOUT_FILL_VETO=0 (or BUTTONMATCHER_FILL_VETO=0)
+    disables it.
 
     Returns a list of new (x, y, r) circles (possibly empty).
     """
@@ -954,6 +1035,9 @@ def _white_rescue_pass(img_noglare, existing, r_est, fill_mask, h, w,
 
         margin = int(min(h, w) * 0.05)
         added = []
+        veto_on = _fill_veto_enabled()
+        _center_vetoed = 0
+        _radius_vetoed = 0
         if max_added is None:
             max_added = (len(existing) if not mask_informative
                          else max(2, int(len(existing) * 0.6)))
@@ -990,7 +1074,22 @@ def _white_rescue_pass(img_noglare, existing, r_est, fill_mask, h, w,
                 ) / max(1.0, math.pi * r * r)
                 if mask_fill > 0.5:
                     continue
+            if veto_on:
+                _reason = _fill_veto_reason(x, y, r, existing)
+                if _reason == "center":
+                    _center_vetoed += 1
+                    continue
+                if _reason == "radius":
+                    _radius_vetoed += 1
+                    continue
             added.append((x, y, r))
+        if _center_vetoed or _radius_vetoed:
+            print(f">>> FILL_VETO: rejected {_center_vetoed + _radius_vetoed} "
+                  f"proposals (center={_center_vetoed}, radius={_radius_vetoed})",
+                  flush=True)
+            if diag_out is not None:
+                diag_out["fill_vetoed"] = (diag_out.get("fill_vetoed", 0)
+                                            + _center_vetoed + _radius_vetoed)
         return added
     except Exception as _wr_err:
         print(f">>> DETECT: white-rescue failed ({_wr_err})", flush=True)
@@ -1727,7 +1826,8 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                     param2=24, scales=(1.0,),
                 )
                 _before = len(cleaned)
-                cleaned = _merge_circle_sets(cleaned, _rc, _fill_threshold, mask)
+                cleaned = _merge_circle_sets(cleaned, _rc, _fill_threshold, mask,
+                                              diag_out=diag_out)
                 if truncate_to_expected:
                     cleaned = cleaned[:expected]
                 if len(cleaned) > _before:
@@ -1748,7 +1848,8 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                 and (_mask_components or 0) < expected):
             _dt = _distance_peak_proposals(mask, expected_r, min_r, max_r, margin, h, w)
             _before = len(cleaned)
-            cleaned = _merge_circle_sets(cleaned, _dt, _fill_threshold, mask)
+            cleaned = _merge_circle_sets(cleaned, _dt, _fill_threshold, mask,
+                                          diag_out=diag_out)
             if truncate_to_expected:
                 cleaned = cleaned[:expected]
             _blob_used = len(cleaned) > _before
@@ -1769,6 +1870,7 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
             _added = _white_rescue_pass(
                 prep["img_noglare"], cleaned, _wr_r, mask, h, w,
                 mask_informative=(_coverage <= 0.75), max_added=_deficit,
+                diag_out=diag_out,
             )
             if _added:
                 cleaned = cleaned + _added
