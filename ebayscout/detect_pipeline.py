@@ -65,12 +65,45 @@ def _fill_veto_enabled():
     return _flag_on("EBAYSCOUT_FILL_VETO", "BUTTONMATCHER_FILL_VETO")
 
 
+def _mask_radius_prior_enabled():
+    """Mask-evidence radius prior for the guided detector (Fix A,
+    PROBLEM_IMAGE_FINDINGS root cause #7: the count-derived expected_r is
+    reliably wrong at small counts and can exclude the true radius from the
+    Hough window entirely) is on by default; EBAYSCOUT_MASK_RADIUS_PRIOR=0 (or
+    BUTTONMATCHER_MASK_RADIUS_PRIOR=0) disables it."""
+    return _flag_on("EBAYSCOUT_MASK_RADIUS_PRIOR", "BUTTONMATCHER_MASK_RADIUS_PRIOR")
+
+
+def _deficit_fill_enabled():
+    """Deficit-fill instead of the projection-grid cliff (Fix C: when the guided
+    Hough pass lands close to but short of the expected count, keep those
+    circles and fill only the shortfall instead of discarding everything for
+    the blind projection grid) is on by default; EBAYSCOUT_DEFICIT_FILL=0 (or
+    BUTTONMATCHER_DEFICIT_FILL=0) disables it."""
+    return _flag_on("EBAYSCOUT_DEFICIT_FILL", "BUTTONMATCHER_DEFICIT_FILL")
+
+
 def _auto_detect_enabled():
     """Auto detection (no count prompt) — default OFF until the gate is
     calibrated; BUTTONMATCHER_AUTO_DETECT=1 enables."""
     return os.environ.get("BUTTONMATCHER_AUTO_DETECT", "0").strip() in (
         "1", "true", "True",
     )
+
+
+# Fix A — minimum estimate_button_scale confidence for the mask-evidence radius
+# prior to override the count-derived expected_r in the guided detector.  Tuned
+# against the six PROBLEM_IMAGE_FINDINGS fixtures: the clean cases read 0.90-0.98
+# (turf lots 0.98), while the shadow/glare wood lot's best variant reads 0.58 —
+# still well above chance and, once adopted, takes the deficit-fill count from
+# 27 to 29 circles (both inside the 26-29 replay-evidence range) — so the floor
+# sits at 0.55, just under it, rather than the initially-considered 0.6.
+MASK_RADIUS_PRIOR_CONF_THRESHOLD = 0.55
+
+# Fix C — minimum fraction of `expected` that a starved guided Hough pass must
+# already hold to earn deficit-fill (keep the circles, fill only the shortfall)
+# instead of falling all the way to the projection-grid cliff.
+DEFICIT_FILL_MIN_FRACTION = 0.60
 
 
 # --- SHARED IMAGE PREP --------------------------------------------------------
@@ -842,6 +875,29 @@ def _distance_peak_proposals(mask, expected_r, min_r, max_r, margin, h, w):
             if margin < x < w - margin and margin < y < h - margin]
 
 
+def _deficit_fill_proposals(mask, accepted, expected_r, min_r, max_r, margin, h, w):
+    """Fix C — deficit-fill counterpart to _distance_peak_proposals.
+
+    When the guided Hough pass (plus radius-correction / blob-buster / white-
+    rescue) lands close to but short of ``expected``, propose circles ONLY from
+    mask blobs not already claimed by an accepted circle, instead of discarding
+    every accepted circle for the blind projection grid.  Masking out the
+    already-covered discs before running the distance transform stops the peak
+    search from just re-finding buttons Hough already has, and keeps the
+    proposal count honest (each is still subject to _merge_circle_sets' fill
+    check and the phantom veto).
+
+    Returns a list of (x, y, r) tuples (may be empty).
+    """
+    if not accepted:
+        return _distance_peak_proposals(mask, expected_r, min_r, max_r, margin, h, w)
+    covered = np.zeros(mask.shape, dtype=np.uint8)
+    for (ax, ay, ar) in accepted:
+        cv2.circle(covered, (int(ax), int(ay)), int(ar), 255, -1)
+    unclaimed = cv2.bitwise_and(mask, cv2.bitwise_not(covered))
+    return _distance_peak_proposals(unclaimed, expected_r, min_r, max_r, margin, h, w)
+
+
 def _build_clahe_mask(img_noglare, white_bg):
     """Build an alternative HSV mask from a CLAHE-enhanced image.
 
@@ -945,6 +1001,61 @@ def estimate_button_scale(mask, h, w):
     r_est, scale_conf, n_merged = dscale.consensus_radius(votes)
     sdiag.update({"blobs": n_blobs, "votes": len(votes), "merged_blobs": n_merged})
     return r_est, scale_conf, filled, sdiag
+
+
+def _mask_radius_prior(mask, img_noglare, bg_mean_v, h, w):
+    """Fix A — mask-evidence radius prior for the guided detector.
+
+    detect_buttons' count-derived expected_r (math.sqrt(h*w/expected) * 0.35)
+    is a heuristic that assumes buttons tile the image; PROBLEM_IMAGE_FINDINGS
+    measured it reliably wrong at small counts (37->34 vs real 24; 5->107 vs
+    78; 2->171 vs ~95), sometimes badly enough that the resulting Hough window
+    EXCLUDES the true radius entirely.  estimate_button_scale already reads the
+    radius off mask evidence with a confidence score and nailed several of
+    these masks (0.98 conf on the turf lots) — it was previously wired only
+    into the unguided path.  This runs it here too, over the adopted mask AND
+    cheap colour variants (blue-only, bright/white-only — built the same way
+    the saturation-fallback in _prepare_detection_image builds them) and
+    returns the single highest-confidence estimate across all variants.
+    estimate_button_scale hole-fills each candidate mask internally (redraws
+    external contours filled) before measuring, so no separate hole-fill step
+    is needed here.
+
+    Returns (r_est, conf, source_label) — r_est/conf are None when no variant's
+    mask produced a usable blob.
+    """
+    variants = [("adopted", mask)]
+    try:
+        hsv = cv2.cvtColor(img_noglare, cv2.COLOR_BGR2HSV)
+        lower_blue = np.array([90, 70, 40])
+        upper_blue = np.array([140, 255, 255])
+        kernel = np.ones((5, 5), np.uint8)
+
+        blue_only = cv2.inRange(hsv, lower_blue, upper_blue)
+        blue_only = cv2.morphologyEx(blue_only, cv2.MORPH_CLOSE, kernel)
+        blue_only = cv2.morphologyEx(blue_only, cv2.MORPH_OPEN, kernel)
+        variants.append(("blue_only", blue_only))
+
+        bright = (((hsv[:, :, 2] > bg_mean_v + 60) & (hsv[:, :, 1] < 80))
+                  .astype(np.uint8) * 255)
+        bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel)
+        bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, kernel)
+        variants.append(("bright", bright))
+    except Exception as _mrp_err:
+        print(f">>> DETECT: mask-radius-prior variant build failed "
+              f"({_mrp_err}); adopted mask only.", flush=True)
+
+    best_r, best_conf, best_src = None, 0.0, None
+    for label, m in variants:
+        try:
+            r_est, conf, _filled, _sdiag = estimate_button_scale(m, h, w)
+        except Exception as _es_err:
+            print(f">>> DETECT: estimate_button_scale({label}) failed "
+                  f"({_es_err}).", flush=True)
+            continue
+        if r_est is not None and conf > best_conf:
+            best_r, best_conf, best_src = r_est, conf, label
+    return best_r, best_conf, best_src
 
 
 WHITE_RESCUE_RIM_MIN = 0.50   # min circumference-gradient coverage to accept
@@ -1636,11 +1747,47 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         expected_r = int(math.sqrt(h * w / expected) * 0.35)
     else:
         expected_r = int(min(h, w) / 4 * 0.35)
+
+    # --- Fix A: mask-evidence radius prior ---------------------------------
+    # The count/geometry guess above is reliably wrong at small counts and can
+    # exclude the true radius from the Hough window entirely (root cause #7 —
+    # see _mask_radius_prior's docstring).  Consult estimate_button_scale over
+    # the adopted mask + cheap colour variants and adopt its estimate when
+    # confident enough; otherwise keep the count-derived guess.
+    radius_source = "count_prior"
+    _mr_est = _mr_conf = None
+    _mr_src = None
+    if _mask_radius_prior_enabled():
+        _mr_est, _mr_conf, _mr_src = _mask_radius_prior(
+            mask, prep["img_noglare"], _bg_mean_v, h, w)
+        if _mr_est is not None and _mr_conf >= MASK_RADIUS_PRIOR_CONF_THRESHOLD:
+            print(f">>> DETECT: mask radius prior ADOPTED — {_mr_src} "
+                  f"r_est={_mr_est:.1f} conf={_mr_conf:.2f} "
+                  f"(count-derived expected_r was {expected_r}) → using "
+                  f"mask estimate.", flush=True)
+            expected_r = int(round(_mr_est))
+            radius_source = "mask_scale"
+        elif _mr_est is not None:
+            print(f">>> DETECT: mask radius prior available but below "
+                  f"threshold ({_mr_src} r_est={_mr_est:.1f} conf={_mr_conf:.2f} "
+                  f"< {MASK_RADIUS_PRIOR_CONF_THRESHOLD}) — keeping "
+                  f"count-derived expected_r={expected_r}.", flush=True)
+
     min_r      = int(expected_r * 0.7)
     max_r      = int(expected_r * 1.3)
+    # HARD RULE: a mask estimate whose confidence clears the threshold must
+    # never be excluded by the final window, however expected_r got set above.
+    if (_mr_est is not None and _mr_conf is not None
+            and _mr_conf >= MASK_RADIUS_PRIOR_CONF_THRESHOLD
+            and not (min_r <= _mr_est <= max_r)):
+        min_r = min(min_r, int(_mr_est * 0.85))
+        max_r = max(max_r, int(_mr_est * 1.15))
     if diag_out is not None:
         diag_out["expected_radius"] = int(expected_r)
         diag_out["buttons_per_megapixel"] = round(expected / ((h * w) / 1_000_000), 1) if (h * w) else None
+        diag_out["radius_source"] = radius_source
+        diag_out["mask_radius_est"] = round(float(_mr_est), 1) if _mr_est is not None else None
+        diag_out["mask_radius_conf"] = round(float(_mr_conf), 4) if _mr_conf is not None else None
     print(f">>> DETECT: expected_r={expected_r}, min_r={min_r}, max_r={max_r}", flush=True)
     print(">>> DETECT: HoughCircles...", flush=True)
     _hough_dp, _hough_param1, _hough_param2 = 1.3, 120, 24
@@ -1697,6 +1844,7 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         _det_fill_removed    = 0
         _det_overlap_removed = 0
         filtered = []
+        _fill_by_circle = {}
         for c in sorted(circles, key=lambda c: c[2], reverse=True):
             x, y, r = c
 
@@ -1713,6 +1861,7 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
             # Deduplicate nearby circles
             if not any(np.hypot(x - fx, y - fy) < min(r, fr) * 0.7 for fx, fy, fr in filtered):
                 filtered.append((x, y, r))
+                _fill_by_circle[(x, y, r)] = fill_ratio
             else:
                 _det_overlap_removed += 1
                 _rej_radii.append(int(r))
@@ -1761,7 +1910,20 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         if diag_out is not None:
             diag_out["hough_retry_count"] = det_hough_retry_count
 
-        if truncate_to_expected:
+        if truncate_to_expected and expected and len(filtered) > expected:
+            # More plausible circles survived than `expected` — pick the
+            # best-filled ones rather than whatever order Hough's accumulator
+            # happened to emit them in.  Raw Hough order is not a quality
+            # signal; fill_ratio (already computed above) is, and matters most
+            # exactly when Fix A's mask-radius-prior widens the window enough
+            # to admit textured-background false positives at the true
+            # button's radius (PROBLEM_IMAGE_FINDINGS case3: turf grass at the
+            # same size band as the real button).  Only reorders which
+            # survivors get kept on a surplus -- never changes who survives.
+            filtered = sorted(
+                filtered, key=lambda c: _fill_by_circle.get(c, 0.0), reverse=True
+            )[:expected]
+        elif truncate_to_expected:
             filtered = filtered[:expected]
 
         cleaned = []
@@ -1896,6 +2058,39 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         # image onto the projection-grid fallback and discarded a correct detection.
         _enough = len(cleaned) >= max(6, expected - 4)
         _small_complete = expected <= 5 and len(cleaned) >= max(1, expected - 1)
+
+        # --- Fix C: deficit-fill instead of the projection cliff ---------------
+        # The floor above is all-or-nothing: one circle short of it discarded
+        # EVERY well-placed circle for the blind projection grid (root cause #1/
+        # #2 — 28 good circles thrown away for a 37x1 phantom column).  When
+        # what Hough (+ radius-correction + blob-buster + white-rescue) already
+        # holds is at least DEFICIT_FILL_MIN_FRACTION of `expected`, keep those
+        # circles and propose fill-ins ONLY from mask blobs no accepted circle
+        # already covers — each still subject to _merge_circle_sets' fill check
+        # and the phantom veto — rather than discarding everything.  Once a lot
+        # earns this path it is committed: the projection fallback never runs,
+        # even if the fill pass adds nothing.  Kill switch: EBAYSCOUT_DEFICIT_FILL
+        # (or the shared BUTTONMATCHER_DEFICIT_FILL).
+        _deficit_filled = False
+        if (not _enough and not _small_complete and cleaned and expected
+                and _deficit_fill_enabled()
+                and len(cleaned) >= expected * DEFICIT_FILL_MIN_FRACTION):
+            _fill_props = _deficit_fill_proposals(
+                mask, cleaned, expected_r, min_r, max_r, margin, h, w)
+            _before = len(cleaned)
+            cleaned = _merge_circle_sets(cleaned, _fill_props, _fill_threshold, mask,
+                                          diag_out=diag_out)
+            if truncate_to_expected:
+                cleaned = cleaned[:expected]
+            _deficit_filled = True
+            print(f">>> DETECT: deficit-fill (cleaned={_before} >= "
+                  f"{DEFICIT_FILL_MIN_FRACTION:.0%} of expected={expected}): "
+                  f"+{len(cleaned) - _before} of {len(_fill_props)} "
+                  f"unclaimed-blob proposals → {len(cleaned)}", flush=True)
+            # Committed: this lot is kept on the Hough path, never falls
+            # through to the projection grid, regardless of the fill outcome.
+            _enough = True
+
         if _enough or _small_complete:
             # row_tol: grid-based when rows known, else radius-based
             row_tol = int(h / rows * 0.6) if rows is not None else int(expected_r * 1.5)
@@ -1942,14 +2137,23 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                     circle_info.append({"shape": "circle", "x": int(x), "y": int(y), "r": int(r)})
 
             print(f">>> DETECT: Returning {len(crops)} Hough crops.", flush=True)
+            # A deficit-filled result is still hough-anchored (every accepted
+            # circle came from Hough pass 1/radius-correction; the fill-ins are
+            # phantom-vetoed proposals on top), so the label keeps the "hough"
+            # prefix detect_gate.demote_auto_on_detector_bailout trusts — it
+            # only demotes when the guided detector bailed to the projection
+            # grid, which this path by definition did not.
+            _det_label = dmask.detector_label("hough", _blob_used)
+            if _deficit_filled:
+                _det_label = _det_label + "+deficit"
             if diag_out is not None:
-                diag_out["detector_used"] = dmask.detector_label("hough", _blob_used)
+                diag_out["detector_used"] = _det_label
             _mpx = (h * w) / 1_000_000
             _bb  = "very_bright" if _bg_mean_v >= 192 else "bright" if _bg_mean_v >= 128 else "medium" if _bg_mean_v >= 64 else "dark"
             _sb  = "high_sat" if _bg_mean_s >= 128 else "medium_sat" if _bg_mean_s >= 64 else "low_sat"
             _rej = det_raw_hough - (det_count_noinput or 0)
             _telem = {
-                "det_path":                   dmask.detector_label("hough", _blob_used),
+                "det_path":                   _det_label,
                 "det_image_width":            w,
                 "det_image_height":           h,
                 "det_count_user":             expected,
