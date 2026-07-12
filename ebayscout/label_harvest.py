@@ -83,16 +83,18 @@ def _circle_entry(i, info, source):
     return e
 
 
-def _gemini_count_inconsistent(button_count, slogans, flagged_count):
-    """True when Gemini's claimed total disagrees with what it actually itemised
-    (localized slogans + flagged partials) — the measured-Gemini-overcount signal
-    (Phase 4c / Stage-B "Gemini as ruler").  None when there is no count to check;
-    fail-open (any bad input) also returns None so a logging edge never raises."""
+def _gemini_count_inconsistent(button_count, slogans):
+    """True when Gemini's claimed ``total_button_count`` disagrees with the length
+    of its ``detected_slogans`` list — a violation of the Gem prompt's Counting
+    Rule 1 ("these two must always agree"), i.e. a measured Gemini miscount (Phase
+    4c / Stage-B "Gemini as ruler").  Flagged buttons are a SEPARATE list and NOT
+    part of the total under the current prompt, so they are intentionally excluded
+    (including them here false-positived on every lot with a flagged button).  None
+    when there is no count to check; fail-open (bad input) also returns None."""
     if not button_count:
         return None
     try:
-        itemised = len(slogans or []) + int(flagged_count or 0)
-        return bool(int(button_count) != itemised)
+        return bool(int(button_count) != len(slogans or []))
     except (TypeError, ValueError):
         return None
 
@@ -171,14 +173,14 @@ def build_label_record(
             "flagged_count": gemini_flagged_count,
             "slogans": gemini_slogans or [],
             # Measured-Gemini-error signal (Phase 4c / Stage-B "Gemini as ruler"):
-            # True when Gemini's claimed total disagrees with what it actually
-            # itemised (localized slogans + flagged partials) — i.e. it counted
-            # buttons it never placed, the busy-background overcount behind the
-            # turf/carpet phantoms.  None when there is no count to check.  Derived
-            # here so both services log it identically; the detector's independent
-            # count is the circles list, for a full three-way if wanted.
+            # True when Gemini's claimed total disagrees with the length of its
+            # detected_slogans list (prompt Counting Rule 1: they must agree) — a
+            # miscount.  Flagged buttons are separate and not in the total, so they
+            # are excluded.  None when there is no count.  Derived here so both
+            # services log it identically; the detector's independent count is the
+            # circles list, for a cross-check if wanted.
             "count_inconsistent": _gemini_count_inconsistent(
-                gemini_button_count, gemini_slogans, gemini_flagged_count),
+                gemini_button_count, gemini_slogans),
             # Which coordinate convention the Gem used this lot: "percent" (0-100,
             # as prompted), "permille" (0-1000 native scale — rescaled to percent
             # by the parser), or None. Measures how often Gemini ignores the

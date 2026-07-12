@@ -480,11 +480,16 @@ So:
 
 2. **Log `gemini_count_inconsistent`** in the label record (`label_harvest.py`,
    byte-shared, computed once so both services agree): True when Gemini's claimed
-   total ≠ localised slogans + flagged partials — i.e. it counted buttons it never
-   placed. Each pipeline lot now emits a free **measured-Gemini-error** row (the
-   detector's own count is the circles list, for a full three-way), feeding
-   Phase 4c and the Stage-B "Gemini as ruler" question with real data instead of
-   guesses. Pipeline stdout also prints the inconsistency inline for live triage.
+   total ≠ the length of its `detected_slogans` list. Each pipeline lot now emits a
+   free **measured-Gemini-error** row (the detector's own count is the circles
+   list, for a cross-check), feeding Phase 4c and the Stage-B "Gemini as ruler"
+   question with real data instead of guesses. Pipeline stdout also prints the
+   inconsistency inline for live triage.
+   *(Realigned 2026-07-12 with the updated Gem prompt: Counting Rule 1 now defines
+   `total_button_count = len(detected_slogans)` and puts flagged buttons in a
+   separate list, so the check is `total ≠ len(detected)` — the earlier
+   `≠ localised + flagged` would false-positive on every lot that has a flagged
+   button. See `GEMINI_PIPELINE.md` "The Gem prompt".)*
 
 Net: we stopped trying to out-gate a bad upstream count, took the one conservative
 count change that removes the phantom class for free, and turned the failure into
