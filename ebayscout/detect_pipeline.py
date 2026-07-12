@@ -105,6 +105,43 @@ MASK_RADIUS_PRIOR_CONF_THRESHOLD = 0.55
 # instead of falling all the way to the projection-grid cliff.
 DEFICIT_FILL_MIN_FRACTION = 0.60
 
+# Fix C quality gate — maximum share of the frame the adopted mask may cover for
+# deficit-fill to be TRUSTED enough to skip the projection fallback.  Deficit-fill
+# keeps the guided Hough circles and commits the lot to the hough path; that is
+# only safe when the mask actually isolated the buttons.  When the colour mask
+# leaks the whole background in (blue buttons on green turf: the mask floods ~68%
+# of the frame and Hough locks onto grass texture — 18/21 "kept" circles land on
+# grass), the kept circles are garbage and must NOT preempt projection + Gemini
+# reconcile, which is what rescues these lots.  Calibrated on the deficit-fill
+# fixtures: the one legit case (case1_wood_glare_37) fills 30% of the frame; the
+# turf failure fills 68% — so the floor sits at 0.50, clear of both.
+DEFICIT_FILL_MAX_MASK_FRACTION = 0.50
+
+
+def _deficit_fill_decision(enabled, n_cleaned, expected, already_enough,
+                           small_complete, mask_fraction):
+    """Branch a starved guided pass takes at the deficit-fill / projection fork.
+
+    Returns:
+      "commit"  — keep the Hough circles and fill only the shortfall, skipping
+                  the projection fallback.
+      "decline" — eligible by count, but the adopted mask floods the frame
+                  (foreground fraction > DEFICIT_FILL_MAX_MASK_FRACTION), so it
+                  never isolated the buttons and the kept circles are background
+                  hits (blue-on-turf: ~68% mask, Hough on grass) — fall through
+                  to projection + Gemini reconcile instead of trusting them.
+      "n/a"     — not a deficit-fill situation (already enough, too few held,
+                  a small-complete lot, or the feature is off).
+
+    Pure (no cv2 / image) so the gate is unit-testable directly."""
+    if already_enough or small_complete:
+        return "n/a"
+    if not (enabled and n_cleaned and expected):
+        return "n/a"
+    if n_cleaned < expected * DEFICIT_FILL_MIN_FRACTION:
+        return "n/a"
+    return "decline" if mask_fraction > DEFICIT_FILL_MAX_MASK_FRACTION else "commit"
+
 
 # --- SHARED IMAGE PREP --------------------------------------------------------
 
@@ -2071,10 +2108,18 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         # earns this path it is committed: the projection fallback never runs,
         # even if the fill pass adds nothing.  Kill switch: EBAYSCOUT_DEFICIT_FILL
         # (or the shared BUTTONMATCHER_DEFICIT_FILL).
+        # Quality gate: deficit-fill trusts the kept Hough circles enough to SKIP
+        # the projection fallback, so it must only fire when the mask actually
+        # isolated the buttons.  A mask that floods the frame (foreground fraction
+        # over DEFICIT_FILL_MAX_MASK_FRACTION) has leaked the background in — Hough
+        # then locks onto that texture and the "kept" circles are junk — so decline
+        # and let the lot fall through to projection + Gemini reconcile.
+        _mask_fraction = (cv2.countNonZero(mask) / mask.size) if (mask is not None and mask.size) else 0.0
+        _deficit_decision = _deficit_fill_decision(
+            _deficit_fill_enabled(), len(cleaned), expected, _enough,
+            _small_complete, _mask_fraction)
         _deficit_filled = False
-        if (not _enough and not _small_complete and cleaned and expected
-                and _deficit_fill_enabled()
-                and len(cleaned) >= expected * DEFICIT_FILL_MIN_FRACTION):
+        if _deficit_decision == "commit":
             _fill_props = _deficit_fill_proposals(
                 mask, cleaned, expected_r, min_r, max_r, margin, h, w)
             _before = len(cleaned)
@@ -2084,12 +2129,21 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                 cleaned = cleaned[:expected]
             _deficit_filled = True
             print(f">>> DETECT: deficit-fill (cleaned={_before} >= "
-                  f"{DEFICIT_FILL_MIN_FRACTION:.0%} of expected={expected}): "
+                  f"{DEFICIT_FILL_MIN_FRACTION:.0%} of expected={expected}, "
+                  f"mask_fg={_mask_fraction:.0%}): "
                   f"+{len(cleaned) - _before} of {len(_fill_props)} "
                   f"unclaimed-blob proposals → {len(cleaned)}", flush=True)
             # Committed: this lot is kept on the Hough path, never falls
             # through to the projection grid, regardless of the fill outcome.
             _enough = True
+        elif _deficit_decision == "decline":
+            # Mask floods the frame → the kept circles can't be trusted to preempt
+            # projection.  Leave _enough False so the projection fallback runs.
+            print(f">>> DETECT: deficit-fill DECLINED — mask floods "
+                  f"{_mask_fraction:.0%} of frame (> {DEFICIT_FILL_MAX_MASK_FRACTION:.0%}); "
+                  f"mask did not isolate buttons, using projection fallback.", flush=True)
+            if diag_out is not None:
+                diag_out["deficit_declined_mask_fraction"] = round(_mask_fraction, 3)
 
         if _enough or _small_complete:
             # row_tol: grid-based when rows known, else radius-based
