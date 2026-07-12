@@ -322,3 +322,71 @@ they are now record, not strategy:
   split): shipped after a live basketball lot auto-confirmed as football
   twins; the 4th option saved 30 of 35 typings on its first lot. The
   football pre-filter survives as a prior on auto-confirm only.
+
+---
+
+# Part IV — building on small-N failure sets: gate the new path, verify it's on-target, fall back
+
+*Session 2026-07-12. Method: the REAL detector (`detect_buttons`) run in-session
+on the actual failing lot (cv2 installed), bisected across commits, circle
+placement graded numerically against the image — never a mental model.*
+
+## 4.1 The turf-cross regression (deficit-fill over-trust) — CONFIRMED, fixed
+
+**Symptom.** A 32-button blue-on-green-turf lot in a cross layout went from a
+clean run to phantom circles on empty grass and inflated numbering after the
+2026-07-11 detection changes. The first guess was low image quality; **refuted**
+— same file, same pixels, only the code changed (both runs cap identically at
+2200px).
+
+**Root cause (bisected on the real image).** `bb12ebf`'s **deficit-fill** (Fix C).
+When the guided Hough holds ≥60% of `expected` it keeps those circles and
+*commits the lot to the hough path, permanently skipping the projection
+fallback*. But blue-on-turf defeats the colour mask — it floods **~68% of the
+frame** and Hough locks onto grass texture: measured, **18 of 21 "kept" circles
+land on grass (blue-fill 0.00), only 3 on buttons.** deficit-fill saw "21 ≥ 60%
+of 32" and trusted the grass. The *old* path discarded those circles for a blind
+projection grid, which the pipeline's Gemini-reconcile step then snapped onto the
+real buttons — so **detection was always failing here; projection + reconcile was
+silently rescuing it**, and deficit-fill removed the rescue. (The mask-radius
+prior in the same commit was ruled out empirically: conf 0.52 < 0.55 threshold,
+byte-identical output prior-on vs prior-off.)
+
+**Fix (shipped, both repos).** Gate deficit-fill on mask-foreground fraction
+(`_deficit_fill_decision`, `DEFICIT_FILL_MAX_MASK_FRACTION = 0.50`): a mask
+covering > 50% of the frame has not isolated the buttons, so **decline and fall
+back to projection**. Calibrated on the deficit-fill fixtures — the one legit
+case (`case1_wood_glare_37`) fills 30% of the frame, the turf failure 68%, floor
+at 0.50 clears both. Verified: turf restored 21→32; all 15 fixtures unchanged;
+`test_deficit_fill_gate` locks the predicate + the calibration margin.
+
+## 4.2 The reusable lesson
+
+**When you build a detection path from a small N of failure examples, it will
+overfit — so gate it on an independent check that its own output is actually
+on-target, and defer to the prior behaviour when the check fails. Then iterate.**
+
+- **Six examples is not a distribution.** deficit-fill was tuned on `case1..6`,
+  none a many-button lot on a same-saturation background. It generalised to
+  *trust garbage* on the 7th real case. Every small-N feature should be assumed
+  to overfit until real traffic says otherwise.
+- **Gate on an independent, output-checking signal — not on the training
+  metric.** The failure was invisible to the count metric it was built on (21 ≥
+  60% looked fine). The cheap independent guard was "are the new circles on
+  buttons?" (mask-foreground fraction / on-mask fill). A new path that can't pass
+  its own sanity check must **defer, not overwrite**.
+- **Keep the fallback reachable; make the new path reversible.** Prefer a gated
+  rollout with a kill switch and a logged decline (`deficit_declined_mask_
+  fraction`) over "once a lot earns this path it is committed." Widen the new
+  path only as more *real* failures confirm it.
+- **Grade on the real detector, on the real image, before and after.** Running
+  `detect_buttons` in-session and measuring 18/21 circles on grass is what turned
+  "maybe low quality" into a one-line root cause and a calibrated threshold.
+  This is the same method as Parts I–II; the turf case is the reminder that it
+  applies to *guardrails on new heuristics*, not just the heuristics themselves.
+
+**Still open (not solved by the gate).** This restores the prior behaviour
+(projection + Gemini reconcile); it does **not** teach Hough to find buttons on a
+same-saturation background — the Layer-1/Layer-2 mask+radius problem (Part I)
+remains the real bottleneck. The gate just stops a small-N heuristic from
+overwriting the rescue that was covering for it.

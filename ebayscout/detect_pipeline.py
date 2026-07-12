@@ -105,6 +105,43 @@ MASK_RADIUS_PRIOR_CONF_THRESHOLD = 0.55
 # instead of falling all the way to the projection-grid cliff.
 DEFICIT_FILL_MIN_FRACTION = 0.60
 
+# Fix C quality gate — maximum share of the frame the adopted mask may cover for
+# deficit-fill to be TRUSTED enough to skip the projection fallback.  Deficit-fill
+# keeps the guided Hough circles and commits the lot to the hough path; that is
+# only safe when the mask actually isolated the buttons.  When the colour mask
+# leaks the whole background in (blue buttons on green turf: the mask floods ~68%
+# of the frame and Hough locks onto grass texture — 18/21 "kept" circles land on
+# grass), the kept circles are garbage and must NOT preempt projection + Gemini
+# reconcile, which is what rescues these lots.  Calibrated on the deficit-fill
+# fixtures: the one legit case (case1_wood_glare_37) fills 30% of the frame; the
+# turf failure fills 68% — so the floor sits at 0.50, clear of both.
+DEFICIT_FILL_MAX_MASK_FRACTION = 0.50
+
+
+def _deficit_fill_decision(enabled, n_cleaned, expected, already_enough,
+                           small_complete, mask_fraction):
+    """Branch a starved guided pass takes at the deficit-fill / projection fork.
+
+    Returns:
+      "commit"  — keep the Hough circles and fill only the shortfall, skipping
+                  the projection fallback.
+      "decline" — eligible by count, but the adopted mask floods the frame
+                  (foreground fraction > DEFICIT_FILL_MAX_MASK_FRACTION), so it
+                  never isolated the buttons and the kept circles are background
+                  hits (blue-on-turf: ~68% mask, Hough on grass) — fall through
+                  to projection + Gemini reconcile instead of trusting them.
+      "n/a"     — not a deficit-fill situation (already enough, too few held,
+                  a small-complete lot, or the feature is off).
+
+    Pure (no cv2 / image) so the gate is unit-testable directly."""
+    if already_enough or small_complete:
+        return "n/a"
+    if not (enabled and n_cleaned and expected):
+        return "n/a"
+    if n_cleaned < expected * DEFICIT_FILL_MIN_FRACTION:
+        return "n/a"
+    return "decline" if mask_fraction > DEFICIT_FILL_MAX_MASK_FRACTION else "commit"
+
 
 # --- SHARED IMAGE PREP --------------------------------------------------------
 
@@ -2071,10 +2108,18 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         # earns this path it is committed: the projection fallback never runs,
         # even if the fill pass adds nothing.  Kill switch: EBAYSCOUT_DEFICIT_FILL
         # (or the shared BUTTONMATCHER_DEFICIT_FILL).
+        # Quality gate: deficit-fill trusts the kept Hough circles enough to SKIP
+        # the projection fallback, so it must only fire when the mask actually
+        # isolated the buttons.  A mask that floods the frame (foreground fraction
+        # over DEFICIT_FILL_MAX_MASK_FRACTION) has leaked the background in — Hough
+        # then locks onto that texture and the "kept" circles are junk — so decline
+        # and let the lot fall through to projection + Gemini reconcile.
+        _mask_fraction = (cv2.countNonZero(mask) / mask.size) if (mask is not None and mask.size) else 0.0
+        _deficit_decision = _deficit_fill_decision(
+            _deficit_fill_enabled(), len(cleaned), expected, _enough,
+            _small_complete, _mask_fraction)
         _deficit_filled = False
-        if (not _enough and not _small_complete and cleaned and expected
-                and _deficit_fill_enabled()
-                and len(cleaned) >= expected * DEFICIT_FILL_MIN_FRACTION):
+        if _deficit_decision == "commit":
             _fill_props = _deficit_fill_proposals(
                 mask, cleaned, expected_r, min_r, max_r, margin, h, w)
             _before = len(cleaned)
@@ -2084,12 +2129,21 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                 cleaned = cleaned[:expected]
             _deficit_filled = True
             print(f">>> DETECT: deficit-fill (cleaned={_before} >= "
-                  f"{DEFICIT_FILL_MIN_FRACTION:.0%} of expected={expected}): "
+                  f"{DEFICIT_FILL_MIN_FRACTION:.0%} of expected={expected}, "
+                  f"mask_fg={_mask_fraction:.0%}): "
                   f"+{len(cleaned) - _before} of {len(_fill_props)} "
                   f"unclaimed-blob proposals → {len(cleaned)}", flush=True)
             # Committed: this lot is kept on the Hough path, never falls
             # through to the projection grid, regardless of the fill outcome.
             _enough = True
+        elif _deficit_decision == "decline":
+            # Mask floods the frame → the kept circles can't be trusted to preempt
+            # projection.  Leave _enough False so the projection fallback runs.
+            print(f">>> DETECT: deficit-fill DECLINED — mask floods "
+                  f"{_mask_fraction:.0%} of frame (> {DEFICIT_FILL_MAX_MASK_FRACTION:.0%}); "
+                  f"mask did not isolate buttons, using projection fallback.", flush=True)
+            if diag_out is not None:
+                diag_out["deficit_declined_mask_fraction"] = round(_mask_fraction, 3)
 
         if _enough or _small_complete:
             # row_tol: grid-based when rows known, else radius-based
@@ -2355,6 +2409,36 @@ def _circle_center_radius(c):
     return (c["x"], c["y"]), c.get("r")
 
 
+def _cluster_row_centers(ys, med_r):
+    """Row-line y-positions for a set of button center-y values.
+
+    Average-linkage 1-D clustering: seed every y as its own cluster, then
+    repeatedly merge the two closest cluster CENTERS while they sit within ~1.3x a
+    button radius, recomputing each merged center as its members' mean.  Merging by
+    center distance (not by nearest raw neighbour, as a y-gap walk does) is what
+    stops the single-linkage CHAINING that collapses a staggered board into one
+    giant "row": on a hand-arranged board an intermediate-y button bridges two
+    visual rows, and a gap walk then chains the whole board together.  Returns the
+    sorted list of row-center y's."""
+    pts = sorted(ys)
+    if not pts:
+        return []
+    thresh = 1.3 * med_r
+    if thresh <= 0:
+        return [sum(pts) / len(pts)]
+    clusters = [[y] for y in pts]                 # seeded in y-sorted order
+    while len(clusters) > 1:
+        centers = [sum(c) / len(c) for c in clusters]
+        # clusters stay y-sorted, so the globally closest pair is always adjacent
+        gap, i = min((centers[j + 1] - centers[j], j)
+                     for j in range(len(clusters) - 1))
+        if gap > thresh:
+            break
+        clusters[i] += clusters[i + 1]
+        del clusters[i + 1]
+    return [sum(c) / len(c) for c in clusters]
+
+
 def reading_order(circle_info):
     """Indices of ``circle_info`` in human reading order: top-to-bottom by row,
     left-to-right within each row.
@@ -2366,12 +2450,14 @@ def reading_order(circle_info):
     crop + circle_info lists by this permutation renumbers everything into the order
     an operator actually scans.
 
-    Rows are banded by center-y with a tolerance that absorbs the slight tilt of a
-    hand-held photo: a new row starts only when the y-gap between consecutive
-    (y-sorted) buttons exceeds ~1.2x the median radius (rows sit ~2x radius apart
-    center-to-center; within-row jitter is well under that).  Centers/radii come
-    from _circle_center_radius so both circle (x/y) and rect (cx/cy) shapes work.
-    Returns list(range(n)) unchanged when there is nothing meaningful to reorder."""
+    Rows are found by clustering center-y into row lines (``_cluster_row_centers``)
+    and assigning each button to its nearest row line, then sorting by (row, x).
+    This survives the vertical STAGGER of a hand-arranged board, where the older
+    "start a new row on the first y-gap > tolerance" walk chained every row into one
+    (a single bridging button merged neighbours, then the whole board collapsed into
+    one left-to-right sweep).  Centers/radii come from _circle_center_radius so both
+    circle (x/y) and rect (cx/cy) shapes work.  Falls back to a plain (y, x) sort
+    when no radius is available, and returns list(range(n)) for n <= 1."""
     n = len(circle_info)
     if n <= 1:
         return list(range(n))
@@ -2382,20 +2468,16 @@ def reading_order(circle_info):
         if r:
             radii.append(r)
     med_r = sorted(radii)[len(radii) // 2] if radii else 0
-    row_tol = 1.2 * med_r
-    by_y = sorted(range(n), key=lambda i: centers[i][1])
-    rows, cur = [], [by_y[0]]
-    for prev, i in zip(by_y, by_y[1:]):
-        if row_tol and centers[i][1] - centers[prev][1] > row_tol:
-            rows.append(cur)
-            cur = [i]
-        else:
-            cur.append(i)
-    rows.append(cur)
-    order = []
-    for row in rows:
-        order.extend(sorted(row, key=lambda i: centers[i][0]))
-    return order
+    if not med_r:
+        # No radius signal ⇒ nothing to scale rows by; a plain reading sort is the floor.
+        return sorted(range(n), key=lambda i: (centers[i][1], centers[i][0]))
+    row_centers = _cluster_row_centers([c[1] for c in centers], med_r)
+
+    def _row_of(i):
+        y = centers[i][1]
+        return min(range(len(row_centers)), key=lambda k: abs(row_centers[k] - y))
+
+    return sorted(range(n), key=lambda i: (_row_of(i), centers[i][0]))
 
 
 def _estimate_button_radius_px(centers, w, h):

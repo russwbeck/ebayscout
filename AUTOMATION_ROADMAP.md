@@ -22,7 +22,7 @@ it is no longer a sync target.)*
 | 2b | Defect A: DT-radius-led re-Hough on fused lots (revised — DT peaks are the radius source, not the counter) | ◐ largely covered by 2a (saturation was the fusion driver in both real lots); re-measure residual non-saturated fusion on the next batch | next batch |
 | 3 | Defect B: concentric/radius dedup (small-lot overcount) | ✅ **merged + deployed** — 0.7–1.3×median band + concentric collapse (keep better fill) on the unguided selection | — |
 | 3.5 | Tighten `ni_gate=auto` | ✅ **merged + deployed** — AUTO requires `scale_path=scale_first` AND a non-bailed guided detector (`demote_auto_on_detector_bailout`, #116/#50); validated at n=329: 96%/100%±1 | — |
-| 4a | Low-res guard (thumbnail auto-confirm) | ✅ implementable immediately | nothing |
+| 4a | Low-res guard (thumbnail-**fallback** auto-confirm — NOT a systemic low-res feed; see 4a note) | ✅ implementable immediately | nothing |
 | 4b | Reference coverage for 0.00-scoring slogans | ⏸ data (exists, needs a run) | one `audit_reference_coverage` run vs GCS |
 | 4c | Measured auto-confirm error rate | ⏸ human data | `correction` rows in confirm_log (~100 auto-confirms reviewed) |
 | 5 | Rollout: drop the guided count (revised: gate-scoped, not bucket-scoped) | ⏸ re-measure after 2a/2b/3 land | next instrumented batch |
@@ -226,6 +226,21 @@ threshold. These items close the remaining risk:
   (`2·det_radius_mean`, or image dimension / grid) is below ~64px, downgrade
   `gemini_auto` → manual review and block reference staging. Threshold can be
   refined later from `det_h/w` + radius columns, but any sane floor beats none.
+
+  **DO NOT read this as "the Gemini pipeline runs on low-quality images"
+  (code-verified 2026-07-12).** It does not, by design or by any downscale step.
+  The feed (`main.py:_feed_lot_to_pipeline`) sends the eBay photo bytes verbatim
+  (`image_proc.download_image` → `seen_items.upload_pipeline_input`, no resize),
+  and Gemini runs on exactly those bytes. Resolution is set entirely by the eBay
+  URL: the normal path (Browse **getItem** primary `image.imageUrl`,
+  `ebay_client.get_item_pictures`) is high-res (~1600px). Low-res only leaks
+  through the **fallback** — when getItem returns `[]`, the feed uses
+  `listing["gallery_url"]`, which in `find_listings` itself falls back to
+  `thumbnailImages[0]` (a ~100px thumbnail, `ebay_client.py`). The 104×104 case
+  came through *that fallback*, not normal operation — so 4a hardens a rare edge,
+  it does not fix a systemic low-res feed. Separately, the code never rewrites the
+  URL up to `s-l1600`; adding that upgrade (and refusing to feed/auto-confirm
+  sub-floor images) is the actual resolution lever, distinct from this guard.
 - **4b — reference coverage for rare slogans** (CCB/CCNB slogans scoring 0.00 in
   HANDOFF). Data exists; it needs one run of
   `tools/audit_reference_coverage.py` against GCS (requires GCP access — run it
