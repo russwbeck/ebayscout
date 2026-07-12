@@ -233,6 +233,7 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
     # keeps the count invariant (the deficit cap's double-count guard holds), and
     # on a flooded mask the phantom scores HIGH fill so nothing is dropped.
     dropped_crop_indices = []
+    swaps = []
     if detected_fills is not None and unmatched_crops:
         _phantoms = sorted(
             (ci for ci in unmatched_crops
@@ -252,6 +253,17 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         for gi, ci in zip(_swap_gis, _phantoms):
             recover_gis.append(gi)
             dropped_crop_indices.append(ci)
+            # One labeled Hough-phantom example per swap: the dropped circle's
+            # position/size/fill (what fooled Hough) + the button it stood in for.
+            _pcx, _pcy = detected_centers[ci]
+            swaps.append({
+                "slogan": gemini_slogans[gi].get("slogan"),
+                "confidence": gemini_slogans[gi].get("confidence"),
+                "phantom_x": int(round(_pcx)),
+                "phantom_y": int(round(_pcy)),
+                "phantom_r": int(round(detected_radii[ci])) if detected_radii[ci] else None,
+                "phantom_fill": round(detected_fills[ci], 3),
+            })
 
     misses = []
     fallback_r = median_r if median_r else max(1.0, 0.04 * min(w, h))
@@ -285,6 +297,7 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         "n_uncovered": len(unmatched_g_local),
         "n_recovered": len(misses),
         "n_swapped": len(dropped_crop_indices),
+        "swaps": swaps,
         "n_unmatched_crops": len(unmatched_crops) if unmatched_crops is not None else None,
         "median_r": round(median_r, 2) if median_r else None,
         "covered_distances": [c["dist"] for c in covered],

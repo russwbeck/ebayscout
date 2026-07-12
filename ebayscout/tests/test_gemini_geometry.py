@@ -230,6 +230,11 @@ def test_swap_recovers_miss_and_drops_phantom():
     assert [m["slogan"] for m in out["misses"]] == ["BLUE"]
     assert out["dropped_crop_indices"] == [4]
     assert out["telemetry"]["n_swapped"] == 1
+    # the labeled phantom example: the dropped circle's geometry + off-mask fill
+    sw = out["telemetry"]["swaps"]
+    assert len(sw) == 1 and sw[0]["slogan"] == "BLUE"
+    assert (sw[0]["phantom_x"], sw[0]["phantom_y"]) == (700, 700)
+    assert sw[0]["phantom_fill"] == 0.1
 
 
 def test_swap_skips_without_fills_backcompat():

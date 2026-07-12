@@ -1042,6 +1042,8 @@ def process_pipeline_lot(job_id: str) -> None:
                 reconcile_misses=(_rt or {}).get("misses"),
                 gem_unmatched=(_rt or {}).get("n_unmatched_crops"),
                 gem_unmatched_indices=(_rt or {}).get("unmatched_crop_indices"),
+                n_swapped=(_rt or {}).get("n_swapped"),
+                reconcile_swaps=(_rt or {}).get("swaps"),
             )
             _records = [
                 mlog.build_match_record(
