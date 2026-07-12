@@ -809,6 +809,13 @@ def process_pipeline_lot(job_id: str) -> None:
             _lh_led = True
     rec_crops, rec_info, crop_to_slogan, _rt = _dp.reconcile_with_gemini(
         circle_info, gem_slogans, _det_img)
+    # Fill-gated swap: drop the phantom crops reconcile traded for recovered Gemini
+    # buttons BEFORE appending, so the final list matches the (kept detected +
+    # recovered) order reconcile built crop_to_slogan against.
+    _dropped = set(_rt.get("dropped_crop_indices") or [])
+    if _dropped:
+        crops = [c for i, c in enumerate(crops) if i not in _dropped]
+        circle_info = [c for i, c in enumerate(circle_info) if i not in _dropped]
     if rec_crops:
         crops = list(crops) + list(rec_crops)
         circle_info = list(circle_info) + list(rec_info)

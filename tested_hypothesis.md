@@ -532,4 +532,61 @@ carpet investigation, and it is a units bug, not a CV problem.
 **Still separate / still open:** the white-carpet residual (blue minority-colour
 button missed by Hough, a carpet phantom taking its count slot — open item #1) is
 NOT a coordinate issue; it persists after this fix (verified: that lot is percent
-and unchanged). Left shelved per 4.4.
+and unchanged). Resolved in 4.6 below.
+
+## 4.6 Two-signal reconcile swap: a Hough phantom was SUPPRESSING a real Gemini button — FIXED
+
+Open item #1 (the white-carpet "missed blue button") was mechanised from a live
+label record: **it was not a separate miss — the carpet phantom and the missing
+blue were the SAME failure.**
+
+- 5 Gemini slogans, all located (percent), **including the blue at (472,172),
+  confidence 0.9**.  5 Hough circles: 4 whites + 1 carpet phantom (124,480,
+  `gemini_backed:false`).  The blue is missing from the output.
+- Cause: `plan_reconciliation` caps recovery at the **count deficit** =
+  `len(gemini) − len(detected)` = 5 − 5 = **0**.  The phantom inflated the
+  detected count, zeroed the deficit, and the genuinely-uncovered blue was never
+  recovered.  **The phantom ate the blue's slot.**  (The deficit cap exists to
+  stop double-counting on the projection path — it wasn't wrong, just blind to a
+  false positive.)
+
+**Fix (SHIPPED):** a **two-signal swap** — the risky action is DROPPING a Hough
+circle, so gate it on two independent signals: the circle is **unbacked**
+(coverage geometry) AND sits **off the button mask** (`fill < 0.50`, photometric).
+Both hold ⇒ it's a phantom; drop it and recover the uncovered Gemini button in its
+place (1 in, 1 out, count invariant, deficit-cap guard preserved).  Kill switch
+`*_RECONCILE_SWAP`; two-phase so the mask is only built when a swap is plausible.
+
+**The measurement that reshaped the design — worth remembering.** The first plan
+gated recovery on the *button's* mask-fill too.  Tested on the REAL pipeline mask,
+it failed: **phantom fill 0.0 (great) but the real blue button fill 0.2** — because
+the mask that MISSED the blue (blue_or_white flooded on the bluish carpet → white-
+only fallback) is the same mask, so it reads ~0 there.  **Mask-fill can flag a
+phantom but cannot vouch for a miss** (the mask is the shared failure point).  So
+recovery is gated on **Gemini's own confidence** (≥0.90/high) instead — consistent
+with the pipeline already trusting Gemini's x/y everywhere.  End-to-end on the real
+image: phantom dropped, blue recovered at its Gemini location with its slogan,
+count still 5, associations aligned.
+
+## 4.7 The recurring error class — audit heuristic (operator's "look for errors like this")
+
+Three of the carpet failures (4.4, 4.5, 4.6) were the **same shape**: **Gemini read
+the lot correctly and the pipeline threw its answer away.**
+
+| § | Gemini got right | how we discarded it |
+|---|---|---|
+| 4.4 | localized N buttons | trusted its inflated *scalar* count over the localized ones → phantom back-fill |
+| 4.5 | 8 buttons, exact x/y | misread its coordinate SCALE (0-1000 as 0-100) → points off-image → blind grid |
+| 4.6 | blue button, x/y + conf | a Hough phantom zeroed the recovery deficit → its localization suppressed |
+
+**Heuristic when a lot fails: FIRST check whether Gemini already got it right.**
+The label record has everything to tell — `gemini.button_count`, `slogans` with
+x/y + confidence, `coord_scale`, `count_inconsistent`.  Overlay the slogans on the
+detection-space image (`pipeline/labels/<job>.jpg`).  If Gemini's reading is good
+but the output is wrong, **the bug is in how we CONSUME Gemini, not in Gemini or
+the detector** — and it is usually cheap and general to fix (a scale divide, a
+count min, a swap), unlike the genuinely hard mask/detection work (Part I).  These
+are the highest-leverage bugs in the pipeline; look for them before touching
+detection.  Signals that a lot is in this class: `detector_used == "grid"` with
+0 `gemini_backed` circles (4.5); `count_inconsistent == true` (4.4); an unbacked
+off-mask circle coexisting with an uncovered high-confidence slogan (4.6).

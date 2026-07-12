@@ -203,3 +203,52 @@ def test_plan_reconciliation_prefers_rim_point_over_size():
                "size": 10, "edge_x": 55, "edge_y": 50, "confidence": 0.8}]
     out = gg.plan_reconciliation([], [], gemini, 1000, 1000)
     assert out["misses"][0]["r_px"] == 50.0
+
+
+# --- Two-signal reconcile swap ------------------------------------------------
+# A Hough false-positive (carpet phantom) fills the count and the deficit cap then
+# suppresses a real Gemini miss.  The swap drops the phantom (unbacked AND off the
+# mask — two independent signals) and recovers the high-confidence miss in its
+# place, count invariant.
+
+def _swap_scene(phantom_fill=0.1, blue_conf=0.9):
+    # 4 covered pairs + 1 carpet phantom (det idx4) + 1 uncovered blue (gem idx4)
+    det_c = [(100, 100), (300, 100), (100, 300), (300, 300), (700, 700)]
+    det_r = [50, 50, 50, 50, 50]
+    det_fill = [0.9, 0.9, 0.9, 0.9, phantom_fill]
+    gem = [{"index": 1, "slogan": "A", "x": 10, "y": 10, "confidence": 0.9},
+           {"index": 2, "slogan": "B", "x": 30, "y": 10, "confidence": 0.9},
+           {"index": 3, "slogan": "C", "x": 10, "y": 30, "confidence": 0.9},
+           {"index": 4, "slogan": "D", "x": 30, "y": 30, "confidence": 0.9},
+           {"index": 5, "slogan": "BLUE", "x": 90, "y": 10, "confidence": blue_conf}]
+    return det_c, det_r, det_fill, gem
+
+
+def test_swap_recovers_miss_and_drops_phantom():
+    det_c, det_r, det_fill, gem = _swap_scene()
+    out = gg.plan_reconciliation(det_c, det_r, gem, 1000, 1000, detected_fills=det_fill)
+    assert [m["slogan"] for m in out["misses"]] == ["BLUE"]
+    assert out["dropped_crop_indices"] == [4]
+    assert out["telemetry"]["n_swapped"] == 1
+
+
+def test_swap_skips_without_fills_backcompat():
+    # No fills → old behaviour: deficit 0 recovers nothing, phantom kept.
+    det_c, det_r, _f, gem = _swap_scene()
+    out = gg.plan_reconciliation(det_c, det_r, gem, 1000, 1000)
+    assert out["misses"] == [] and out["dropped_crop_indices"] == []
+
+
+def test_swap_skips_when_phantom_on_mask():
+    # Flooded/ambiguous mask: the unbacked circle scores HIGH fill, so it is NOT a
+    # confident phantom → no drop, no swap (self-limiting where fill is unreliable).
+    det_c, det_r, _f, gem = _swap_scene(phantom_fill=0.9)
+    out = gg.plan_reconciliation(det_c, det_r, gem, 1000, 1000,
+                                 detected_fills=[0.9] * 5)
+    assert out["misses"] == [] and out["dropped_crop_indices"] == []
+
+
+def test_swap_skips_low_confidence_miss():
+    det_c, det_r, det_fill, gem = _swap_scene(blue_conf=0.3)
+    out = gg.plan_reconciliation(det_c, det_r, gem, 1000, 1000, detected_fills=det_fill)
+    assert out["misses"] == [] and out["dropped_crop_indices"] == []
