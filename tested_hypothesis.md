@@ -390,3 +390,59 @@ on-target, and defer to the prior behaviour when the check fails. Then iterate.*
 same-saturation background — the Layer-1/Layer-2 mask+radius problem (Part I)
 remains the real bottleneck. The gate just stops a small-N heuristic from
 overwriting the rescue that was covering for it.
+
+## 4.3 Carpet round (2026-07-12) — the flood gate generalised, and where it stops
+
+Textured carpets are the same disease as turf (a background the colour mask can't
+separate from the buttons), reported as a fresh fail case. Two raw lots run
+through the real detector in-session, then a ~10-image pipeline verification by
+the operator ("many successes, few failures"). What the round established:
+
+- **Navy-on-carpet reached the acceptance floor on the plain hough path**, so the
+  deficit-fill gate (4.1) never fired — yet the mask flooded 66% and all the
+  "detected" circles were on the rug. Fix: `_guided_mask_floods` generalises the
+  flood gate to the WHOLE guided acceptance (refuse + route to projection for a
+  non-small lot whose mask floods), not just the deficit-fill fork. Zero fixture
+  impact (no fixture floods AND has expected > 5); shipped both repos.
+
+- **The generalised gate is only as good as the rescue behind it.** Pipeline
+  verification, image 3 (navy-8): the gate routed to projection correctly, but the
+  result was an empty 8-cell grid sprawled on the carpet with **zero Gemini
+  confirmations** — because on a busy carpet **Gemini also returned nothing
+  usable**, so there were no coordinates to snap the projection onto (the
+  detector-is-grid → gemini-led-crops path had no slogans). Lesson extending 4.2:
+  a "route to the fallback" fix silently assumes the fallback works; when the
+  background defeats *both* the mask and Gemini, projection-on-carpet is worse
+  than useless. Candidate direction (unbuilt): detect "flooded mask AND no usable
+  Gemini reading" and **flag the lot unreadable for manual handling** rather than
+  emit a carpet grid.
+
+**Open item #1 — minority-colour miss + count-driven carpet phantoms (diagnosed,
+NOT yet implemented; operator holding until a non-carpet regression check).**
+Distinct from the flood cases: the mask is *clean* (does not flood), so the flood
+gate correctly does not engage, but two things still go wrong on carpet:
+
+- *A minority-colour button is missed.* White-on-gray lot (5 buttons: 4 white + 1
+  blue): the mask isolates the four white buttons, but the lone **blue** button
+  is absent from the (white-biased) mask and never detected. Pipeline confirmed 4,
+  missed the blue entirely.
+- *A count-driven fill then places a phantom on the carpet.* To reach the expected
+  count, `white-rescue` (and the fill family generally) adds an "edge-supported"
+  circle — carpet weave has edges — that lands on empty carpet, not on the missed
+  button (measured: on the raw lot, 4/5 circles on-mask, the 5th on carpet with
+  0.00 on-button fill). The pipeline correctly routes it to *review*, not
+  auto-confirm, so nothing wrong enters inventory — but it is reviewer noise and
+  the real button is still uncatalogued.
+- Small-lot carpet phantoms (1–2 button lots) show the same fill-phantom, and are
+  *deliberately* outside the flood gate (scoped to expected > 5), so they need the
+  same fix, not a wider flood gate.
+
+  **Proposed fix (per 4.2's rule — gate the fill on an independent on-target
+  check):** when the mask is clean (not flooding), require a fill/`white-rescue`
+  proposal to sit on the button mask (non-trivial on-mask fill) before it is
+  added; an off-mask "edge-supported" circle on a clean mask is background, so
+  drop it. Optionally add a minority-colour mask variant so the blue button is
+  seen in the first place rather than back-filled. Validate on the fixtures that
+  legitimately use white-rescue (case2, granite_glare, mixed_bluewhite) so the
+  guard doesn't suppress real recoveries — this is the risk that warrants the
+  operator's non-carpet regression pass first.
