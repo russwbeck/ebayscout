@@ -2355,6 +2355,36 @@ def _circle_center_radius(c):
     return (c["x"], c["y"]), c.get("r")
 
 
+def _cluster_row_centers(ys, med_r):
+    """Row-line y-positions for a set of button center-y values.
+
+    Average-linkage 1-D clustering: seed every y as its own cluster, then
+    repeatedly merge the two closest cluster CENTERS while they sit within ~1.3x a
+    button radius, recomputing each merged center as its members' mean.  Merging by
+    center distance (not by nearest raw neighbour, as a y-gap walk does) is what
+    stops the single-linkage CHAINING that collapses a staggered board into one
+    giant "row": on a hand-arranged board an intermediate-y button bridges two
+    visual rows, and a gap walk then chains the whole board together.  Returns the
+    sorted list of row-center y's."""
+    pts = sorted(ys)
+    if not pts:
+        return []
+    thresh = 1.3 * med_r
+    if thresh <= 0:
+        return [sum(pts) / len(pts)]
+    clusters = [[y] for y in pts]                 # seeded in y-sorted order
+    while len(clusters) > 1:
+        centers = [sum(c) / len(c) for c in clusters]
+        # clusters stay y-sorted, so the globally closest pair is always adjacent
+        gap, i = min((centers[j + 1] - centers[j], j)
+                     for j in range(len(clusters) - 1))
+        if gap > thresh:
+            break
+        clusters[i] += clusters[i + 1]
+        del clusters[i + 1]
+    return [sum(c) / len(c) for c in clusters]
+
+
 def reading_order(circle_info):
     """Indices of ``circle_info`` in human reading order: top-to-bottom by row,
     left-to-right within each row.
@@ -2366,12 +2396,14 @@ def reading_order(circle_info):
     crop + circle_info lists by this permutation renumbers everything into the order
     an operator actually scans.
 
-    Rows are banded by center-y with a tolerance that absorbs the slight tilt of a
-    hand-held photo: a new row starts only when the y-gap between consecutive
-    (y-sorted) buttons exceeds ~1.2x the median radius (rows sit ~2x radius apart
-    center-to-center; within-row jitter is well under that).  Centers/radii come
-    from _circle_center_radius so both circle (x/y) and rect (cx/cy) shapes work.
-    Returns list(range(n)) unchanged when there is nothing meaningful to reorder."""
+    Rows are found by clustering center-y into row lines (``_cluster_row_centers``)
+    and assigning each button to its nearest row line, then sorting by (row, x).
+    This survives the vertical STAGGER of a hand-arranged board, where the older
+    "start a new row on the first y-gap > tolerance" walk chained every row into one
+    (a single bridging button merged neighbours, then the whole board collapsed into
+    one left-to-right sweep).  Centers/radii come from _circle_center_radius so both
+    circle (x/y) and rect (cx/cy) shapes work.  Falls back to a plain (y, x) sort
+    when no radius is available, and returns list(range(n)) for n <= 1."""
     n = len(circle_info)
     if n <= 1:
         return list(range(n))
@@ -2382,20 +2414,16 @@ def reading_order(circle_info):
         if r:
             radii.append(r)
     med_r = sorted(radii)[len(radii) // 2] if radii else 0
-    row_tol = 1.2 * med_r
-    by_y = sorted(range(n), key=lambda i: centers[i][1])
-    rows, cur = [], [by_y[0]]
-    for prev, i in zip(by_y, by_y[1:]):
-        if row_tol and centers[i][1] - centers[prev][1] > row_tol:
-            rows.append(cur)
-            cur = [i]
-        else:
-            cur.append(i)
-    rows.append(cur)
-    order = []
-    for row in rows:
-        order.extend(sorted(row, key=lambda i: centers[i][0]))
-    return order
+    if not med_r:
+        # No radius signal ⇒ nothing to scale rows by; a plain reading sort is the floor.
+        return sorted(range(n), key=lambda i: (centers[i][1], centers[i][0]))
+    row_centers = _cluster_row_centers([c[1] for c in centers], med_r)
+
+    def _row_of(i):
+        y = centers[i][1]
+        return min(range(len(row_centers)), key=lambda k: abs(row_centers[k] - y))
+
+    return sorted(range(n), key=lambda i: (_row_of(i), centers[i][0]))
 
 
 def _estimate_button_radius_px(centers, w, h):
