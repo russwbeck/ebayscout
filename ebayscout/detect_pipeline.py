@@ -143,6 +143,17 @@ def _deficit_fill_decision(enabled, n_cleaned, expected, already_enough,
     return "decline" if mask_fraction > DEFICIT_FILL_MAX_MASK_FRACTION else "commit"
 
 
+def _guided_mask_floods(expected, mask_fraction, enabled):
+    """True when a non-small lot's adopted mask floods the frame past
+    DEFICIT_FILL_MAX_MASK_FRACTION.  The guided Hough circles are then background
+    hits (turf/carpet) even if they clear the acceptance floor, so the lot should
+    be refused and routed to projection + Gemini reconcile.  Scoped to expected > 5
+    so small-count lots keep their small-complete behaviour.  Pure, for unit
+    testing; shares the deficit-fill threshold and kill switch."""
+    return bool(enabled and expected and expected > 5
+                and mask_fraction > DEFICIT_FILL_MAX_MASK_FRACTION)
+
+
 # --- SHARED IMAGE PREP --------------------------------------------------------
 
 def _buttons_as_holes(mask, h, w):
@@ -2144,6 +2155,27 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                   f"mask did not isolate buttons, using projection fallback.", flush=True)
             if diag_out is not None:
                 diag_out["deficit_declined_mask_fraction"] = round(_mask_fraction, 3)
+
+        # Flooded-mask guard (generalises the deficit-fill gate to the WHOLE
+        # acceptance): a non-small lot whose adopted mask floods the frame has not
+        # isolated the buttons, so the guided Hough circles are background hits
+        # (turf/carpet) EVEN WHEN they clear the acceptance floor — deficit-fill
+        # never fires here because `_enough` is already met, so the deficit gate
+        # above can't catch it (navy-on-carpet: mask 66%, 6 circles all on the rug,
+        # accepted on the hough path).  Refuse the guided result and route to
+        # projection + Gemini reconcile, which places buttons the mask can't see.
+        # Small lots (expected <= 5) keep their small-complete behaviour untouched.
+        # Shares DEFICIT_FILL_MAX_MASK_FRACTION and the deficit-fill kill switch.
+        if (_guided_mask_floods(expected, _mask_fraction, _deficit_fill_enabled())
+                and (_enough or _small_complete)):
+            print(f">>> DETECT: guided acceptance REFUSED — mask floods "
+                  f"{_mask_fraction:.0%} of frame (> {DEFICIT_FILL_MAX_MASK_FRACTION:.0%}) "
+                  f"on a {expected}-button lot; guided circles are background hits, "
+                  f"routing to projection.", flush=True)
+            if diag_out is not None:
+                diag_out["guided_refused_mask_fraction"] = round(_mask_fraction, 3)
+            _enough = False
+            _small_complete = False
 
         if _enough or _small_complete:
             # row_tol: grid-based when rows known, else radius-based
