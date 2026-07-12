@@ -847,6 +847,7 @@ def process_pipeline_lot(job_id: str) -> None:
                 gemini_button_count=gem_count,
                 gemini_flagged_count=len(flagged),
                 gemini_slogans=gem_slogans,
+                gemini_coord_scale=gemini.get("coord_scale"),
                 # unmatched_crop_indices indexes into circle_info AT RECONCILE
                 # TIME (before rec_info was appended) — the same list order
                 # preserved above, so per-circle indices still line up here.

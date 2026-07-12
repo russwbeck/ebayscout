@@ -490,3 +490,46 @@ Net: we stopped trying to out-gate a bad upstream count, took the one conservati
 count change that removes the phantom class for free, and turned the failure into
 a logged measurement that informs whether Gemini can be trusted as the counter at
 all.
+
+## 4.5 The real "navy-8 complete fail" cause: Gemini coordinate SCALE (0-100 vs 0-1000) — FIXED
+
+The navy-8 carpet "complete fail" was **never a mask/detection problem, and not
+an overcount** — it was a coordinate-units bug, proven from three live label
+records + their images:
+
+- **Gemini did not fail navy-8. It aced it.** `button_count: 8`, zero flagged, all
+  8 slogans located and read correctly. But the output was a blind projection grid
+  with **every circle `gemini_backed: false`** — we discarded a perfect reading.
+- **Root cause:** the Gem prompt asks for 0-100 PERCENT coordinates, but Gemini
+  **intermittently answers on its native 0-1000 scale**. Downstream
+  `gemini_geometry.pct_to_px` divides by 100, so a 0-1000 lot lands ~10x off the
+  frame: every point outside the image → `gemini_led_crops` returns empty →
+  `reconcile_with_gemini` matches nothing → blind grid. Overlaying the navy-8
+  coords **÷1000** onto its own detection-space label image lands **dead on all 8
+  buttons** (r≈44, exact). Overlaying ÷100 puts 0/8 on-image.
+- **Confirmed inconsistent across lots** (the key evidence):
+  | lot | coords | scale | result before fix |
+  |---|---|---|---|
+  | navy-8 (IMG-1001) | 224–692 | **0-1000** | ÷100 → off-image → blind grid ✗ |
+  | single button (IMG-1014) | 40, 45 | **0-100** | ÷100 → matched, `gemini_backed` ✓ |
+  | white-carpet ×5 (IMG-0125) | ≤74 | **0-100** | ÷100 → 4/5 matched ✓ |
+
+**Fix (SHIPPED, both repos):** `parse_gemini_response` (byte-shared
+`pipeline_ingest.py`) detects the scale from the response's max coordinate — a
+percent value can't exceed 100, so **max > 100 ⇒ 0-1000 ⇒ rescale ÷10 back to
+percent**; otherwise leave as percent. One normalization point, everything
+downstream unchanged. Verified against all three real records (navy-8 → permille,
+rescaled, lands on buttons; both percent lots untouched). Logs `coord_scale`
+(percent/permille/None) per lot in the label record, so we can measure how often
+Gemini ignores the percent instruction. Unit tests in `test_pipeline_ingest.py`.
+
+**Why this matters beyond carpets:** it is a **general correctness bug**. Any lot
+where Gemini answers in 0-1000 silently lost its entire localization and fell to a
+blind grid — the carpet lots only made it visible because Hough also failed there,
+so there was no second safety net. This is the highest-leverage fix in the whole
+carpet investigation, and it is a units bug, not a CV problem.
+
+**Still separate / still open:** the white-carpet residual (blue minority-colour
+button missed by Hough, a carpet phantom taking its count slot — open item #1) is
+NOT a coordinate issue; it persists after this fix (verified: that lot is percent
+and unchanged). Left shelved per 4.4.

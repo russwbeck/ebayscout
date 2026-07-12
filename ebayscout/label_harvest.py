@@ -117,6 +117,7 @@ def build_label_record(
     gemini_button_count=None,
     gemini_flagged_count=None,
     gemini_slogans=None,
+    gemini_coord_scale=None,
     unmatched_crop_indices=None,
 ):
     """Build one lot's label record (pure dict — caller serializes/uploads).
@@ -178,6 +179,12 @@ def build_label_record(
             # count is the circles list, for a full three-way if wanted.
             "count_inconsistent": _gemini_count_inconsistent(
                 gemini_button_count, gemini_slogans, gemini_flagged_count),
+            # Which coordinate convention the Gem used this lot: "percent" (0-100,
+            # as prompted), "permille" (0-1000 native scale — rescaled to percent
+            # by the parser), or None. Measures how often Gemini ignores the
+            # percent instruction; a "permille" lot pre-fix silently lost all its
+            # localization to the off-image divide.
+            "coord_scale": gemini_coord_scale,
         },
         "circles": circles,
         # Confirmation outcomes intentionally NOT duplicated here — join

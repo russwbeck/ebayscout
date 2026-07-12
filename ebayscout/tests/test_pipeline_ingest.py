@@ -262,3 +262,47 @@ def test_parse_edge_point_flat_and_nested():
     assert s[0]["edge_x"] == 60.0 and s[0]["edge_y"] == 50.0
     assert s[1]["edge_x"] == 50.0 and s[1]["edge_y"] == 40.0
     assert s[2]["edge_x"] is None and s[2]["edge_y"] is None
+
+
+def test_coord_scale_percent_left_unchanged():
+    # 0-100 percent coords (max <= 100): coord_scale="percent", values unchanged.
+    blob = {"response": {"total_button_count": 1, "detected_slogans": [
+        {"slogan": "No Free Launch Here", "x": 40.0, "y": 45.0,
+         "edge_x": 40.0, "edge_y": 30.0},
+    ]}}
+    a = pi.parse_gemini_response(blob)
+    assert a["coord_scale"] == "percent"
+    s = a["detected_slogans"][0]
+    assert s["x"] == 40.0 and s["y"] == 45.0 and s["edge_y"] == 30.0
+
+
+def test_coord_scale_permille_rescaled_to_percent():
+    # 0-1000 native Gemini scale (a coord > 100): rescaled by /10 back to percent,
+    # so downstream pct_to_px is unchanged.  Real navy-8 lot values.
+    blob = {"response": {"total_button_count": 8, "detected_slogans": [
+        {"slogan": "Needle the Rams", "x": 242.0, "y": 322.0,
+         "edge_x": 242.0, "edge_y": 268.0, "size": 540.0},
+        {"slogan": "Stuff 'N' Puff", "x": 424.0, "y": 692.0,
+         "edge_x": 424.0, "edge_y": 636.0},
+    ]}}
+    a = pi.parse_gemini_response(blob)
+    assert a["coord_scale"] == "permille"
+    s0 = a["detected_slogans"][0]
+    assert s0["x"] == 24.2 and s0["y"] == 32.2          # /10
+    assert s0["edge_x"] == 24.2 and s0["edge_y"] == 26.8
+    assert s0["size"] == 54.0                            # size rescaled too
+    # /1000 * a 449-wide frame lands on the button (was 108px in the real image)
+    assert round(s0["x"] / 100 * 449) == 109
+
+
+def test_coord_scale_none_when_no_coords():
+    blob = {"response": {"total_button_count": 3, "detected_slogans": []}}
+    assert pi.parse_gemini_response(blob)["coord_scale"] is None
+
+
+def test_coord_scale_boundary_100_is_percent():
+    # exactly 100 is a valid percent edge; only > 100 flips to permille.
+    blob = {"response": {"detected_slogans": [
+        {"slogan": "Edge", "x": 100.0, "y": 50.0},
+    ]}}
+    assert pi.parse_gemini_response(blob)["coord_scale"] == "percent"
