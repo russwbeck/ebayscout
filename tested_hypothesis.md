@@ -446,3 +446,47 @@ gate correctly does not engage, but two things still go wrong on carpet:
   legitimately use white-rescue (case2, granite_glare, mixed_bluewhite) so the
   guard doesn't suppress real recoveries — this is the risk that warrants the
   operator's non-carpet regression pass first.
+
+## 4.4 Decision (2026-07-12): carpets are too niche to over-code — DASH the gates, ship the count companion
+
+Operator verdict after the pipeline run: **carpets are too niche a case to build
+a stack of gates for, and the residual failure is Gemini OVER-COUNTING the busy
+background — an upstream input we do not control.** Compensating for a bad input
+count with downstream heuristics is the §4.2 overfitting trap in another outfit.
+So:
+
+- **Open items #1 (white-rescue on-target gate) and #2 (flag-unreadable) are
+  SHELVED.** They are recorded above for provenance; do not re-propose them for
+  carpets. The carpet phantoms they targeted are already safely routed to *review*
+  (never auto-confirmed into inventory), so the cost of not building them is
+  reviewer noise, not bad data.
+
+- **Kept learning (worth knowing, documenting, logging): Gemini is *also* confused
+  by these backgrounds.** On turf/patterned carpet Gemini's `total_button_count`
+  runs ahead of the buttons it can actually place (image 3: an empty projection
+  grid because Gemini returned nothing snappable). The busy background beats the
+  mask *and* the reader.
+
+**Companion SHIPPED (both repos) — small, broad-value, and a free data engine:**
+
+1. **Guide detection with the conservative count**
+   `expected = min(total_button_count, len(detected_slogans))` (falls back to
+   `total − flagged` only when Gemini localised nothing). Caps Gemini's claimed
+   total at what it actually localised, so an over-count can no longer drive
+   back-fill phantoms — **this one change would have prevented case-7's phantom.**
+   No-op on consistent lots: when `total == localized + flagged` it equals the old
+   `total − flagged`, verified (10→8 both; over-count 15→8 vs old 13). Lives in
+   `main.py` (pipeline handler) in both services.
+
+2. **Log `gemini_count_inconsistent`** in the label record (`label_harvest.py`,
+   byte-shared, computed once so both services agree): True when Gemini's claimed
+   total ≠ localised slogans + flagged partials — i.e. it counted buttons it never
+   placed. Each pipeline lot now emits a free **measured-Gemini-error** row (the
+   detector's own count is the circles list, for a full three-way), feeding
+   Phase 4c and the Stage-B "Gemini as ruler" question with real data instead of
+   guesses. Pipeline stdout also prints the inconsistency inline for live triage.
+
+Net: we stopped trying to out-gate a bad upstream count, took the one conservative
+count change that removes the phantom class for free, and turned the failure into
+a logged measurement that informs whether Gemini can be trusted as the counter at
+all.

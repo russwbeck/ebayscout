@@ -89,3 +89,38 @@ def test_build_label_record_empty_lot_is_fine():
         img_w=10, img_h=10, circle_info=[], circle_sources=None,
     )
     assert rec["circles"] == [] and rec["gemini"]["slogans"] == []
+
+
+def test_gemini_count_inconsistent_helper():
+    # total == localized + flagged → consistent
+    assert lh._gemini_count_inconsistent(10, [{}] * 8, 2) is False
+    # total > localized + flagged → Gemini overcounted (turf/carpet case)
+    assert lh._gemini_count_inconsistent(15, [{}] * 8, 2) is True
+    assert lh._gemini_count_inconsistent(5, [{}] * 5, 0) is False
+    # no usable count → None (not False, so "unknown" is never read as "consistent")
+    assert lh._gemini_count_inconsistent(0, [], 0) is None
+    assert lh._gemini_count_inconsistent(None, None, None) is None
+    # fail-open on bad input
+    assert lh._gemini_count_inconsistent("x", [{}], 0) is None
+
+
+def test_build_label_record_logs_count_inconsistent():
+    # Gemini claims 15 but itemised only 8 slogans + 2 flagged = 10 → inconsistent.
+    rec = lh.build_label_record(
+        job_id="j3", service="buttonmatcher", command="/pipeline",
+        img_w=10, img_h=10, circle_info=[], circle_sources=None,
+        gemini_button_count=15, gemini_flagged_count=2, gemini_slogans=[{"x": 1}] * 8,
+    )
+    assert rec["gemini"]["count_inconsistent"] is True
+    # A consistent lot logs False, and a countless lot logs None.
+    rec2 = lh.build_label_record(
+        job_id="j4", service="buttonmatcher", command="/pipeline",
+        img_w=10, img_h=10, circle_info=[], circle_sources=None,
+        gemini_button_count=5, gemini_flagged_count=0, gemini_slogans=[{"x": 1}] * 5,
+    )
+    assert rec2["gemini"]["count_inconsistent"] is False
+    rec3 = lh.build_label_record(
+        job_id="j5", service="buttonmatcher", command="/pipeline",
+        img_w=10, img_h=10, circle_info=[], circle_sources=None,
+    )
+    assert rec3["gemini"]["count_inconsistent"] is None
