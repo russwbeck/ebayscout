@@ -117,8 +117,23 @@ def match_points(centers_a, centers_b, max_dist=None):
     return pairs, unmatched_a, unmatched_b
 
 
+# Reconcile swap (see plan_reconciliation): the RISKY action is DROPPING a Hough
+# circle, so it takes two independent signals — the circle must be BOTH unbacked
+# (coverage geometry) AND off the button mask (fill < SWAP_OFF_MASK_MAX, the
+# photometric signal), which together confirm a phantom and protect a real button
+# Hough found off-Gemini.  RECOVERY of the swapped-in button is gated on Gemini's
+# own confidence (>= SWAP_MIN_CONFIDENCE, i.e. "high"), consistent with the rest
+# of the pipeline trusting Gemini's x/y — because mask-fill CAN'T confirm the
+# missed button: the mask that missed it (e.g. blue-blind on a bluish carpet) also
+# reads ~0 fill there.  Measured: carpet phantom fill 0.0, a real blue button 0.2
+# on the same (blue-blind) mask — so fill only reliably flags phantoms, not misses.
+SWAP_OFF_MASK_MAX = 0.50
+SWAP_MIN_CONFIDENCE = 0.70
+
+
 def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
-                        cover_factor=1.0, median_r=None):
+                        cover_factor=1.0, median_r=None,
+                        detected_fills=None):
     """Decide which Gemini buttons Hough missed and where to synthesize crops.
 
     Parameters
@@ -203,6 +218,53 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
     )
     recover_gis = [gi for _d, gi in uncovered[:deficit]]
 
+    # --- Two-signal swap: recover a suppressed miss, drop the phantom ---------
+    # The deficit cap above silently drops a real Gemini miss whenever a HOUGH
+    # FALSE-POSITIVE fills the count (measured: a carpet phantom kept the count at
+    # 5 and suppressed a Gemini-located blue button).  Trading them is safe only
+    # when the circle we DROP is confidently a phantom, so gate the drop on TWO
+    # independent signals: it is unbacked (in ``unmatched_crops`` — coverage
+    # geometry) AND sits OFF the button mask (fill < SWAP_OFF_MASK_MAX — the
+    # photometric signal; a real button Hough found off-Gemini would score HIGH
+    # fill and be kept).  RECOVER the swapped-in button only when Gemini was highly
+    # confident (>= SWAP_MIN_CONFIDENCE) — mask-fill can't vouch for the miss (the
+    # mask that missed it reads ~0 there), but the whole pipeline already trusts
+    # Gemini's positions, so its own confidence is the recovery gate.  1 in, 1 out
+    # keeps the count invariant (the deficit cap's double-count guard holds), and
+    # on a flooded mask the phantom scores HIGH fill so nothing is dropped.
+    dropped_crop_indices = []
+    swaps = []
+    if detected_fills is not None and unmatched_crops:
+        _phantoms = sorted(
+            (ci for ci in unmatched_crops
+             if ci < len(detected_fills) and detected_fills[ci] is not None
+             and detected_fills[ci] < SWAP_OFF_MASK_MAX),
+            key=lambda ci: detected_fills[ci],          # emptiest first
+        )
+
+        def _conf(gi):
+            c = gemini_slogans[gi].get("confidence")
+            return c if isinstance(c, (int, float)) else 0.0
+
+        _swap_gis = [
+            gi for _d, gi in uncovered                  # already farthest-first
+            if gi not in recover_gis and _conf(gi) >= SWAP_MIN_CONFIDENCE
+        ]
+        for gi, ci in zip(_swap_gis, _phantoms):
+            recover_gis.append(gi)
+            dropped_crop_indices.append(ci)
+            # One labeled Hough-phantom example per swap: the dropped circle's
+            # position/size/fill (what fooled Hough) + the button it stood in for.
+            _pcx, _pcy = detected_centers[ci]
+            swaps.append({
+                "slogan": gemini_slogans[gi].get("slogan"),
+                "confidence": gemini_slogans[gi].get("confidence"),
+                "phantom_x": int(round(_pcx)),
+                "phantom_y": int(round(_pcy)),
+                "phantom_r": int(round(detected_radii[ci])) if detected_radii[ci] else None,
+                "phantom_fill": round(detected_fills[ci], 3),
+            })
+
     misses = []
     fallback_r = median_r if median_r else max(1.0, 0.04 * min(w, h))
     for gi in recover_gis:
@@ -234,6 +296,8 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         "deficit": deficit,
         "n_uncovered": len(unmatched_g_local),
         "n_recovered": len(misses),
+        "n_swapped": len(dropped_crop_indices),
+        "swaps": swaps,
         "n_unmatched_crops": len(unmatched_crops) if unmatched_crops is not None else None,
         "median_r": round(median_r, 2) if median_r else None,
         "covered_distances": [c["dist"] for c in covered],
@@ -249,6 +313,7 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         "misses": misses,
         "covered": covered,
         "unmatched_crops": unmatched_crops,
+        "dropped_crop_indices": dropped_crop_indices,
         "telemetry": telemetry,
     }
 

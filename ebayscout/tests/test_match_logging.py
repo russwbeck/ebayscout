@@ -539,10 +539,11 @@ def test_shadow_pass_enabled_env():
 
 def test_dt_peak_columns_present_and_flattened():
     # Count-free over-merge signal (log_analysis.md gap 5): raw blob count +
-    # summed per-blob DT-peak count, appended at the END of the header (at the
-    # time this assertion was written — det_gem_unmatched(_json) now follow).
-    assert ml.MATCH_HEADER[-6:-2] == ["det_mask_blobs_raw", "det_dt_peaks_total",
-                                      "det_mask_coverage", "det_white_recovered"]
+    # summed per-blob DT-peak count.  Position-robust to later appends
+    # (det_gem_unmatched, det_n_swapped, … now follow).
+    _i = ml.MATCH_HEADER.index("det_mask_blobs_raw")
+    assert ml.MATCH_HEADER[_i:_i + 4] == ["det_mask_blobs_raw", "det_dt_peaks_total",
+                                          "det_mask_coverage", "det_white_recovered"]
 
     diag = ml.build_detection_diag(
         h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
@@ -588,9 +589,50 @@ def test_dt_peak_columns_default_blank():
 
 
 def test_gem_unmatched_columns_are_the_header_tail():
-    # Hough circles unbacked by any Gemini point (placement/non-button
-    # blind-spot metric) — the newest appended columns, at the VERY end.
-    assert ml.MATCH_HEADER[-2:] == ["det_gem_unmatched", "det_gem_unmatched_json"]
+    # gem_unmatched (Hough circles unbacked by any Gemini point) then the reconcile
+    # swap columns (Hough phantoms dropped for a real Gemini miss) are the tail.
+    assert ml.MATCH_HEADER[-4:] == ["det_gem_unmatched", "det_gem_unmatched_json",
+                                    "det_n_swapped", "det_reconcile_swaps_json"]
+
+
+def test_reconcile_swap_columns_flatten():
+    # n_swapped + the labeled phantom pool round-trip into the row at the tail.
+    swaps = [{"slogan": "Too late Sooners", "confidence": 0.9,
+              "phantom_x": 124, "phantom_y": 480, "phantom_r": 88, "phantom_fill": 0.0}]
+    diag = ml.build_detection_diag(
+        h=592, w=800, bg_brightness=120.0, bg_is_white=False, mask_path="blue_or_white",
+        hough_pass1_count=5, hough_retry_count=None, final_count_user=5,
+        final_count_noinput=2, user_count=5, detector_used="hough", n_crops=5,
+        mask_components=4, n_swapped=1, reconcile_swaps=swaps,
+    )
+    assert diag["n_swapped"] == 1 and diag["reconcile_swaps"] == swaps
+    rec = ml.build_match_record(
+        service="buttonmatcher", command="/pipeline", mode="pipeline", job_id="j",
+        thread_ts=None, channel_id="ch", user_id=None, crop_num=1, check_id="k",
+        detection=diag, bank=None, restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    assert row[ml.MATCH_HEADER.index("det_n_swapped")] == 1
+    assert "Too late Sooners" in row[ml.MATCH_HEADER.index("det_reconcile_swaps_json")]
+
+
+def test_reconcile_swap_columns_default_blank():
+    diag = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=3, hough_retry_count=None, final_count_user=3,
+        final_count_noinput=3, user_count=3, detector_used="hough", n_crops=3,
+        mask_components=3,
+    )
+    assert diag["n_swapped"] is None and diag["reconcile_swaps"] is None
+    rec = ml.build_match_record(
+        service="buttonmatcher", command="/pipeline", mode="pipeline", job_id="j",
+        thread_ts=None, channel_id="ch", user_id=None, crop_num=1, check_id="k",
+        detection=diag, bank=None, restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert row[ml.MATCH_HEADER.index("det_n_swapped")] == ""
+    assert row[ml.MATCH_HEADER.index("det_reconcile_swaps_json")] == "[]"
 
 
 def test_gem_unmatched_columns_flatten_known_count():

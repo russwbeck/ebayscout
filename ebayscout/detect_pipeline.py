@@ -83,6 +83,14 @@ def _deficit_fill_enabled():
     return _flag_on("EBAYSCOUT_DEFICIT_FILL", "BUTTONMATCHER_DEFICIT_FILL")
 
 
+def _reconcile_swap_enabled():
+    """Two-signal reconcile swap — recover a Gemini-located button a Hough
+    false-positive suppressed, by dropping the off-mask phantom in its place
+    (see reconcile_with_gemini / plan_reconciliation) — is on by default;
+    EBAYSCOUT_RECONCILE_SWAP=0 (or BUTTONMATCHER_RECONCILE_SWAP=0) disables it."""
+    return _flag_on("EBAYSCOUT_RECONCILE_SWAP", "BUTTONMATCHER_RECONCILE_SWAP")
+
+
 def _auto_detect_enabled():
     """Auto detection (no count prompt) — default OFF until the gate is
     calibrated; BUTTONMATCHER_AUTO_DETECT=1 enables."""
@@ -2597,6 +2605,18 @@ def gemini_led_crops(gemini_slogans, image_bgr, median_r=None):
     return crops, circle_info
 
 
+def _circle_fill(mask, cx, cy, r):
+    """Fraction of the button mask under a circle's inner disc — the photometric
+    'is this actually on a button' signal for the reconcile swap.  Returns 0..1."""
+    rr = max(1, int(round(r * 0.8)))
+    probe = np.zeros(mask.shape, dtype=np.uint8)
+    cv2.circle(probe, (int(round(cx)), int(round(cy))), rr, 255, -1)
+    area = cv2.countNonZero(probe)
+    if not area:
+        return 0.0
+    return cv2.countNonZero(cv2.bitwise_and(mask, mask, mask=probe)) / area
+
+
 def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
                           median_r=None, cover_factor=1.0):
     """Back-fill buttons Hough missed using Gemini's per-button x/y, and link each
@@ -2636,6 +2656,28 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
         cover_factor=cover_factor, median_r=median_r,
     )
 
+    # Two-signal swap: it can only help when Hough has unmatched phantom-candidate
+    # circles AND uncovered Gemini buttons the deficit cap left unrecovered — only
+    # then pay for the button-mask + off-mask fill probe (the second signal beside
+    # coverage geometry, gating the risky DROP) and re-plan.  Kill switch:
+    # reconcile-swap flag.  On a flooded mask the phantom scores high fill, so the
+    # off-mask test fails and no swap fires (fill only acts where it is meaningful).
+    _pt = plan["telemetry"]
+    if (_reconcile_swap_enabled() and detected_centers and gemini_slogans
+            and _pt.get("n_unmatched_crops") and _pt["n_uncovered"] > _pt["deficit"]):
+        try:
+            _mask = _prepare_detection_image(image_bgr)["mask"]
+            _mr = median_r or ggeo.median_radius(detected_radii) or max(1.0, 0.04 * min(h, w))
+            _det_fills = [_circle_fill(_mask, cx, cy, (r or _mr))
+                          for (cx, cy), r in zip(detected_centers, detected_radii)]
+            plan = ggeo.plan_reconciliation(
+                detected_centers, detected_radii, gemini_slogans, w, h,
+                cover_factor=cover_factor, median_r=median_r,
+                detected_fills=_det_fills,
+            )
+        except Exception as _swap_err:
+            print(f">>> RECONCILE: swap fill probe skipped: {_swap_err}", flush=True)
+
     recovered_crops = []
     recovered_circle_info = []
     for miss in plan["misses"]:
@@ -2655,9 +2697,15 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
             "confidence": miss.get("confidence"),
         })
 
-    # Associate over the FINAL crop set (detected first, then recovered) so the
-    # crop indices line up with the caller's crops + recovered_crops.
-    final_centers = list(detected_centers)
+    # A fill-gated swap drops the phantom crops the plan traded away.  Associate
+    # over the SAME final set the caller will build — kept detected (in order),
+    # then recovered — and reindex unmatched_crop_indices into that post-drop
+    # space.  The caller drops ``dropped_crop_indices`` before appending recovered.
+    dropped = set(plan.get("dropped_crop_indices") or [])
+    kept_idx = [i for i in range(len(detected_centers)) if i not in dropped]
+    _old2new = {old: new for new, old in enumerate(kept_idx)}
+
+    final_centers = [detected_centers[i] for i in kept_idx]
     for rc in recovered_circle_info:
         final_centers.append((rc["x"], rc["y"]))
     crop_to_slogan, unmatched_gemini = ggeo.associate_slogans(
@@ -2668,12 +2716,15 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
     telemetry["unmatched_gemini_slogans"] = [
         gemini_slogans[i].get("slogan") for i in unmatched_gemini
     ]
-    # n_unmatched_crops already flowed through via dict(plan["telemetry"]);
-    # unmatched_crop_indices is plan-level, not telemetry-level, so surface it too.
-    telemetry["unmatched_crop_indices"] = plan["unmatched_crops"]
+    _um = plan["unmatched_crops"]
+    telemetry["unmatched_crop_indices"] = (
+        [_old2new[i] for i in _um if i not in dropped] if _um is not None else None
+    )
+    telemetry["dropped_crop_indices"] = sorted(dropped)
     print(
         f">>> RECONCILE: hough={telemetry['hough_count']} "
         f"gemini={telemetry['gemini_count']} recovered={len(recovered_crops)} "
+        f"swapped={telemetry.get('n_swapped', 0)} "
         f"misses={telemetry['misses']} "
         f"unmatched_gemini={telemetry['unmatched_gemini_slogans']}",
         flush=True,

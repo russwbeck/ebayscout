@@ -272,11 +272,17 @@ def build_detection_diag(
     #                                  spot); None = match couldn't meaningfully
     #                                  run (unknown, NOT zero unbacked circles)
     #   gem_unmatched_indices list|None  the unmatched crop indices themselves
+    #   n_swapped            int   Hough phantoms dropped for a real Gemini miss
+    #                              (two-signal reconcile swap: unbacked AND off-mask)
+    #   reconcile_swaps      list  per-swap [{slogan, confidence, phantom_x/y/r/fill}]
+    #                              — a labeled pool of confirmed Hough phantoms
     gemini_button_count=None,
     n_recovered=None,
     reconcile_misses=None,
     gem_unmatched=None,
     gem_unmatched_indices=None,
+    n_swapped=None,
+    reconcile_swaps=None,
 ):
     """Detection diagnostics block.
 
@@ -400,6 +406,8 @@ def build_detection_diag(
         "reconcile_misses": reconcile_misses or None,
         "gem_unmatched": _i(gem_unmatched),
         "gem_unmatched_indices": gem_unmatched_indices or None,
+        "n_swapped": _i(n_swapped),
+        "reconcile_swaps": reconcile_swaps or None,
     }
 
 
@@ -589,6 +597,9 @@ MATCH_HEADER = [
     # --- appended: Hough circles unbacked by any Gemini point (placement/
     # non-button blind-spot metric); count blank = match couldn't run (unknown) ---
     "det_gem_unmatched", "det_gem_unmatched_json",
+    # --- appended: reconcile swap — Hough phantoms dropped for a real Gemini miss
+    # (two-signal: unbacked AND off-mask). The swaps_json is a labeled phantom pool ---
+    "det_n_swapped", "det_reconcile_swaps_json",
 ]
 
 CONFIRM_HEADER = [
@@ -693,6 +704,9 @@ def flatten_match_record(rec):
         # non-button blind-spot metric). Count blank when unknown (not zero).
         _cell(d.get("gem_unmatched")),
         json.dumps(d.get("gem_unmatched_indices") or [], default=str),
+        # --- appended: reconcile swap (Hough phantom pool) ---
+        _cell(d.get("n_swapped")),
+        json.dumps(d.get("reconcile_swaps") or [], default=str),
     ]
 
 

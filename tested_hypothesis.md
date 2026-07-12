@@ -390,3 +390,203 @@ on-target, and defer to the prior behaviour when the check fails. Then iterate.*
 same-saturation background — the Layer-1/Layer-2 mask+radius problem (Part I)
 remains the real bottleneck. The gate just stops a small-N heuristic from
 overwriting the rescue that was covering for it.
+
+## 4.3 Carpet round (2026-07-12) — the flood gate generalised, and where it stops
+
+Textured carpets are the same disease as turf (a background the colour mask can't
+separate from the buttons), reported as a fresh fail case. Two raw lots run
+through the real detector in-session, then a ~10-image pipeline verification by
+the operator ("many successes, few failures"). What the round established:
+
+- **Navy-on-carpet reached the acceptance floor on the plain hough path**, so the
+  deficit-fill gate (4.1) never fired — yet the mask flooded 66% and all the
+  "detected" circles were on the rug. Fix: `_guided_mask_floods` generalises the
+  flood gate to the WHOLE guided acceptance (refuse + route to projection for a
+  non-small lot whose mask floods), not just the deficit-fill fork. Zero fixture
+  impact (no fixture floods AND has expected > 5); shipped both repos.
+
+- **The generalised gate is only as good as the rescue behind it.** Pipeline
+  verification, image 3 (navy-8): the gate routed to projection correctly, but the
+  result was an empty 8-cell grid sprawled on the carpet with **zero Gemini
+  confirmations** — because on a busy carpet **Gemini also returned nothing
+  usable**, so there were no coordinates to snap the projection onto (the
+  detector-is-grid → gemini-led-crops path had no slogans). Lesson extending 4.2:
+  a "route to the fallback" fix silently assumes the fallback works; when the
+  background defeats *both* the mask and Gemini, projection-on-carpet is worse
+  than useless. Candidate direction (unbuilt): detect "flooded mask AND no usable
+  Gemini reading" and **flag the lot unreadable for manual handling** rather than
+  emit a carpet grid.
+
+**Open item #1 — minority-colour miss + count-driven carpet phantoms (diagnosed,
+NOT yet implemented; operator holding until a non-carpet regression check).**
+Distinct from the flood cases: the mask is *clean* (does not flood), so the flood
+gate correctly does not engage, but two things still go wrong on carpet:
+
+- *A minority-colour button is missed.* White-on-gray lot (5 buttons: 4 white + 1
+  blue): the mask isolates the four white buttons, but the lone **blue** button
+  is absent from the (white-biased) mask and never detected. Pipeline confirmed 4,
+  missed the blue entirely.
+- *A count-driven fill then places a phantom on the carpet.* To reach the expected
+  count, `white-rescue` (and the fill family generally) adds an "edge-supported"
+  circle — carpet weave has edges — that lands on empty carpet, not on the missed
+  button (measured: on the raw lot, 4/5 circles on-mask, the 5th on carpet with
+  0.00 on-button fill). The pipeline correctly routes it to *review*, not
+  auto-confirm, so nothing wrong enters inventory — but it is reviewer noise and
+  the real button is still uncatalogued.
+- Small-lot carpet phantoms (1–2 button lots) show the same fill-phantom, and are
+  *deliberately* outside the flood gate (scoped to expected > 5), so they need the
+  same fix, not a wider flood gate.
+
+  **Proposed fix (per 4.2's rule — gate the fill on an independent on-target
+  check):** when the mask is clean (not flooding), require a fill/`white-rescue`
+  proposal to sit on the button mask (non-trivial on-mask fill) before it is
+  added; an off-mask "edge-supported" circle on a clean mask is background, so
+  drop it. Optionally add a minority-colour mask variant so the blue button is
+  seen in the first place rather than back-filled. Validate on the fixtures that
+  legitimately use white-rescue (case2, granite_glare, mixed_bluewhite) so the
+  guard doesn't suppress real recoveries — this is the risk that warrants the
+  operator's non-carpet regression pass first.
+
+## 4.4 Decision (2026-07-12): carpets are too niche to over-code — DASH the gates, ship the count companion
+
+Operator verdict after the pipeline run: **carpets are too niche a case to build
+a stack of gates for, and the residual failure is Gemini OVER-COUNTING the busy
+background — an upstream input we do not control.** Compensating for a bad input
+count with downstream heuristics is the §4.2 overfitting trap in another outfit.
+So:
+
+- **Open items #1 (white-rescue on-target gate) and #2 (flag-unreadable) are
+  SHELVED.** They are recorded above for provenance; do not re-propose them for
+  carpets. The carpet phantoms they targeted are already safely routed to *review*
+  (never auto-confirmed into inventory), so the cost of not building them is
+  reviewer noise, not bad data.
+
+- **Kept learning (worth knowing, documenting, logging): Gemini is *also* confused
+  by these backgrounds.** On turf/patterned carpet Gemini's `total_button_count`
+  runs ahead of the buttons it can actually place (image 3: an empty projection
+  grid because Gemini returned nothing snappable). The busy background beats the
+  mask *and* the reader.
+
+**Companion SHIPPED (both repos) — small, broad-value, and a free data engine:**
+
+1. **Guide detection with the conservative count**
+   `expected = min(total_button_count, len(detected_slogans))` (falls back to
+   `total − flagged` only when Gemini localised nothing). Caps Gemini's claimed
+   total at what it actually localised, so an over-count can no longer drive
+   back-fill phantoms — **this one change would have prevented case-7's phantom.**
+   No-op on consistent lots: when `total == localized + flagged` it equals the old
+   `total − flagged`, verified (10→8 both; over-count 15→8 vs old 13). Lives in
+   `main.py` (pipeline handler) in both services.
+
+2. **Log `gemini_count_inconsistent`** in the label record (`label_harvest.py`,
+   byte-shared, computed once so both services agree): True when Gemini's claimed
+   total ≠ localised slogans + flagged partials — i.e. it counted buttons it never
+   placed. Each pipeline lot now emits a free **measured-Gemini-error** row (the
+   detector's own count is the circles list, for a full three-way), feeding
+   Phase 4c and the Stage-B "Gemini as ruler" question with real data instead of
+   guesses. Pipeline stdout also prints the inconsistency inline for live triage.
+
+Net: we stopped trying to out-gate a bad upstream count, took the one conservative
+count change that removes the phantom class for free, and turned the failure into
+a logged measurement that informs whether Gemini can be trusted as the counter at
+all.
+
+## 4.5 The real "navy-8 complete fail" cause: Gemini coordinate SCALE (0-100 vs 0-1000) — FIXED
+
+The navy-8 carpet "complete fail" was **never a mask/detection problem, and not
+an overcount** — it was a coordinate-units bug, proven from three live label
+records + their images:
+
+- **Gemini did not fail navy-8. It aced it.** `button_count: 8`, zero flagged, all
+  8 slogans located and read correctly. But the output was a blind projection grid
+  with **every circle `gemini_backed: false`** — we discarded a perfect reading.
+- **Root cause:** the Gem prompt asks for 0-100 PERCENT coordinates, but Gemini
+  **intermittently answers on its native 0-1000 scale**. Downstream
+  `gemini_geometry.pct_to_px` divides by 100, so a 0-1000 lot lands ~10x off the
+  frame: every point outside the image → `gemini_led_crops` returns empty →
+  `reconcile_with_gemini` matches nothing → blind grid. Overlaying the navy-8
+  coords **÷1000** onto its own detection-space label image lands **dead on all 8
+  buttons** (r≈44, exact). Overlaying ÷100 puts 0/8 on-image.
+- **Confirmed inconsistent across lots** (the key evidence):
+  | lot | coords | scale | result before fix |
+  |---|---|---|---|
+  | navy-8 (IMG-1001) | 224–692 | **0-1000** | ÷100 → off-image → blind grid ✗ |
+  | single button (IMG-1014) | 40, 45 | **0-100** | ÷100 → matched, `gemini_backed` ✓ |
+  | white-carpet ×5 (IMG-0125) | ≤74 | **0-100** | ÷100 → 4/5 matched ✓ |
+
+**Fix (SHIPPED, both repos):** `parse_gemini_response` (byte-shared
+`pipeline_ingest.py`) detects the scale from the response's max coordinate — a
+percent value can't exceed 100, so **max > 100 ⇒ 0-1000 ⇒ rescale ÷10 back to
+percent**; otherwise leave as percent. One normalization point, everything
+downstream unchanged. Verified against all three real records (navy-8 → permille,
+rescaled, lands on buttons; both percent lots untouched). Logs `coord_scale`
+(percent/permille/None) per lot in the label record, so we can measure how often
+Gemini ignores the percent instruction. Unit tests in `test_pipeline_ingest.py`.
+
+**Why this matters beyond carpets:** it is a **general correctness bug**. Any lot
+where Gemini answers in 0-1000 silently lost its entire localization and fell to a
+blind grid — the carpet lots only made it visible because Hough also failed there,
+so there was no second safety net. This is the highest-leverage fix in the whole
+carpet investigation, and it is a units bug, not a CV problem.
+
+**Still separate / still open:** the white-carpet residual (blue minority-colour
+button missed by Hough, a carpet phantom taking its count slot — open item #1) is
+NOT a coordinate issue; it persists after this fix (verified: that lot is percent
+and unchanged). Resolved in 4.6 below.
+
+## 4.6 Two-signal reconcile swap: a Hough phantom was SUPPRESSING a real Gemini button — FIXED
+
+Open item #1 (the white-carpet "missed blue button") was mechanised from a live
+label record: **it was not a separate miss — the carpet phantom and the missing
+blue were the SAME failure.**
+
+- 5 Gemini slogans, all located (percent), **including the blue at (472,172),
+  confidence 0.9**.  5 Hough circles: 4 whites + 1 carpet phantom (124,480,
+  `gemini_backed:false`).  The blue is missing from the output.
+- Cause: `plan_reconciliation` caps recovery at the **count deficit** =
+  `len(gemini) − len(detected)` = 5 − 5 = **0**.  The phantom inflated the
+  detected count, zeroed the deficit, and the genuinely-uncovered blue was never
+  recovered.  **The phantom ate the blue's slot.**  (The deficit cap exists to
+  stop double-counting on the projection path — it wasn't wrong, just blind to a
+  false positive.)
+
+**Fix (SHIPPED):** a **two-signal swap** — the risky action is DROPPING a Hough
+circle, so gate it on two independent signals: the circle is **unbacked**
+(coverage geometry) AND sits **off the button mask** (`fill < 0.50`, photometric).
+Both hold ⇒ it's a phantom; drop it and recover the uncovered Gemini button in its
+place (1 in, 1 out, count invariant, deficit-cap guard preserved).  Kill switch
+`*_RECONCILE_SWAP`; two-phase so the mask is only built when a swap is plausible.
+
+**The measurement that reshaped the design — worth remembering.** The first plan
+gated recovery on the *button's* mask-fill too.  Tested on the REAL pipeline mask,
+it failed: **phantom fill 0.0 (great) but the real blue button fill 0.2** — because
+the mask that MISSED the blue (blue_or_white flooded on the bluish carpet → white-
+only fallback) is the same mask, so it reads ~0 there.  **Mask-fill can flag a
+phantom but cannot vouch for a miss** (the mask is the shared failure point).  So
+recovery is gated on **Gemini's own confidence** (≥0.90/high) instead — consistent
+with the pipeline already trusting Gemini's x/y everywhere.  End-to-end on the real
+image: phantom dropped, blue recovered at its Gemini location with its slogan,
+count still 5, associations aligned.
+
+## 4.7 The recurring error class — audit heuristic (operator's "look for errors like this")
+
+Three of the carpet failures (4.4, 4.5, 4.6) were the **same shape**: **Gemini read
+the lot correctly and the pipeline threw its answer away.**
+
+| § | Gemini got right | how we discarded it |
+|---|---|---|
+| 4.4 | localized N buttons | trusted its inflated *scalar* count over the localized ones → phantom back-fill |
+| 4.5 | 8 buttons, exact x/y | misread its coordinate SCALE (0-1000 as 0-100) → points off-image → blind grid |
+| 4.6 | blue button, x/y + conf | a Hough phantom zeroed the recovery deficit → its localization suppressed |
+
+**Heuristic when a lot fails: FIRST check whether Gemini already got it right.**
+The label record has everything to tell — `gemini.button_count`, `slogans` with
+x/y + confidence, `coord_scale`, `count_inconsistent`.  Overlay the slogans on the
+detection-space image (`pipeline/labels/<job>.jpg`).  If Gemini's reading is good
+but the output is wrong, **the bug is in how we CONSUME Gemini, not in Gemini or
+the detector** — and it is usually cheap and general to fix (a scale divide, a
+count min, a swap), unlike the genuinely hard mask/detection work (Part I).  These
+are the highest-leverage bugs in the pipeline; look for them before touching
+detection.  Signals that a lot is in this class: `detector_used == "grid"` with
+0 `gemini_backed` circles (4.5); `count_inconsistent == true` (4.4); an unbacked
+off-mask circle coexisting with an uncovered high-confidence slogan (4.6).

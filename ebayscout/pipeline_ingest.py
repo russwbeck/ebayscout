@@ -290,6 +290,30 @@ def parse_gemini_response(json_text):
                 "confidence": _parse_confidence(s.get("confidence")),
             })
 
+    # --- coordinate-scale normalization -------------------------------------
+    # The Gem prompt asks for 0-100 PERCENT coordinates, but Gemini INTERMITTENTLY
+    # answers on its native 0-1000 normalized scale instead (seen live: one lot's
+    # buttons at x/y 224-692, another's at 40/45).  Downstream geometry
+    # (gemini_geometry.pct_to_px) divides by 100, so a 0-1000 set lands ~10x off
+    # the frame — every point falls outside, gemini_led_crops/reconcile recover
+    # nothing, and the lot collapses to a blind projection grid (the navy-8
+    # "complete fail"; overlaying the coords ÷1000 lands dead on all 8 buttons).
+    # A percent value can't exceed 100, so if the response's MAX coordinate does,
+    # the set is 0-1000 → rescale it (÷10) back to percent, leaving everything
+    # downstream unchanged.  ``coord_scale`` records which convention the Gem used
+    # so we can measure how often it ignores the percent instruction.
+    coord_scale = None
+    _coords = [v for sl in slogans
+               for v in (sl["x"], sl["y"], sl["edge_x"], sl["edge_y"])
+               if v is not None]
+    if _coords:
+        coord_scale = "permille" if max(_coords) > 100 else "percent"
+        if coord_scale == "permille":
+            for sl in slogans:
+                for _k in ("x", "y", "edge_x", "edge_y", "size"):
+                    if sl[_k] is not None:
+                        sl[_k] = sl[_k] / 10.0
+
     flagged = resp.get("flagged_problem_slogans") or []
     if not isinstance(flagged, list):
         flagged = []
@@ -300,4 +324,5 @@ def parse_gemini_response(json_text):
         "white_background_count": _as_int(resp.get("white_background_count")),
         "detected_slogans": slogans,
         "flagged_problem_slogans": flagged,
+        "coord_scale": coord_scale,
     }

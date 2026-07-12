@@ -83,6 +83,20 @@ def _circle_entry(i, info, source):
     return e
 
 
+def _gemini_count_inconsistent(button_count, slogans, flagged_count):
+    """True when Gemini's claimed total disagrees with what it actually itemised
+    (localized slogans + flagged partials) — the measured-Gemini-overcount signal
+    (Phase 4c / Stage-B "Gemini as ruler").  None when there is no count to check;
+    fail-open (any bad input) also returns None so a logging edge never raises."""
+    if not button_count:
+        return None
+    try:
+        itemised = len(slogans or []) + int(flagged_count or 0)
+        return bool(int(button_count) != itemised)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_label_record(
     *,
     job_id,
@@ -103,6 +117,7 @@ def build_label_record(
     gemini_button_count=None,
     gemini_flagged_count=None,
     gemini_slogans=None,
+    gemini_coord_scale=None,
     unmatched_crop_indices=None,
 ):
     """Build one lot's label record (pure dict — caller serializes/uploads).
@@ -155,6 +170,21 @@ def build_label_record(
             "button_count": gemini_button_count,
             "flagged_count": gemini_flagged_count,
             "slogans": gemini_slogans or [],
+            # Measured-Gemini-error signal (Phase 4c / Stage-B "Gemini as ruler"):
+            # True when Gemini's claimed total disagrees with what it actually
+            # itemised (localized slogans + flagged partials) — i.e. it counted
+            # buttons it never placed, the busy-background overcount behind the
+            # turf/carpet phantoms.  None when there is no count to check.  Derived
+            # here so both services log it identically; the detector's independent
+            # count is the circles list, for a full three-way if wanted.
+            "count_inconsistent": _gemini_count_inconsistent(
+                gemini_button_count, gemini_slogans, gemini_flagged_count),
+            # Which coordinate convention the Gem used this lot: "percent" (0-100,
+            # as prompted), "permille" (0-1000 native scale — rescaled to percent
+            # by the parser), or None. Measures how often Gemini ignores the
+            # percent instruction; a "permille" lot pre-fix silently lost all its
+            # localization to the off-image divide.
+            "coord_scale": gemini_coord_scale,
         },
         "circles": circles,
         # Confirmation outcomes intentionally NOT duplicated here — join

@@ -746,9 +746,25 @@ def process_pipeline_lot(job_id: str) -> None:
     # works, classification is autoconfirm-or-ignore (no human prompt).
     gemini_ok = bool(gem_slogans) or gem_count > 0
 
-    # 3) Hough detection, INDEPENDENT of the JSON (radius from full-button count)
-    full_count = (gem_count - len(flagged)) if gem_count > 0 else 0
+    # 3) Hough detection, INDEPENDENT of the JSON.  Guide it with the CONSERVATIVE
+    # count: cap Gemini's claimed total at the number of slogans it actually
+    # LOCALIZED.  A total above the localized slogans is Gemini overcounting a busy
+    # background (turf/carpet); back-filling detection to that inflated total
+    # invents phantoms (carpet case 7).  min() prevents it; when Gemini is
+    # internally consistent (total == localized + flagged partials) this equals the
+    # old total-minus-flagged count, so clean lots are unchanged.  Falls back to
+    # total-minus-flagged only when Gemini gave a count but localized nothing.
+    if gem_count > 0:
+        full_count = (min(gem_count, len(gem_slogans)) if gem_slogans
+                      else max(0, gem_count - len(flagged)))
+    else:
+        full_count = 0
     expected   = full_count if full_count > 0 else None
+    _gem_inconsistent = bool(gem_count and gem_count != len(gem_slogans) + len(flagged))
+    if expected is not None and _gem_inconsistent:
+        print(f">>> PIPELINE: guided count {expected} = min(Gemini total {gem_count}, "
+              f"localized {len(gem_slogans)}); flagged={len(flagged)} — GEMINI COUNT "
+              f"INCONSISTENT (claimed > itemized: overcount).", flush=True)
     # Shadow unguided pass (log_analysis.md gap 1): the TRUE no-input count,
     # logged on every pipeline lot so unguided accuracy is measurable against
     # Gemini's count — the rollout gate for dropping guidance. ~15 extra Hough
@@ -793,6 +809,13 @@ def process_pipeline_lot(job_id: str) -> None:
             _lh_led = True
     rec_crops, rec_info, crop_to_slogan, _rt = _dp.reconcile_with_gemini(
         circle_info, gem_slogans, _det_img)
+    # Fill-gated swap: drop the phantom crops reconcile traded for recovered Gemini
+    # buttons BEFORE appending, so the final list matches the (kept detected +
+    # recovered) order reconcile built crop_to_slogan against.
+    _dropped = set(_rt.get("dropped_crop_indices") or [])
+    if _dropped:
+        crops = [c for i, c in enumerate(crops) if i not in _dropped]
+        circle_info = [c for i, c in enumerate(circle_info) if i not in _dropped]
     if rec_crops:
         crops = list(crops) + list(rec_crops)
         circle_info = list(circle_info) + list(rec_info)
@@ -831,6 +854,7 @@ def process_pipeline_lot(job_id: str) -> None:
                 gemini_button_count=gem_count,
                 gemini_flagged_count=len(flagged),
                 gemini_slogans=gem_slogans,
+                gemini_coord_scale=gemini.get("coord_scale"),
                 # unmatched_crop_indices indexes into circle_info AT RECONCILE
                 # TIME (before rec_info was appended) — the same list order
                 # preserved above, so per-circle indices still line up here.
@@ -1018,6 +1042,8 @@ def process_pipeline_lot(job_id: str) -> None:
                 reconcile_misses=(_rt or {}).get("misses"),
                 gem_unmatched=(_rt or {}).get("n_unmatched_crops"),
                 gem_unmatched_indices=(_rt or {}).get("unmatched_crop_indices"),
+                n_swapped=(_rt or {}).get("n_swapped"),
+                reconcile_swaps=(_rt or {}).get("swaps"),
             )
             _records = [
                 mlog.build_match_record(
