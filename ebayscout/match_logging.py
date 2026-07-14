@@ -276,6 +276,9 @@ def build_detection_diag(
     #                              (two-signal reconcile swap: unbacked AND off-mask)
     #   reconcile_swaps      list  per-swap [{slogan, confidence, phantom_x/y/r/fill}]
     #                              — a labeled pool of confirmed Hough phantoms
+    #   gemini_anchored      dict  A/B shadow "anchor crops on Gemini x/y vs Hough?":
+    #                              {n_gemini, n_agree, snap_px_median/max,
+    #                               snap_frac_median, n_gemini_only, n_hough_only}
     gemini_button_count=None,
     n_recovered=None,
     reconcile_misses=None,
@@ -283,6 +286,7 @@ def build_detection_diag(
     gem_unmatched_indices=None,
     n_swapped=None,
     reconcile_swaps=None,
+    gemini_anchored=None,
 ):
     """Detection diagnostics block.
 
@@ -408,6 +412,7 @@ def build_detection_diag(
         "gem_unmatched_indices": gem_unmatched_indices or None,
         "n_swapped": _i(n_swapped),
         "reconcile_swaps": reconcile_swaps or None,
+        "gemini_anchored": gemini_anchored or None,
     }
 
 
@@ -600,6 +605,9 @@ MATCH_HEADER = [
     # --- appended: reconcile swap — Hough phantoms dropped for a real Gemini miss
     # (two-signal: unbacked AND off-mask). The swaps_json is a labeled phantom pool ---
     "det_n_swapped", "det_reconcile_swaps_json",
+    # --- appended: Gemini-anchored A/B shadow (anchor crops on Gemini x/y vs Hough)
+    # — agreement + snap distance + gemini-only/hough-only counts, one JSON blob ---
+    "det_gemini_anchored_json",
 ]
 
 CONFIRM_HEADER = [
@@ -707,6 +715,8 @@ def flatten_match_record(rec):
         # --- appended: reconcile swap (Hough phantom pool) ---
         _cell(d.get("n_swapped")),
         json.dumps(d.get("reconcile_swaps") or [], default=str),
+        # --- appended: Gemini-anchored A/B shadow summary ---
+        json.dumps(d.get("gemini_anchored") or {}, default=str),
     ]
 
 

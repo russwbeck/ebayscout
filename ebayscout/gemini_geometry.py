@@ -290,6 +290,27 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
             "box": box,
         })
 
+    # --- Gemini-anchored A/B shadow (measurement only; changes no output) -----
+    # The reconcile match already IS the comparison "would anchoring crops on
+    # Gemini's x/y beat Hough?": every COVERED button is one both agree on, and the
+    # match distance is how far Gemini's centre is from Hough's — the precision
+    # signal that decides whether Gemini could anchor the crop.  n_gemini_only =
+    # buttons Hough missed (anchoring would ADD); n_hough_only = Hough circles no
+    # Gemini point backs (anchoring would DROP — the phantoms).  Join per-lot to
+    # confirm_log over time to learn when to default to Gemini x/y (tested_hyp §4.8).
+    _snap = sorted(c["dist"] for c in covered)
+    _snap_med = _snap[len(_snap) // 2] if _snap else None
+    gemini_anchored = {
+        "n_gemini": len(gemini_slogans),
+        "n_agree": len(covered),
+        "snap_px_median": _snap_med,
+        "snap_px_max": (_snap[-1] if _snap else None),
+        "snap_frac_median": (round(_snap_med / median_r, 3)
+                             if (_snap_med is not None and median_r) else None),
+        "n_gemini_only": len(unmatched_g_local),
+        "n_hough_only": (len(unmatched_crops) if unmatched_crops is not None else None),
+    }
+
     telemetry = {
         "gemini_count": len(gemini_slogans),
         "hough_count": len(detected_centers),
@@ -298,6 +319,7 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         "n_recovered": len(misses),
         "n_swapped": len(dropped_crop_indices),
         "swaps": swaps,
+        "gemini_anchored": gemini_anchored,
         "n_unmatched_crops": len(unmatched_crops) if unmatched_crops is not None else None,
         "median_r": round(median_r, 2) if median_r else None,
         "covered_distances": [c["dist"] for c in covered],

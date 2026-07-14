@@ -595,3 +595,60 @@ are the highest-leverage bugs in the pipeline; look for them before touching
 detection.  Signals that a lot is in this class: `detector_used == "grid"` with
 0 `gemini_backed` circles (4.5); `count_inconsistent == true` (4.4); an unbacked
 off-mask circle coexisting with an uncovered high-confidence slogan (4.6).
+
+## 4.8 HYPOTHESIS (under test): flip to Gemini-anchored, Hough-refined layout
+
+**Claim.** The architecture is backwards. Hough is the *primary* detector and
+Gemini's x/y only a fallback (`gemini_led_crops` on grid-collapse) + a patch
+(`reconcile`/swap). But every carpet/turf/low-contrast failure this session was
+**Hough garbage + Gemini right**, and we keep re-deriving "trust Gemini's x/y" one
+patch at a time. Gemini supplies a position for *every* button, so the natural
+design is **Gemini-anchored, Hough-refined**: place one crop per Gemini button at
+its x/y; snap to a nearby Hough circle for the exact centre/radius when one exists;
+else use Gemini's position + edge radius. That makes phantoms **structurally
+impossible** (you never crop where Gemini sees no button) while keeping Hough's
+precision where it helps.
+
+**Why it's a hypothesis, not a patch.** It makes us fully dependent on Gemini's
+*count* (over/undercount propagates directly — the new prompt's anti-hallucination
+rules, §4.4 companion, are the precondition), and the anchored crop's quality for
+CLIP is unproven. So: **measure before flipping.**
+
+**The shadow (shipped 2026-07-12, measurement-only, zero extra cost).** The
+reconcile match already *is* the A/B comparison — covered buttons are ones Hough &
+Gemini agree on, the match distance is how far Gemini's centre is from Hough's,
+misses are Gemini-only, unmatched crops are Hough-only. `plan_reconciliation` now
+emits a per-lot `gemini_anchored` summary, logged to the `det_gemini_anchored_json`
+Sheet column:
+
+| field | reads as |
+|---|---|
+| `snap_px_median` / `snap_frac_median` | how tight Gemini's centre is vs Hough's (as px and as a fraction of a radius). **Small ⇒ Gemini can anchor the crop.** |
+| `n_agree` | buttons both found (the snap sample) |
+| `n_gemini_only` | Hough missed — anchoring would **ADD** these (join to confirms: are they real?) |
+| `n_hough_only` | Hough circles no Gemini backs — anchoring would **DROP** these (the phantoms) |
+
+**First real datapoint** (example-3 white-carpet 5-lot): `snap_frac_median 0.072`
+(Gemini's centres ~6px from Hough's, 7% of a radius), `n_gemini_only 1` (the blue
+Hough missed), `n_hough_only 1` (the carpet phantom). i.e. on this lot anchoring
+would add the blue, drop the phantom, and place the 4 agreed buttons essentially
+where Hough did. Promising, but n=1.
+
+**Measure "how often is Gemini's x/y correct?" against the FINAL decision.** Each
+shipped crop carries its source and its associated Gemini slogan (`crop_to_slogan`),
+and `confirm_log` carries the outcome per crop, joined on `job_id`+`crop_num`. So
+over a crawl: of Gemini's positions, how many map to a crop that *confirmed* to a
+real button (correct) vs none (Gemini hallucinated) vs a real button with no Gemini
+position (Gemini missed). That precision/recall of Gemini's x/y against confirmed
+truth is the go/no-go for the flip.
+
+**Signals to watch for defaulting to Gemini x/y (the "over time" goal).** low
+`snap_frac_median` (tight positioning); high `n_hough_only` correlated with
+`det_mask_coverage` high / turf-carpet backgrounds (Hough phantoms cluster there);
+`n_gemini_only` buttons that consistently confirm (Hough's misses were real). When
+those hold on a background class, that class should **default to Gemini x/y** — the
+first concrete step toward the flip, ahead of a full switch.
+
+**Next step (not yet built):** once the shadow shows the agreement holds, add a
+`GEMINI_ANCHORED` flag that actually *ships* the anchored layout for an A/B crawl,
+so the confirm-rate comparison is downstream-real, not just positional.
