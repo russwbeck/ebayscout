@@ -246,19 +246,28 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
             c = gemini_slogans[gi].get("confidence")
             return c if isinstance(c, (int, float)) else 0.0
 
-        _swap_gis = [
+        _recoverable = [
             gi for _d, gi in uncovered                  # already farthest-first
             if gi not in recover_gis and _conf(gi) >= SWAP_MIN_CONFIDENCE
         ]
-        for gi, ci in zip(_swap_gis, _phantoms):
-            recover_gis.append(gi)
+        # DROP every off-mask phantom (unbacked AND off the button mask = a Hough
+        # false-positive, whether or not a Gemini button can replace it: Gemini
+        # located all its buttons, so an unbacked off-mask circle is not one it
+        # merely missed).  PAIR each with an uncovered high-confidence miss where
+        # one exists (a true swap, count invariant); UNPAIRED phantoms are dropped
+        # outright — they only inflated the count (e.g. a lone real button + one
+        # carpet phantom → drop the phantom, keep the 1).  Every drop is a labeled
+        # phantom example; `recovered` flags whether a button took its place.
+        for _k, ci in enumerate(_phantoms):
+            gi = _recoverable[_k] if _k < len(_recoverable) else None
+            if gi is not None:
+                recover_gis.append(gi)
             dropped_crop_indices.append(ci)
-            # One labeled Hough-phantom example per swap: the dropped circle's
-            # position/size/fill (what fooled Hough) + the button it stood in for.
             _pcx, _pcy = detected_centers[ci]
             swaps.append({
-                "slogan": gemini_slogans[gi].get("slogan"),
-                "confidence": gemini_slogans[gi].get("confidence"),
+                "slogan": (gemini_slogans[gi].get("slogan") if gi is not None else None),
+                "confidence": (gemini_slogans[gi].get("confidence") if gi is not None else None),
+                "recovered": gi is not None,
                 "phantom_x": int(round(_pcx)),
                 "phantom_y": int(round(_pcy)),
                 "phantom_r": int(round(detected_radii[ci])) if detected_radii[ci] else None,

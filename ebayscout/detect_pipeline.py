@@ -2656,15 +2656,18 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
         cover_factor=cover_factor, median_r=median_r,
     )
 
-    # Two-signal swap: it can only help when Hough has unmatched phantom-candidate
-    # circles AND uncovered Gemini buttons the deficit cap left unrecovered — only
-    # then pay for the button-mask + off-mask fill probe (the second signal beside
-    # coverage geometry, gating the risky DROP) and re-plan.  Kill switch:
-    # reconcile-swap flag.  On a flooded mask the phantom scores high fill, so the
-    # off-mask test fails and no swap fires (fill only acts where it is meaningful).
+    # Two-signal swap/drop: fire whenever Hough has unmatched phantom-candidate
+    # circles — pay for the button-mask + off-mask fill probe (the second signal
+    # beside coverage geometry, gating the risky DROP) and re-plan.  An unbacked
+    # off-mask circle is a Hough false-positive whether or not an uncovered Gemini
+    # button can take its place, so DON'T gate on n_uncovered > deficit: a lone
+    # real button + one carpet phantom has no button to recover yet must still drop
+    # the phantom.  Kill switch: reconcile-swap flag.  On a flooded mask the phantom
+    # scores high fill, so the off-mask test fails and no drop fires (fill only acts
+    # where it is meaningful).
     _pt = plan["telemetry"]
     if (_reconcile_swap_enabled() and detected_centers and gemini_slogans
-            and _pt.get("n_unmatched_crops") and _pt["n_uncovered"] > _pt["deficit"]):
+            and _pt.get("n_unmatched_crops")):
         try:
             _mask = _prepare_detection_image(image_bgr)["mask"]
             _mr = median_r or ggeo.median_radius(detected_radii) or max(1.0, 0.04 * min(h, w))

@@ -573,6 +573,38 @@ with the pipeline already trusting Gemini's x/y everywhere.  End-to-end on the r
 image: phantom dropped, blue recovered at its Gemini location with its slogan,
 count still 5, associations aligned.
 
+**Generalization (SHIPPED) — the drop must not require a button to recover.** The
+first 4.6 fire condition only DROPPED a phantom when it could be PAIRED with an
+uncovered high-confidence miss (gate `n_uncovered > deficit`), and the swap loop
+`zip`'d phantoms to recoverable buttons. Three live label records showed that
+misses the common case:
+
+| lot (job) | scene | phantom(s) | uncovered button to recover? |
+|---|---|---|---|
+| c0f97de7 | 1 real button on carpet | 1 (huge r=116 carpet circle) | **none** — the 1 button is covered |
+| 84e75a23 | 31-button corkboard | 2 on bare wood (ann. "24","27") | none spare |
+| db3afe3c | 15-button board | 1 on bare wood (ann. "12") | none spare |
+
+In every case `deficit = 0` and the phantom is COVERED-count-neutral, so
+`n_uncovered > deficit` was false and the probe never ran — the phantom shipped
+as an extra button. **An unbacked off-mask circle is a Hough false-positive
+whether or not a Gemini button can take its place** (Gemini located all its
+buttons; an unbacked off-mask circle is not one it merely missed). So: (1) the
+detect-side gate now fires on `n_unmatched_crops` alone; (2) `plan_reconciliation`
+DROPS every off-mask phantom, PAIRS each with an uncovered high-conf miss where one
+exists (true swap, count invariant), and drops UNPAIRED phantoms outright — they
+only inflated the count. Each drop logs `recovered` (bool) so paired vs unpaired
+drops are distinguishable in `det_reconcile_swaps_json`.
+
+**Same root cause fixes the "misparsed slogan" symptom.** The operator also saw
+slogans mislabeled. It was not a JSON parse bug (`json.loads` handles embedded
+apostrophes like `PSU Dots the 'I' In Win`; `parse_gemini_response` drops only
+non-dict/empty entries). A surviving phantom in the FINAL crop set consumes an
+`associate_slogans` nearest-neighbour slot, stealing a real button's slogan and
+shifting the labels after it. Dropping the phantom BEFORE association (reconcile
+removes `dropped_crop_indices` from `final_centers`) fixes the count AND the
+labeling in one move.
+
 ## 4.7 The recurring error class — audit heuristic (operator's "look for errors like this")
 
 Three of the carpet failures (4.4, 4.5, 4.6) were the **same shape**: **Gemini read
