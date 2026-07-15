@@ -727,3 +727,54 @@ coverage.*
   Replay check: the exact shipped functions on Logger_14 = 327 + 91
   fires, 0 wrong in 731. Validate the shadow lines on the next batch,
   then flip.
+
+---
+
+# Part VI — the text-blocked pun slogans (Logger_14 layer 2, 2026-07-15)
+
+*Operator question: why do "I-owa Doubt It" / "I-O-Wouldn't" / "I O Won't" /
+"I-Oh-Was" / "Stuck In a Rut" never rank top-3 even when Gemini reads them
+correctly?  Full working analysis: `buttonmatcher/log_analysis.md` (Logger_14
+layer 2).  Method: leaderboard replay against operator truth + code trace +
+fixes verified by replaying the real shipped functions over the batch.*
+
+**Confirmed**
+
+- **CLIP text-side deficit is real and phrase-level.** These puns' own-crop
+  text_score reads 0.35–0.44 vs the batch own-crop truth median 0.671
+  (n=698) — bottom ~5% — while their image/ref side is fine ("I-O-Wasn't":
+  best-in-board image 0.853 + ref_sim 0.853, ranked 10).  Mechanism: one raw
+  punctuated string per slogan into CLIP, cosine ~0.22–0.24, squashed by the
+  `normalize_slogan` [0.15,0.35] window.
+- **Year-folded leaderboards create within-year shadowing.** One row per
+  year (best slogan per year) means "I-owa Doubt It" 1995 is eclipsed by
+  "Michigan Impossible" 1995 at EVERY depth — no top-N widening alone can
+  surface it.  The agreement pool additionally sat at the trimmed top-3 in
+  buttonmatcher only (ebayscout has always passed 10).
+- **The typed rescue was tokenizer-broken for apostrophe puns.**
+  "wasn't"→wasn+t meant typing "I o wasnt" scored 0.067; hyphen-only
+  "I oh was" scored 1.148.
+- **Fixes verified by replay:** deep agreement pool (top-10) + DB-direct
+  tier (Gemini read is a known DB slogan, conf ≥0.85) + apostrophe-safe
+  tokenize → **10/10 Logger_14 family rows resolve `gemini_auto` with
+  correct slogan AND year** (7 required typing before).  Kill switch
+  `BUTTONMATCHER_GEMINI_DEEP_AGREE=0`; `matched_rank` logs the stratum.
+
+**Refuted**
+
+- "STOPWORDS/rarity penalize all-stopword puns" (i/oh/was aren't stopwords;
+  rarity only adds, capped 0.04).
+- "Twin registry or key normalization shadows the family" (distinct keys).
+- "Reference coverage gap" (ref_sim 0.64–0.85 where charted).
+- "A deeper top-N alone fixes it" (within-year shadowing survives any N —
+  the DB-direct tier was required; replay proved 3/10 → 10/10).
+
+**Newly instrumented / pending validation**
+
+- Deep-pool + DB-direct precision per `matched_rank` stratum accrues in
+  confirm_log from the next batch; any wrong deep auto → flag off.
+- `BUTTONMATCHER_TEXT_VARIANTS` (default OFF): punctuation-normalized CLIP
+  text variants, max-per-year additive.  Enable after A/B run clean; judge
+  on family own-crop text_score (~0.4 → 0.55+ expected) and no new wrong
+  #1s.  ("Stuck In a Rut" gets no variant — unpunctuated; its rescue is the
+  agreement tiers.)

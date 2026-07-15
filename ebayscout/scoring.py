@@ -22,8 +22,14 @@ word_freq: Counter = Counter()
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercase word tokens — identical to buttonmatcher/main.py:183-184."""
-    return re.findall(r"\b[a-z0-9]+\b", text.lower())
+    """Lowercase word tokens — identical to buttonmatcher/main.py tokenize().
+
+    Apostrophes (straight AND typographic) are collapsed BEFORE word
+    extraction so contraction puns keep their distinctive token ("I-O-Wasn't"
+    → [i, o, wasnt], matching what users type — Logger_14 diagnosis; the old
+    split [i, o, wasn, t] made typed searches score ~0.067)."""
+    return re.findall(r"\b[a-z0-9]+\b",
+                      text.lower().replace("'", "").replace("’", ""))
 
 
 # Generic English stop words only — domain words like 'pitt', 'lion', 'state'
