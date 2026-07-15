@@ -162,7 +162,76 @@ def _guided_mask_floods(expected, mask_fraction, enabled):
                 and mask_fraction > DEFICIT_FILL_MAX_MASK_FRACTION)
 
 
+# A flooded mask alone cannot tell "background leaked in" (turf/carpet — the
+# gate's real target) from "big buttons legitimately fill the frame" (a dense
+# 11-lot at r~85 on 644x800 covers ~50% by itself; its mask read 58% and the
+# flood gate threw away a perfect 11/11 Hough set for a degenerate 11x1
+# projection grid — 2026-07-15, the dense-Mellon lot).  The independent
+# on-target check (tested_hypothesis.md §4.2) is whether the accepted circles
+# EXPLAIN the mask: dense lot = circle-union covers ~all mask foreground
+# (measured 0.834 on the failing lot); turf/carpet = the flooded mask vastly
+# exceeds the circles (navy-carpet ~0.1-0.3 by area).  Floor 0.60 clears both
+# with wide margins.
+FLOOD_EXPLAINED_MIN = 0.60
+
+
+def _flood_refusal_decision(expected, mask_fraction, explained, enabled):
+    """Decision at the flooded-mask refusal fork of the guided acceptance.
+
+    Returns:
+      "refuse"       — mask floods AND the accepted circles do not explain it
+                       (turf/carpet: background hits) → route to projection +
+                       Gemini reconcile, as shipped 2026-07-12.
+      "accept_dense" — mask floods but the circle-union covers >=
+                       FLOOD_EXPLAINED_MIN of the mask foreground: the "flood"
+                       IS the buttons (dense lot of large buttons) — keep the
+                       guided circles.
+      "n/a"          — mask does not flood (or gate disabled / small lot);
+                       the fork is not taken.
+
+    ``explained`` None means the check could not run — treat as 0.0 so the
+    behaviour degrades to the shipped refusal, never to a silent accept.
+    Pure (no cv2) so the margins are unit-testable."""
+    if not _guided_mask_floods(expected, mask_fraction, enabled):
+        return "n/a"
+    if (explained or 0.0) >= FLOOD_EXPLAINED_MIN:
+        return "accept_dense"
+    return "refuse"
+
+
+def _circles_explain_mask(mask, circles):
+    """Fraction of the mask's foreground covered by the union of the accepted
+    circle disks — the flood gate's independent on-target check.  0.0 when
+    there is nothing to measure (empty mask / no circles)."""
+    if mask is None or not len(circles):
+        return 0.0
+    fg = cv2.countNonZero(mask)
+    if not fg:
+        return 0.0
+    union = np.zeros(mask.shape[:2], dtype=np.uint8)
+    for c in circles:
+        try:
+            x, y, r = int(c[0]), int(c[1]), int(c[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        cv2.circle(union, (x, y), max(r, 1), 255, -1)
+    covered = cv2.countNonZero(cv2.bitwise_and(mask, union))
+    return covered / float(fg)
+
+
 # --- SHARED IMAGE PREP --------------------------------------------------------
+
+# Minimum frame coverage the kept holes must reach before the dark-on-light
+# inversion may replace the mask.  Real buttons-as-holes are button-sized: the
+# dark_on_white_13 fixture measures 0.157.  Slogan-TEXT blocks inside
+# foreground buttons — multi-line text morph-closes into roughly-square blobs
+# that pass the circularity filter — measure far smaller: the blue-on-white
+# 6-lot that lost a confident 6-button mask (r_est=107 conf=0.98) to fifteen
+# r~21 text holes read 0.043 (2026-07-15).  0.08 is the same 8% plausibility
+# floor the mask variants already use, and it clears both cases with ~2x
+# margin.  A sub-floor holes mask means "leave the mask alone", never invert.
+HOLE_INVERT_MIN_COVERAGE = 0.08
+
 
 def _buttons_as_holes(mask, h, w):
     """Detect the "dark buttons on a light background" inversion and return the
@@ -401,7 +470,7 @@ def _prepare_detection_image(image_bgr, diag_out=None):
     # nothing), so ordinary blue/white/navy lots are untouched.
     if _hole_invert_enabled():
         _holes, _n_holes, _hole_cov = _buttons_as_holes(mask, h, w)
-        if _n_holes >= 4 and 0.03 <= _hole_cov <= 0.75:
+        if _n_holes >= 4 and HOLE_INVERT_MIN_COVERAGE <= _hole_cov <= 0.75:
             print(f">>> DETECT: dark-on-light inversion — {_n_holes} circular "
                   f"button-holes (cov={_hole_cov:.2f}) → mask inverted to holes.",
                   flush=True)
@@ -2176,14 +2245,37 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
         # Shares DEFICIT_FILL_MAX_MASK_FRACTION and the deficit-fill kill switch.
         if (_guided_mask_floods(expected, _mask_fraction, _deficit_fill_enabled())
                 and (_enough or _small_complete)):
-            print(f">>> DETECT: guided acceptance REFUSED — mask floods "
-                  f"{_mask_fraction:.0%} of frame (> {DEFICIT_FILL_MAX_MASK_FRACTION:.0%}) "
-                  f"on a {expected}-button lot; guided circles are background hits, "
-                  f"routing to projection.", flush=True)
+            # Independent on-target check before refusing (§4.2): a dense lot
+            # of large buttons legitimately reads as a "flooded" mask — the
+            # difference from turf/carpet is that its accepted circles EXPLAIN
+            # the mask foreground.  A failed/erroring check degrades to the
+            # shipped refusal (never to a silent accept).
+            _explained = 0.0
+            try:
+                _explained = _circles_explain_mask(mask, cleaned)
+            except Exception as _ex_err:
+                print(f">>> DETECT: flood explained-check failed "
+                      f"({_ex_err}) — refusing as before.", flush=True)
+            _flood_decision = _flood_refusal_decision(
+                expected, _mask_fraction, _explained, _deficit_fill_enabled())
             if diag_out is not None:
-                diag_out["guided_refused_mask_fraction"] = round(_mask_fraction, 3)
-            _enough = False
-            _small_complete = False
+                diag_out["guided_flood_explained"] = round(_explained, 3)
+            if _flood_decision == "accept_dense":
+                print(f">>> DETECT: flooded mask ({_mask_fraction:.0%}) is "
+                      f"EXPLAINED {_explained:.0%} by the {len(cleaned)} accepted "
+                      f"circles (>= {FLOOD_EXPLAINED_MIN:.0%}) — dense lot, "
+                      f"keeping guided circles.", flush=True)
+            else:
+                print(f">>> DETECT: guided acceptance REFUSED — mask floods "
+                      f"{_mask_fraction:.0%} of frame (> {DEFICIT_FILL_MAX_MASK_FRACTION:.0%}) "
+                      f"on a {expected}-button lot and circles explain only "
+                      f"{_explained:.0%} (< {FLOOD_EXPLAINED_MIN:.0%}); guided "
+                      f"circles are background hits, routing to projection.",
+                      flush=True)
+                if diag_out is not None:
+                    diag_out["guided_refused_mask_fraction"] = round(_mask_fraction, 3)
+                _enough = False
+                _small_complete = False
 
         if _enough or _small_complete:
             # row_tol: grid-based when rows known, else radius-based

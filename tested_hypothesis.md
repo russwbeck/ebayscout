@@ -684,3 +684,186 @@ first concrete step toward the flip, ahead of a full switch.
 **Next step (not yet built):** once the shadow shows the agreement holds, add a
 `GEMINI_ANCHORED` flag that actually *ships* the anchored layout for an A/B crawl,
 so the confirm-rate comparison is downstream-real, not just positional.
+
+## 4.9 The flood gate overfit its own calibration set: dense lots ARE a flooded mask — FIXED (2026-07-15)
+
+The §4.2 lesson applied to the §4.1/4.3 guard itself.  A clean dense lot (11
+large Mellon-1984 buttons on tan cardboard, operator-reported) came back as
+eleven full-width projection strips: Hough had found a PERFECT 11/11 set
+(radius std 2.6, zero rejections, every centre on a button — verified by
+running the real detector in-session), and `_guided_mask_floods` REFUSED it
+because the mask read 58% > 50%.  But 11 buttons at r≈85 on a 644×800 frame
+cover ~50% of it *by themselves* — the "flood" was the buttons.  The gate was
+calibrated on turf 68% vs case1's 30% with nothing dense in between (§4.2:
+six examples is not a distribution — this time the GUARD was the overfit
+small-N feature).
+
+**Fix (SHIPPED, both repos, same §4.2 shape — an independent on-target check
+before the destructive action):** before refusing an accepted guided set, ask
+whether the circles EXPLAIN the mask: `_circles_explain_mask` = fraction of
+mask foreground covered by the accepted circle disks.  Dense-Mellon measures
+**0.834**; turf/carpet by area arithmetic sits ~0.1–0.3 (a flooded background
+vastly exceeds its circles).  `FLOOD_EXPLAINED_MIN = 0.60` splits them with
+wide margins; `_flood_refusal_decision` is pure and unit-tested, a failed or
+erroring check degrades to the shipped refusal (never a silent accept), and
+`guided_flood_explained` is logged per lot.  Scoped to the whole-acceptance
+refusal fork only — the deficit-fill branch (starved Hough, §4.1 turf) is
+unchanged, because an incomplete circle set under-explains by construction.
+Verified: dense-Mellon restored 11×1-grid → hough 4×3 11/11 (buttonmatcher
+AND ebayscout parity on identical bytes); all 15 prior fixtures + gate tests
+unchanged (35 pass); the lot is committed as `dense_mellon_11.png` with a
+guided regression test locking hough-path + all 11 centres.
+
+
+## 4.10 The hole-inversion ate a good mask: slogan-text blocks read as "button holes" — FIXED (2026-07-15)
+
+Same class as 4.9 — a rescue path replacing a good result — reported as a
+"confusing" 6-lot failure: 6 blue Citizens buttons on white speckled paint
+came back as 4 offset projection rectangles with two buttons uncropped.  Run
+in-session: the `blue_only` mask was GOOD (mask-scale prior r_est=107,
+conf=0.98) — but the **dark-on-light hole-inversion** replaced it.  The
+multi-line slogan-text blocks inside each button are enclosed holes, and
+after the morphology close they pass the circularity/area filters: 15
+"circular button-holes", cov 0.043, r~21.  Hough on the text-speck mask found
+1 circle, the fill filter (against the same broken mask) killed it → 2×3
+projection with 2 cells dropped as "background-only" → the 4 offset rects.
+The inversion's guard premise ("holes cannot occur when buttons ARE the
+foreground") was refuted — text holes are exactly that; the existing
+synthetic test only covered THIN specks, which the filters do drop (§4.2:
+synthetics are small-N too).
+
+**Fix (SHIPPED, both repos):** `HOLE_INVERT_MIN_COVERAGE = 0.08` — the kept
+holes must cover ≥ 8% of the frame before the inversion may replace the mask
+(the same 8% plausibility floor the mask variants already use).  Measured:
+real buttons-as-holes (dark_on_white_13) = **0.157**; the text-hole failure =
+**0.043** — ~2× margin both ways.  A sub-floor holes mask now means "leave
+the mask alone".  Verified: the 6-lot restored 4-offset-rects → hough 2×3
+6/6 (and unguided healed too: garbage → 6 @ `scale_first`), buttonmatcher +
+ebayscout parity on identical bytes; dark_on_white_13 still inverts; full
+battery 41 green.  Fixture `blue_on_white_text_6.jpg` + a real-shape
+text-block unit test lock it.
+
+**Pattern note (4.9 + 4.10, one session):** both failures were *rescue paths
+firing on lots that did not need rescuing* — the flood refusal discarding a
+perfect Hough set, the hole-inversion discarding a confident mask.  When a
+lot fails confusingly, check the §4.7 heuristic first (did we discard a good
+Gemini read?), then this one: **did a rescue/fallback OVERRIDE a good primary
+result?**  The telemetry tells: a confident upstream signal (`mask_radius_
+conf` 0.98, `det_raw_hough` == expected with tight radius std) followed by
+`detector_used=grid`/`projection` or a `+holeinvert`/refusal tag.
+
+
+---
+
+# Part V — slogan auto-confirm signals (Logger_14 dual-run, 2026-07-15)
+
+*Data: Logger_14 — the operator's dual-run batch (same buttons through the
+Gemini pipeline and `/sort`), 731 gradeable buttons / 69 wrong-#1 rows. Full
+working analysis: `buttonmatcher/log_analysis.md` (Logger_14 layer). Method:
+replay every confirmed button's match-time leaderboards against
+operator-reviewed truth; price every candidate rule by wrong autos, not
+coverage.*
+
+**Confirmed**
+
+- **gap_only (raw #1→#2 gap ≥ 0.15) — third independent validation:**
+  222/222 correct, **452/452 cumulative** across Logger_11/12/14. Flipping
+  `BUTTONMATCHER_GAP_ONLY_LIVE=1` is justified; raises `/sort` auto coverage
+  of the Gemini-certified set from 23.3% → 43.8% with zero code.
+- **The raw gap is edition-blinded; the slogan-level gap is the fix.** Gap to
+  the first candidate with a *different normalized slogan* (edition siblings
+  crowd the top and crush the raw gap without contesting the slogan).
+  `slogan_gap ≥ 0.12`: 327 fires, 0 wrong (worst wrong row = 0.0956, so
+  0.12 keeps a real cushion; 0.10 cleared this batch by only 0.004 — hold it
+  for a second clean batch). Cumulative union at 0.12 → 52.6% coverage.
+- **ref_sim separates right from wrong at entry level — but only as a second
+  signal** (the VISION §5 calibration question, first real read since the
+  #116/#50 fix). Two-signal combo `slogan_gap ≥ 0.05 AND ref_sim ≥ 0.90`:
+  +42 confirms, 0 wrong, and the arms veto each other's failure modes —
+  wrong rows passing the gap arm read ref_sim ≤ 0.802; wrong rows passing
+  the ref arm are visual near-twins (≤ 0.888) with slogan_gap ≤ 0.0093.
+  The full ladder (0.85-score ∪ gap_only ∪ slogan_gap ∪ combo) certifies
+  **68.9% of what `gemini_auto` certifies, 0 wrong slogans in 731**.
+- **The twin guard is load-bearing for score-based auto TODAY:** 4
+  right-slogan/wrong-year edition twins score above the live 0.85 bar
+  ("MSU Green With Envy" at 0.941). Every certified wrong-year case in the
+  batch (13) was an edition twin visible to the registry (`fam_size > 1`).
+  Slogan-level certification keeps the edition picker; no rung outranks the
+  blocks. (Cross-sport block vetoed 0 correct rows — it costs nothing.)
+
+**Refuted**
+
+- **"ref_sim is an independent signal as logged."** 74% of leaderboard
+  entries have ref_sim *identical* to `image_score` (median |Δ| 0.0003); it
+  diverges on a minority of rows and only there adds information. Never use
+  it alone (best solo zero-wrong threshold cleared the worst wrong row by
+  0.002 — noise).
+- **"A score/gap/ref boost can fully match Gemini."** 3.6% of `gemini_auto`
+  confirms had the truth at CLIP rank 2–6 (unreachable by any #1-certify
+  rule), and 35 typed rows had the truth in no leaderboard (reference
+  coverage gaps, Phase 4b). The reader keeps the residual.
+
+**Newly instrumented, needs a clean shadow batch before live (§4.2 small-N rule)**
+
+- `slogan_gap ≥ 0.12` certification and the `slogan_gap ≥ 0.05 AND
+  ref_sim ≥ 0.90` combo were both tuned on Logger_14 — so they shipped
+  **shadow-only** (2026-07-15, buttonmatcher `main.py`:
+  `slogan_level_gap` / `slogan_gap_shadow_rule`, `>>> SLOGAN_GAP_SHADOW:`
+  lines, subordinate to both blocks; the unvalidated all-one-slogan
+  snapshot never fires). Gap-only itself went LIVE the same session
+  (default flipped; `BUTTONMATCHER_GAP_ONLY_LIVE=0` is the kill switch),
+  with the annotated-image status pass aligned to the real decision.
+  Replay check: the exact shipped functions on Logger_14 = 327 + 91
+  fires, 0 wrong in 731. Validate the shadow lines on the next batch,
+  then flip.
+
+---
+
+# Part VI — the text-blocked pun slogans (Logger_14 layer 2, 2026-07-15)
+
+*Operator question: why do "I-owa Doubt It" / "I-O-Wouldn't" / "I O Won't" /
+"I-Oh-Was" / "Stuck In a Rut" never rank top-3 even when Gemini reads them
+correctly?  Full working analysis: `buttonmatcher/log_analysis.md` (Logger_14
+layer 2).  Method: leaderboard replay against operator truth + code trace +
+fixes verified by replaying the real shipped functions over the batch.*
+
+**Confirmed**
+
+- **CLIP text-side deficit is real and phrase-level.** These puns' own-crop
+  text_score reads 0.35–0.44 vs the batch own-crop truth median 0.671
+  (n=698) — bottom ~5% — while their image/ref side is fine ("I-O-Wasn't":
+  best-in-board image 0.853 + ref_sim 0.853, ranked 10).  Mechanism: one raw
+  punctuated string per slogan into CLIP, cosine ~0.22–0.24, squashed by the
+  `normalize_slogan` [0.15,0.35] window.
+- **Year-folded leaderboards create within-year shadowing.** One row per
+  year (best slogan per year) means "I-owa Doubt It" 1995 is eclipsed by
+  "Michigan Impossible" 1995 at EVERY depth — no top-N widening alone can
+  surface it.  The agreement pool additionally sat at the trimmed top-3 in
+  buttonmatcher only (ebayscout has always passed 10).
+- **The typed rescue was tokenizer-broken for apostrophe puns.**
+  "wasn't"→wasn+t meant typing "I o wasnt" scored 0.067; hyphen-only
+  "I oh was" scored 1.148.
+- **Fixes verified by replay:** deep agreement pool (top-10) + DB-direct
+  tier (Gemini read is a known DB slogan, conf ≥0.85) + apostrophe-safe
+  tokenize → **10/10 Logger_14 family rows resolve `gemini_auto` with
+  correct slogan AND year** (7 required typing before).  Kill switch
+  `BUTTONMATCHER_GEMINI_DEEP_AGREE=0`; `matched_rank` logs the stratum.
+
+**Refuted**
+
+- "STOPWORDS/rarity penalize all-stopword puns" (i/oh/was aren't stopwords;
+  rarity only adds, capped 0.04).
+- "Twin registry or key normalization shadows the family" (distinct keys).
+- "Reference coverage gap" (ref_sim 0.64–0.85 where charted).
+- "A deeper top-N alone fixes it" (within-year shadowing survives any N —
+  the DB-direct tier was required; replay proved 3/10 → 10/10).
+
+**Newly instrumented / pending validation**
+
+- Deep-pool + DB-direct precision per `matched_rank` stratum accrues in
+  confirm_log from the next batch; any wrong deep auto → flag off.
+- `BUTTONMATCHER_TEXT_VARIANTS` (default OFF): punctuation-normalized CLIP
+  text variants, max-per-year additive.  Enable after A/B run clean; judge
+  on family own-crop text_score (~0.4 → 0.55+ expected) and no new wrong
+  #1s.  ("Stuck In a Rut" gets no variant — unpunctuated; its rescue is the
+  agreement tiers.)
