@@ -626,6 +626,44 @@ unchanged (35 pass); the lot is committed as `dense_mellon_11.png` with a
 guided regression test locking hough-path + all 11 centres.
 
 
+## 4.9 The hole-inversion ate a good mask: slogan-text blocks read as "button holes" — FIXED (2026-07-15)
+
+Same class as 4.8 — a rescue path replacing a good result — reported as a
+"confusing" 6-lot failure: 6 blue Citizens buttons on white speckled paint
+came back as 4 offset projection rectangles with two buttons uncropped.  Run
+in-session: the `blue_only` mask was GOOD (mask-scale prior r_est=107,
+conf=0.98) — but the **dark-on-light hole-inversion** replaced it.  The
+multi-line slogan-text blocks inside each button are enclosed holes, and
+after the morphology close they pass the circularity/area filters: 15
+"circular button-holes", cov 0.043, r~21.  Hough on the text-speck mask found
+1 circle, the fill filter (against the same broken mask) killed it → 2×3
+projection with 2 cells dropped as "background-only" → the 4 offset rects.
+The inversion's guard premise ("holes cannot occur when buttons ARE the
+foreground") was refuted — text holes are exactly that; the existing
+synthetic test only covered THIN specks, which the filters do drop (§4.2:
+synthetics are small-N too).
+
+**Fix (SHIPPED, both repos):** `HOLE_INVERT_MIN_COVERAGE = 0.08` — the kept
+holes must cover ≥ 8% of the frame before the inversion may replace the mask
+(the same 8% plausibility floor the mask variants already use).  Measured:
+real buttons-as-holes (dark_on_white_13) = **0.157**; the text-hole failure =
+**0.043** — ~2× margin both ways.  A sub-floor holes mask now means "leave
+the mask alone".  Verified: the 6-lot restored 4-offset-rects → hough 2×3
+6/6 (and unguided healed too: garbage → 6 @ `scale_first`), buttonmatcher +
+ebayscout parity on identical bytes; dark_on_white_13 still inverts; full
+battery 41 green.  Fixture `blue_on_white_text_6.jpg` + a real-shape
+text-block unit test lock it.
+
+**Pattern note (4.8 + 4.9, one session):** both failures were *rescue paths
+firing on lots that did not need rescuing* — the flood refusal discarding a
+perfect Hough set, the hole-inversion discarding a confident mask.  When a
+lot fails confusingly, check the §4.7 heuristic first (did we discard a good
+Gemini read?), then this one: **did a rescue/fallback OVERRIDE a good primary
+result?**  The telemetry tells: a confident upstream signal (`mask_radius_
+conf` 0.98, `det_raw_hough` == expected with tight radius std) followed by
+`detector_used=grid`/`projection` or a `+holeinvert`/refusal tag.
+
+
 ---
 
 # Part V — slogan auto-confirm signals (Logger_14 dual-run, 2026-07-15)

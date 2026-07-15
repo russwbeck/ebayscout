@@ -221,6 +221,18 @@ def _circles_explain_mask(mask, circles):
 
 # --- SHARED IMAGE PREP --------------------------------------------------------
 
+# Minimum frame coverage the kept holes must reach before the dark-on-light
+# inversion may replace the mask.  Real buttons-as-holes are button-sized: the
+# dark_on_white_13 fixture measures 0.157.  Slogan-TEXT blocks inside
+# foreground buttons — multi-line text morph-closes into roughly-square blobs
+# that pass the circularity filter — measure far smaller: the blue-on-white
+# 6-lot that lost a confident 6-button mask (r_est=107 conf=0.98) to fifteen
+# r~21 text holes read 0.043 (2026-07-15).  0.08 is the same 8% plausibility
+# floor the mask variants already use, and it clears both cases with ~2x
+# margin.  A sub-floor holes mask means "leave the mask alone", never invert.
+HOLE_INVERT_MIN_COVERAGE = 0.08
+
+
 def _buttons_as_holes(mask, h, w):
     """Detect the "dark buttons on a light background" inversion and return the
     button disks.
@@ -458,7 +470,7 @@ def _prepare_detection_image(image_bgr, diag_out=None):
     # nothing), so ordinary blue/white/navy lots are untouched.
     if _hole_invert_enabled():
         _holes, _n_holes, _hole_cov = _buttons_as_holes(mask, h, w)
-        if _n_holes >= 4 and 0.03 <= _hole_cov <= 0.75:
+        if _n_holes >= 4 and HOLE_INVERT_MIN_COVERAGE <= _hole_cov <= 0.75:
             print(f">>> DETECT: dark-on-light inversion — {_n_holes} circular "
                   f"button-holes (cov={_hole_cov:.2f}) → mask inverted to holes.",
                   flush=True)
