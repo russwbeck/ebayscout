@@ -867,3 +867,33 @@ fixes verified by replaying the real shipped functions over the batch.*
   on family own-crop text_score (~0.4 → 0.55+ expected) and no new wrong
   #1s.  ("Stuck In a Rut" gets no variant — unpunctuated; its rescue is the
   agreement tiers.)
+
+**Layer 3 (2026-07-15) — the per-slogan baseline advantage: CONFIRMED, centering shadow SHIPPED**
+
+- **Confirmed: slogans carry a de-facto text advantage independent of the
+  crop.**  Per-phrase background text_score (mean over appearances where the
+  phrase is NOT the truth, n≥3) spans **0.34–0.80 across 515 phrases** in
+  Logger_14 — a "hot"-embedding slogan ("Lady Lion Proud" 0.80) starts every
+  contest up to +0.46 text_score (+0.23 overall) ahead of a "cold" one
+  ("Deny Lehigh" 0.37) before any crop evidence.  This is the attractor
+  disease ("Penn State Pins To Win" topping 17/72 listings, 2026-05-30)
+  quantified, and the driver of the within-year shadowing above.
+- **The correct normalization axis is per-SLOGAN, not per-year:** center each
+  row's cosine on that slogan's own cross-crop baseline (within-year
+  normalization on a single crop cannot tell "hot embedding" from "actually
+  matches").  Precedent: the ref_sim CENTERED adjustment (2026-07-03
+  "Plaster Pitt") is the same move for reference similarity.
+- **Log-replay effect is positive but the test is structurally limited:**
+  re-ranking within logged top-10 boards moves truth@#1 94.5% → 95.5%
+  (17 improved / 10 worsened / 464 same).  It cannot see the cases centering
+  should help most (truths shadowed OFF the board), and top-10-only baseline
+  estimates are biased — the honest verdict needs the live shadow.
+- **Shipped (measurement only): `rank_centered`.**  Baselines = mean cosine
+  of each text row vs the ENTIRE reference bank, one matmul at hydration
+  (`_recompute_text_baselines`, fail-open); `build_centered_leaderboard`
+  (byte-shared match_logging.py) ranks each crop with centered text; the
+  confirmed year's rank lands in the appended `rank_centered` confirm_log
+  column.  Live ranking untouched.  **Decision gate:** flip only if centered
+  beats raw at scale on confirmed truths (including off-board ones), and
+  only WITH a recalibration of every score threshold (0.85 auto, green,
+  gap rules) — they are all calibrated to today's distribution.

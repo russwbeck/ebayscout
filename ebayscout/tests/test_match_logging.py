@@ -732,3 +732,56 @@ def test_noinput_diag_flattens_ni_columns_on_pipeline_record():
     assert row[ml.MATCH_HEADER.index("ni_confidence")] == 0.94
     assert row[ml.MATCH_HEADER.index("ni_pass_winner")] == "standard"
     assert row[ml.MATCH_HEADER.index("det_count_noinput")] == 1
+
+
+def test_rank_centered_flattens_at_confirm_tail():
+    """rank_centered (per-slogan baseline-centered shadow, Logger_14 layer 3)
+    is the appended last confirm column; blank when unavailable."""
+    rec = ml.build_confirm_record(
+        service="buttonmatcher", command="/sort", job_id="j", thread_ts="t",
+        crop_num=1, check_id="c", user_id="u", chosen_year="2008",
+        chosen_phrase="I-O-Wasn't", chosen_type="Football", source="pick",
+        rank_restricted=10, rank_shadow=10, shadow_leaderboard_size=100,
+        rank_centered=2,
+    )
+    row = ml.flatten_confirm_record(rec)
+    assert len(row) == len(ml.CONFIRM_HEADER)
+    assert row[ml.CONFIRM_HEADER.index("rank_centered")] == 2
+    # default None -> blank
+    rec2 = ml.build_confirm_record(
+        service="buttonmatcher", command="/sort", job_id="j", thread_ts="t",
+        crop_num=1, check_id="c", user_id="u", chosen_year="2008",
+        chosen_phrase="x", chosen_type="Football", source="pick",
+        rank_restricted=None, rank_shadow=None, shadow_leaderboard_size=None,
+    )
+    row2 = ml.flatten_confirm_record(rec2)
+    assert row2[ml.CONFIRM_HEADER.index("rank_centered")] == ""
+
+
+def test_build_centered_leaderboard_subtracts_slogan_baseline():
+    """A hot-embedding slogan (high baseline) must lose its de-facto advantage:
+    raw sims tie, but the cold slogan's EVIDENCE (sim above its own baseline)
+    is stronger, so centering flips the order."""
+    kw = dict(normalize_fn=lambda x: max(0.0, min(1.0, (x - 0.15) / 0.20)),
+              tokenize_fn=lambda t: t.lower().split(),
+              rarity_fn=lambda w: 0.0, stopwords=set())
+    years   = ["1995", "2008"]
+    phrases = ["Hot Slogan", "Cold Pun"]
+    types   = ["Football", "Football"]
+    sims    = [0.28, 0.27]                     # raw: hot wins
+    scores  = {"1995": 0.70, "2008": 0.70}     # image tied
+    raw = ml.build_leaderboard(sims, scores, years, phrases, types, **kw)
+    assert raw[0]["phrase"] == "Hot Slogan"
+    centered = ml.build_centered_leaderboard(
+        sims, scores, years, phrases, types, [0.30, 0.20], **kw)
+    assert centered[0]["phrase"] == "Cold Pun"   # evidence -0.02 vs +0.07
+
+
+def test_build_centered_leaderboard_requires_aligned_baselines():
+    kw = dict(normalize_fn=lambda x: x, tokenize_fn=lambda t: [],
+              rarity_fn=lambda w: 0.0, stopwords=set())
+    assert ml.build_centered_leaderboard(
+        [0.3], {"1995": 0.5}, ["1995"], ["p"], ["Football"], None, **kw) == []
+    assert ml.build_centered_leaderboard(
+        [0.3, 0.2], {"1995": 0.5}, ["1995", "1996"], ["p", "q"],
+        ["Football", "Football"], [0.25], **kw) == []
