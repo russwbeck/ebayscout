@@ -646,8 +646,16 @@ coverage.*
   rule), and 35 typed rows had the truth in no leaderboard (reference
   coverage gaps, Phase 4b). The reader keeps the residual.
 
-**Newly proposed, needs a clean shadow batch before live (§4.2 small-N rule)**
+**Newly instrumented, needs a clean shadow batch before live (§4.2 small-N rule)**
 
 - `slogan_gap ≥ 0.12` certification and the `slogan_gap ≥ 0.05 AND
-  ref_sim ≥ 0.90` combo were both tuned on Logger_14 — shadow-log
-  (`SLOGAN_GAP_SHADOW`), validate on the next batch, then flip.
+  ref_sim ≥ 0.90` combo were both tuned on Logger_14 — so they shipped
+  **shadow-only** (2026-07-15, buttonmatcher `main.py`:
+  `slogan_level_gap` / `slogan_gap_shadow_rule`, `>>> SLOGAN_GAP_SHADOW:`
+  lines, subordinate to both blocks; the unvalidated all-one-slogan
+  snapshot never fires). Gap-only itself went LIVE the same session
+  (default flipped; `BUTTONMATCHER_GAP_ONLY_LIVE=0` is the kill switch),
+  with the annotated-image status pass aligned to the real decision.
+  Replay check: the exact shipped functions on Logger_14 = 327 + 91
+  fires, 0 wrong in 731. Validate the shadow lines on the next batch,
+  then flip.
