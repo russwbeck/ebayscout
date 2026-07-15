@@ -246,19 +246,28 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
             c = gemini_slogans[gi].get("confidence")
             return c if isinstance(c, (int, float)) else 0.0
 
-        _swap_gis = [
+        _recoverable = [
             gi for _d, gi in uncovered                  # already farthest-first
             if gi not in recover_gis and _conf(gi) >= SWAP_MIN_CONFIDENCE
         ]
-        for gi, ci in zip(_swap_gis, _phantoms):
-            recover_gis.append(gi)
+        # DROP every off-mask phantom (unbacked AND off the button mask = a Hough
+        # false-positive, whether or not a Gemini button can replace it: Gemini
+        # located all its buttons, so an unbacked off-mask circle is not one it
+        # merely missed).  PAIR each with an uncovered high-confidence miss where
+        # one exists (a true swap, count invariant); UNPAIRED phantoms are dropped
+        # outright — they only inflated the count (e.g. a lone real button + one
+        # carpet phantom → drop the phantom, keep the 1).  Every drop is a labeled
+        # phantom example; `recovered` flags whether a button took its place.
+        for _k, ci in enumerate(_phantoms):
+            gi = _recoverable[_k] if _k < len(_recoverable) else None
+            if gi is not None:
+                recover_gis.append(gi)
             dropped_crop_indices.append(ci)
-            # One labeled Hough-phantom example per swap: the dropped circle's
-            # position/size/fill (what fooled Hough) + the button it stood in for.
             _pcx, _pcy = detected_centers[ci]
             swaps.append({
-                "slogan": gemini_slogans[gi].get("slogan"),
-                "confidence": gemini_slogans[gi].get("confidence"),
+                "slogan": (gemini_slogans[gi].get("slogan") if gi is not None else None),
+                "confidence": (gemini_slogans[gi].get("confidence") if gi is not None else None),
+                "recovered": gi is not None,
                 "phantom_x": int(round(_pcx)),
                 "phantom_y": int(round(_pcy)),
                 "phantom_r": int(round(detected_radii[ci])) if detected_radii[ci] else None,
@@ -290,6 +299,27 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
             "box": box,
         })
 
+    # --- Gemini-anchored A/B shadow (measurement only; changes no output) -----
+    # The reconcile match already IS the comparison "would anchoring crops on
+    # Gemini's x/y beat Hough?": every COVERED button is one both agree on, and the
+    # match distance is how far Gemini's centre is from Hough's — the precision
+    # signal that decides whether Gemini could anchor the crop.  n_gemini_only =
+    # buttons Hough missed (anchoring would ADD); n_hough_only = Hough circles no
+    # Gemini point backs (anchoring would DROP — the phantoms).  Join per-lot to
+    # confirm_log over time to learn when to default to Gemini x/y (tested_hyp §4.8).
+    _snap = sorted(c["dist"] for c in covered)
+    _snap_med = _snap[len(_snap) // 2] if _snap else None
+    gemini_anchored = {
+        "n_gemini": len(gemini_slogans),
+        "n_agree": len(covered),
+        "snap_px_median": _snap_med,
+        "snap_px_max": (_snap[-1] if _snap else None),
+        "snap_frac_median": (round(_snap_med / median_r, 3)
+                             if (_snap_med is not None and median_r) else None),
+        "n_gemini_only": len(unmatched_g_local),
+        "n_hough_only": (len(unmatched_crops) if unmatched_crops is not None else None),
+    }
+
     telemetry = {
         "gemini_count": len(gemini_slogans),
         "hough_count": len(detected_centers),
@@ -298,6 +328,7 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         "n_recovered": len(misses),
         "n_swapped": len(dropped_crop_indices),
         "swaps": swaps,
+        "gemini_anchored": gemini_anchored,
         "n_unmatched_crops": len(unmatched_crops) if unmatched_crops is not None else None,
         "median_r": round(median_r, 2) if median_r else None,
         "covered_distances": [c["dist"] for c in covered],

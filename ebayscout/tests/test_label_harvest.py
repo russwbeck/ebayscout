@@ -92,20 +92,21 @@ def test_build_label_record_empty_lot_is_fine():
 
 
 def test_gemini_count_inconsistent_helper():
-    # total == localized + flagged → consistent
-    assert lh._gemini_count_inconsistent(10, [{}] * 8, 2) is False
-    # total > localized + flagged → Gemini overcounted (turf/carpet case)
-    assert lh._gemini_count_inconsistent(15, [{}] * 8, 2) is True
-    assert lh._gemini_count_inconsistent(5, [{}] * 5, 0) is False
+    # total == len(detected_slogans) → consistent (prompt Counting Rule 1)
+    assert lh._gemini_count_inconsistent(8, [{}] * 8) is False
+    # total != detected list length → Gemini violated Rule 1 (miscount)
+    assert lh._gemini_count_inconsistent(10, [{}] * 8) is True
+    # flagged buttons are NOT in the total, so they must not trip the flag
+    assert lh._gemini_count_inconsistent(5, [{}] * 5) is False
     # no usable count → None (not False, so "unknown" is never read as "consistent")
-    assert lh._gemini_count_inconsistent(0, [], 0) is None
-    assert lh._gemini_count_inconsistent(None, None, None) is None
+    assert lh._gemini_count_inconsistent(0, []) is None
+    assert lh._gemini_count_inconsistent(None, None) is None
     # fail-open on bad input
-    assert lh._gemini_count_inconsistent("x", [{}], 0) is None
+    assert lh._gemini_count_inconsistent("x", [{}]) is None
 
 
 def test_build_label_record_logs_count_inconsistent():
-    # Gemini claims 15 but itemised only 8 slogans + 2 flagged = 10 → inconsistent.
+    # Gemini claims total 15 but its detected_slogans list has 8 → Rule-1 miscount.
     rec = lh.build_label_record(
         job_id="j3", service="buttonmatcher", command="/pipeline",
         img_w=10, img_h=10, circle_info=[], circle_sources=None,
