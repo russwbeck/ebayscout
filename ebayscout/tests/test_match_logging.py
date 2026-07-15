@@ -589,10 +589,42 @@ def test_dt_peak_columns_default_blank():
 
 
 def test_gem_unmatched_columns_are_the_header_tail():
-    # gem_unmatched (Hough circles unbacked by any Gemini point) then the reconcile
-    # swap columns (Hough phantoms dropped for a real Gemini miss) are the tail.
-    assert ml.MATCH_HEADER[-4:] == ["det_gem_unmatched", "det_gem_unmatched_json",
-                                    "det_n_swapped", "det_reconcile_swaps_json"]
+    # gem_unmatched → reconcile swap → Gemini-anchored A/B shadow are the tail.
+    assert ml.MATCH_HEADER[-5:] == ["det_gem_unmatched", "det_gem_unmatched_json",
+                                    "det_n_swapped", "det_reconcile_swaps_json",
+                                    "det_gemini_anchored_json"]
+
+
+def test_gemini_anchored_shadow_column_flattens():
+    ga = {"n_gemini": 5, "n_agree": 4, "snap_px_median": 8.0, "snap_px_max": 13.0,
+          "snap_frac_median": 0.1, "n_gemini_only": 1, "n_hough_only": 1}
+    diag = ml.build_detection_diag(
+        h=592, w=800, bg_brightness=120.0, bg_is_white=False, mask_path="blue_or_white",
+        hough_pass1_count=5, hough_retry_count=None, final_count_user=5,
+        final_count_noinput=2, user_count=5, detector_used="hough", n_crops=5,
+        mask_components=4, gemini_anchored=ga,
+    )
+    assert diag["gemini_anchored"] == ga
+    rec = ml.build_match_record(
+        service="buttonmatcher", command="/pipeline", mode="pipeline", job_id="j",
+        thread_ts=None, channel_id="ch", user_id=None, crop_num=1, check_id="k",
+        detection=diag, bank=None, restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    cell = row[ml.MATCH_HEADER.index("det_gemini_anchored_json")]
+    assert '"snap_frac_median": 0.1' in cell and '"n_hough_only": 1' in cell
+    # default blank → empty object
+    diag2 = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=3, hough_retry_count=None, final_count_user=3,
+        final_count_noinput=3, user_count=3, detector_used="hough", n_crops=3,
+        mask_components=3)
+    rec2 = ml.build_match_record(
+        service="buttonmatcher", command="/pipeline", mode="pipeline", job_id="j",
+        thread_ts=None, channel_id="ch", user_id=None, crop_num=1, check_id="k",
+        detection=diag2, bank=None, restricted_top=[], shadow_top=[], shadow_enabled=True)
+    assert ml.flatten_match_record(rec2)[ml.MATCH_HEADER.index("det_gemini_anchored_json")] == "{}"
 
 
 def test_reconcile_swap_columns_flatten():

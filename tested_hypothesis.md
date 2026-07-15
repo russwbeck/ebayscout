@@ -480,11 +480,16 @@ So:
 
 2. **Log `gemini_count_inconsistent`** in the label record (`label_harvest.py`,
    byte-shared, computed once so both services agree): True when Gemini's claimed
-   total ≠ localised slogans + flagged partials — i.e. it counted buttons it never
-   placed. Each pipeline lot now emits a free **measured-Gemini-error** row (the
-   detector's own count is the circles list, for a full three-way), feeding
-   Phase 4c and the Stage-B "Gemini as ruler" question with real data instead of
-   guesses. Pipeline stdout also prints the inconsistency inline for live triage.
+   total ≠ the length of its `detected_slogans` list. Each pipeline lot now emits a
+   free **measured-Gemini-error** row (the detector's own count is the circles
+   list, for a cross-check), feeding Phase 4c and the Stage-B "Gemini as ruler"
+   question with real data instead of guesses. Pipeline stdout also prints the
+   inconsistency inline for live triage.
+   *(Realigned 2026-07-12 with the updated Gem prompt: Counting Rule 1 now defines
+   `total_button_count = len(detected_slogans)` and puts flagged buttons in a
+   separate list, so the check is `total ≠ len(detected)` — the earlier
+   `≠ localised + flagged` would false-positive on every lot that has a flagged
+   button. See `GEMINI_PIPELINE.md` "The Gem prompt".)*
 
 Net: we stopped trying to out-gate a bad upstream count, took the one conservative
 count change that removes the phantom class for free, and turned the failure into
@@ -568,6 +573,38 @@ with the pipeline already trusting Gemini's x/y everywhere.  End-to-end on the r
 image: phantom dropped, blue recovered at its Gemini location with its slogan,
 count still 5, associations aligned.
 
+**Generalization (SHIPPED) — the drop must not require a button to recover.** The
+first 4.6 fire condition only DROPPED a phantom when it could be PAIRED with an
+uncovered high-confidence miss (gate `n_uncovered > deficit`), and the swap loop
+`zip`'d phantoms to recoverable buttons. Three live label records showed that
+misses the common case:
+
+| lot (job) | scene | phantom(s) | uncovered button to recover? |
+|---|---|---|---|
+| c0f97de7 | 1 real button on carpet | 1 (huge r=116 carpet circle) | **none** — the 1 button is covered |
+| 84e75a23 | 31-button corkboard | 2 on bare wood (ann. "24","27") | none spare |
+| db3afe3c | 15-button board | 1 on bare wood (ann. "12") | none spare |
+
+In every case `deficit = 0` and the phantom is COVERED-count-neutral, so
+`n_uncovered > deficit` was false and the probe never ran — the phantom shipped
+as an extra button. **An unbacked off-mask circle is a Hough false-positive
+whether or not a Gemini button can take its place** (Gemini located all its
+buttons; an unbacked off-mask circle is not one it merely missed). So: (1) the
+detect-side gate now fires on `n_unmatched_crops` alone; (2) `plan_reconciliation`
+DROPS every off-mask phantom, PAIRS each with an uncovered high-conf miss where one
+exists (true swap, count invariant), and drops UNPAIRED phantoms outright — they
+only inflated the count. Each drop logs `recovered` (bool) so paired vs unpaired
+drops are distinguishable in `det_reconcile_swaps_json`.
+
+**Same root cause fixes the "misparsed slogan" symptom.** The operator also saw
+slogans mislabeled. It was not a JSON parse bug (`json.loads` handles embedded
+apostrophes like `PSU Dots the 'I' In Win`; `parse_gemini_response` drops only
+non-dict/empty entries). A surviving phantom in the FINAL crop set consumes an
+`associate_slogans` nearest-neighbour slot, stealing a real button's slogan and
+shifting the labels after it. Dropping the phantom BEFORE association (reconcile
+removes `dropped_crop_indices` from `final_centers`) fixes the count AND the
+labeling in one move.
+
 ## 4.7 The recurring error class — audit heuristic (operator's "look for errors like this")
 
 Three of the carpet failures (4.4, 4.5, 4.6) were the **same shape**: **Gemini read
@@ -590,3 +627,60 @@ are the highest-leverage bugs in the pipeline; look for them before touching
 detection.  Signals that a lot is in this class: `detector_used == "grid"` with
 0 `gemini_backed` circles (4.5); `count_inconsistent == true` (4.4); an unbacked
 off-mask circle coexisting with an uncovered high-confidence slogan (4.6).
+
+## 4.8 HYPOTHESIS (under test): flip to Gemini-anchored, Hough-refined layout
+
+**Claim.** The architecture is backwards. Hough is the *primary* detector and
+Gemini's x/y only a fallback (`gemini_led_crops` on grid-collapse) + a patch
+(`reconcile`/swap). But every carpet/turf/low-contrast failure this session was
+**Hough garbage + Gemini right**, and we keep re-deriving "trust Gemini's x/y" one
+patch at a time. Gemini supplies a position for *every* button, so the natural
+design is **Gemini-anchored, Hough-refined**: place one crop per Gemini button at
+its x/y; snap to a nearby Hough circle for the exact centre/radius when one exists;
+else use Gemini's position + edge radius. That makes phantoms **structurally
+impossible** (you never crop where Gemini sees no button) while keeping Hough's
+precision where it helps.
+
+**Why it's a hypothesis, not a patch.** It makes us fully dependent on Gemini's
+*count* (over/undercount propagates directly — the new prompt's anti-hallucination
+rules, §4.4 companion, are the precondition), and the anchored crop's quality for
+CLIP is unproven. So: **measure before flipping.**
+
+**The shadow (shipped 2026-07-12, measurement-only, zero extra cost).** The
+reconcile match already *is* the A/B comparison — covered buttons are ones Hough &
+Gemini agree on, the match distance is how far Gemini's centre is from Hough's,
+misses are Gemini-only, unmatched crops are Hough-only. `plan_reconciliation` now
+emits a per-lot `gemini_anchored` summary, logged to the `det_gemini_anchored_json`
+Sheet column:
+
+| field | reads as |
+|---|---|
+| `snap_px_median` / `snap_frac_median` | how tight Gemini's centre is vs Hough's (as px and as a fraction of a radius). **Small ⇒ Gemini can anchor the crop.** |
+| `n_agree` | buttons both found (the snap sample) |
+| `n_gemini_only` | Hough missed — anchoring would **ADD** these (join to confirms: are they real?) |
+| `n_hough_only` | Hough circles no Gemini backs — anchoring would **DROP** these (the phantoms) |
+
+**First real datapoint** (example-3 white-carpet 5-lot): `snap_frac_median 0.072`
+(Gemini's centres ~6px from Hough's, 7% of a radius), `n_gemini_only 1` (the blue
+Hough missed), `n_hough_only 1` (the carpet phantom). i.e. on this lot anchoring
+would add the blue, drop the phantom, and place the 4 agreed buttons essentially
+where Hough did. Promising, but n=1.
+
+**Measure "how often is Gemini's x/y correct?" against the FINAL decision.** Each
+shipped crop carries its source and its associated Gemini slogan (`crop_to_slogan`),
+and `confirm_log` carries the outcome per crop, joined on `job_id`+`crop_num`. So
+over a crawl: of Gemini's positions, how many map to a crop that *confirmed* to a
+real button (correct) vs none (Gemini hallucinated) vs a real button with no Gemini
+position (Gemini missed). That precision/recall of Gemini's x/y against confirmed
+truth is the go/no-go for the flip.
+
+**Signals to watch for defaulting to Gemini x/y (the "over time" goal).** low
+`snap_frac_median` (tight positioning); high `n_hough_only` correlated with
+`det_mask_coverage` high / turf-carpet backgrounds (Hough phantoms cluster there);
+`n_gemini_only` buttons that consistently confirm (Hough's misses were real). When
+those hold on a background class, that class should **default to Gemini x/y** — the
+first concrete step toward the flip, ahead of a full switch.
+
+**Next step (not yet built):** once the shadow shows the agreement holds, add a
+`GEMINI_ANCHORED` flag that actually *ships* the anchored layout for an A/B crawl,
+so the confirm-rate comparison is downstream-real, not just positional.

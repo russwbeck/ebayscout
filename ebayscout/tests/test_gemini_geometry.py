@@ -253,7 +253,38 @@ def test_swap_skips_when_phantom_on_mask():
     assert out["misses"] == [] and out["dropped_crop_indices"] == []
 
 
-def test_swap_skips_low_confidence_miss():
+def test_swap_drops_phantom_unpaired_when_miss_low_confidence():
+    # An off-mask phantom is a Hough false-positive regardless of whether a
+    # confident Gemini miss can replace it.  A low-confidence miss (0.3 < 0.70) is
+    # NOT recovered, but the phantom is still dropped outright — it only inflated
+    # the count.  The swap is logged with recovered=False and no slogan.
     det_c, det_r, det_fill, gem = _swap_scene(blue_conf=0.3)
     out = gg.plan_reconciliation(det_c, det_r, gem, 1000, 1000, detected_fills=det_fill)
-    assert out["misses"] == [] and out["dropped_crop_indices"] == []
+    assert out["misses"] == []
+    assert out["dropped_crop_indices"] == [4]
+    assert out["telemetry"]["n_swapped"] == 1
+    sw = out["telemetry"]["swaps"]
+    assert len(sw) == 1
+    assert sw[0]["recovered"] is False
+    assert sw[0]["slogan"] is None
+    assert (sw[0]["phantom_x"], sw[0]["phantom_y"]) == (700, 700)
+
+
+def test_swap_drops_lone_phantom_no_uncovered_button():
+    # Real regression — pipeline lot job c0f97de7 (IMG-20251014-WA0004, 449x800):
+    # Gemini read exactly ONE button ("No Free Launch Here" at 39%,46%), Hough
+    # found two circles: the real button (174,363,r102) and a huge phantom on the
+    # carpet (323,181,r116).  deficit = max(0, 1-2) = 0 and the covered button
+    # leaves zero uncovered, so the OLD `n_uncovered > deficit` gate never probed
+    # and the phantom shipped as a 2nd button.  The phantom is off-mask (carpet),
+    # so the two-signal drop must remove it even with nothing to recover.
+    det_c = [(174, 363), (323, 181)]         # idx0 real button, idx1 carpet phantom
+    det_r = [102, 116]
+    det_fill = [0.9, 0.04]                    # idx1 scores ~0 on the button mask
+    gem = [{"index": 1, "slogan": "No Free Launch Here",
+            "x": 39.0, "y": 46.0, "confidence": 0.9}]
+    out = gg.plan_reconciliation(det_c, det_r, gem, 449, 800, detected_fills=det_fill)
+    assert out["misses"] == []
+    assert out["dropped_crop_indices"] == [1]
+    assert out["telemetry"]["n_swapped"] == 1
+    assert out["telemetry"]["swaps"][0]["recovered"] is False

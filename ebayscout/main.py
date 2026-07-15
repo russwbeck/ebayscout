@@ -760,11 +760,11 @@ def process_pipeline_lot(job_id: str) -> None:
     else:
         full_count = 0
     expected   = full_count if full_count > 0 else None
-    _gem_inconsistent = bool(gem_count and gem_count != len(gem_slogans) + len(flagged))
+    _gem_inconsistent = bool(gem_count and gem_count != len(gem_slogans))
     if expected is not None and _gem_inconsistent:
         print(f">>> PIPELINE: guided count {expected} = min(Gemini total {gem_count}, "
               f"localized {len(gem_slogans)}); flagged={len(flagged)} — GEMINI COUNT "
-              f"INCONSISTENT (claimed > itemized: overcount).", flush=True)
+              f"INCONSISTENT (total != detected_slogans length).", flush=True)
     # Shadow unguided pass (log_analysis.md gap 1): the TRUE no-input count,
     # logged on every pipeline lot so unguided accuracy is measurable against
     # Gemini's count — the rollout gate for dropping guidance. ~15 extra Hough
@@ -1044,6 +1044,7 @@ def process_pipeline_lot(job_id: str) -> None:
                 gem_unmatched_indices=(_rt or {}).get("unmatched_crop_indices"),
                 n_swapped=(_rt or {}).get("n_swapped"),
                 reconcile_swaps=(_rt or {}).get("swaps"),
+                gemini_anchored=(_rt or {}).get("gemini_anchored"),
             )
             _records = [
                 mlog.build_match_record(
