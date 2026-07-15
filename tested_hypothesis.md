@@ -480,11 +480,16 @@ So:
 
 2. **Log `gemini_count_inconsistent`** in the label record (`label_harvest.py`,
    byte-shared, computed once so both services agree): True when Gemini's claimed
-   total ≠ localised slogans + flagged partials — i.e. it counted buttons it never
-   placed. Each pipeline lot now emits a free **measured-Gemini-error** row (the
-   detector's own count is the circles list, for a full three-way), feeding
-   Phase 4c and the Stage-B "Gemini as ruler" question with real data instead of
-   guesses. Pipeline stdout also prints the inconsistency inline for live triage.
+   total ≠ the length of its `detected_slogans` list. Each pipeline lot now emits a
+   free **measured-Gemini-error** row (the detector's own count is the circles
+   list, for a cross-check), feeding Phase 4c and the Stage-B "Gemini as ruler"
+   question with real data instead of guesses. Pipeline stdout also prints the
+   inconsistency inline for live triage.
+   *(Realigned 2026-07-12 with the updated Gem prompt: Counting Rule 1 now defines
+   `total_button_count = len(detected_slogans)` and puts flagged buttons in a
+   separate list, so the check is `total ≠ len(detected)` — the earlier
+   `≠ localised + flagged` would false-positive on every lot that has a flagged
+   button. See `GEMINI_PIPELINE.md` "The Gem prompt".)*
 
 Net: we stopped trying to out-gate a bad upstream count, took the one conservative
 count change that removes the phantom class for free, and turned the failure into
@@ -590,3 +595,59 @@ are the highest-leverage bugs in the pipeline; look for them before touching
 detection.  Signals that a lot is in this class: `detector_used == "grid"` with
 0 `gemini_backed` circles (4.5); `count_inconsistent == true` (4.4); an unbacked
 off-mask circle coexisting with an uncovered high-confidence slogan (4.6).
+
+---
+
+# Part V — slogan auto-confirm signals (Logger_14 dual-run, 2026-07-15)
+
+*Data: Logger_14 — the operator's dual-run batch (same buttons through the
+Gemini pipeline and `/sort`), 731 gradeable buttons / 69 wrong-#1 rows. Full
+working analysis: `buttonmatcher/log_analysis.md` (Logger_14 layer). Method:
+replay every confirmed button's match-time leaderboards against
+operator-reviewed truth; price every candidate rule by wrong autos, not
+coverage.*
+
+**Confirmed**
+
+- **gap_only (raw #1→#2 gap ≥ 0.15) — third independent validation:**
+  222/222 correct, **452/452 cumulative** across Logger_11/12/14. Flipping
+  `BUTTONMATCHER_GAP_ONLY_LIVE=1` is justified; raises `/sort` auto coverage
+  of the Gemini-certified set from 23.3% → 43.8% with zero code.
+- **The raw gap is edition-blinded; the slogan-level gap is the fix.** Gap to
+  the first candidate with a *different normalized slogan* (edition siblings
+  crowd the top and crush the raw gap without contesting the slogan).
+  `slogan_gap ≥ 0.12`: 327 fires, 0 wrong (worst wrong row = 0.0956, so
+  0.12 keeps a real cushion; 0.10 cleared this batch by only 0.004 — hold it
+  for a second clean batch). Cumulative union at 0.12 → 52.6% coverage.
+- **ref_sim separates right from wrong at entry level — but only as a second
+  signal** (the VISION §5 calibration question, first real read since the
+  #116/#50 fix). Two-signal combo `slogan_gap ≥ 0.05 AND ref_sim ≥ 0.90`:
+  +42 confirms, 0 wrong, and the arms veto each other's failure modes —
+  wrong rows passing the gap arm read ref_sim ≤ 0.802; wrong rows passing
+  the ref arm are visual near-twins (≤ 0.888) with slogan_gap ≤ 0.0093.
+  The full ladder (0.85-score ∪ gap_only ∪ slogan_gap ∪ combo) certifies
+  **68.9% of what `gemini_auto` certifies, 0 wrong slogans in 731**.
+- **The twin guard is load-bearing for score-based auto TODAY:** 4
+  right-slogan/wrong-year edition twins score above the live 0.85 bar
+  ("MSU Green With Envy" at 0.941). Every certified wrong-year case in the
+  batch (13) was an edition twin visible to the registry (`fam_size > 1`).
+  Slogan-level certification keeps the edition picker; no rung outranks the
+  blocks. (Cross-sport block vetoed 0 correct rows — it costs nothing.)
+
+**Refuted**
+
+- **"ref_sim is an independent signal as logged."** 74% of leaderboard
+  entries have ref_sim *identical* to `image_score` (median |Δ| 0.0003); it
+  diverges on a minority of rows and only there adds information. Never use
+  it alone (best solo zero-wrong threshold cleared the worst wrong row by
+  0.002 — noise).
+- **"A score/gap/ref boost can fully match Gemini."** 3.6% of `gemini_auto`
+  confirms had the truth at CLIP rank 2–6 (unreachable by any #1-certify
+  rule), and 35 typed rows had the truth in no leaderboard (reference
+  coverage gaps, Phase 4b). The reader keeps the residual.
+
+**Newly proposed, needs a clean shadow batch before live (§4.2 small-N rule)**
+
+- `slogan_gap ≥ 0.12` certification and the `slogan_gap ≥ 0.05 AND
+  ref_sim ≥ 0.90` combo were both tuned on Logger_14 — shadow-log
+  (`SLOGAN_GAP_SHADOW`), validate on the next batch, then flip.
