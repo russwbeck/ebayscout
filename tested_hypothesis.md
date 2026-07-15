@@ -596,6 +596,36 @@ detection.  Signals that a lot is in this class: `detector_used == "grid"` with
 0 `gemini_backed` circles (4.5); `count_inconsistent == true` (4.4); an unbacked
 off-mask circle coexisting with an uncovered high-confidence slogan (4.6).
 
+## 4.8 The flood gate overfit its own calibration set: dense lots ARE a flooded mask — FIXED (2026-07-15)
+
+The §4.2 lesson applied to the §4.1/4.3 guard itself.  A clean dense lot (11
+large Mellon-1984 buttons on tan cardboard, operator-reported) came back as
+eleven full-width projection strips: Hough had found a PERFECT 11/11 set
+(radius std 2.6, zero rejections, every centre on a button — verified by
+running the real detector in-session), and `_guided_mask_floods` REFUSED it
+because the mask read 58% > 50%.  But 11 buttons at r≈85 on a 644×800 frame
+cover ~50% of it *by themselves* — the "flood" was the buttons.  The gate was
+calibrated on turf 68% vs case1's 30% with nothing dense in between (§4.2:
+six examples is not a distribution — this time the GUARD was the overfit
+small-N feature).
+
+**Fix (SHIPPED, both repos, same §4.2 shape — an independent on-target check
+before the destructive action):** before refusing an accepted guided set, ask
+whether the circles EXPLAIN the mask: `_circles_explain_mask` = fraction of
+mask foreground covered by the accepted circle disks.  Dense-Mellon measures
+**0.834**; turf/carpet by area arithmetic sits ~0.1–0.3 (a flooded background
+vastly exceeds its circles).  `FLOOD_EXPLAINED_MIN = 0.60` splits them with
+wide margins; `_flood_refusal_decision` is pure and unit-tested, a failed or
+erroring check degrades to the shipped refusal (never a silent accept), and
+`guided_flood_explained` is logged per lot.  Scoped to the whole-acceptance
+refusal fork only — the deficit-fill branch (starved Hough, §4.1 turf) is
+unchanged, because an incomplete circle set under-explains by construction.
+Verified: dense-Mellon restored 11×1-grid → hough 4×3 11/11 (buttonmatcher
+AND ebayscout parity on identical bytes); all 15 prior fixtures + gate tests
+unchanged (35 pass); the lot is committed as `dense_mellon_11.png` with a
+guided regression test locking hough-path + all 11 centres.
+
+
 ---
 
 # Part V — slogan auto-confirm signals (Logger_14 dual-run, 2026-07-15)
