@@ -75,6 +75,47 @@ def _now_iso() -> str:
 
 # --- Counterfactual scoring (pure python, unit-testable) ---------------------
 
+TEXT_BASELINE_CENTER = 0.25   # midpoint of the normalize_slogan [0.15, 0.35]
+                              # window: centered sims (raw cosine minus the
+                              # slogan's own cross-crop baseline, ~±0.10) are
+                              # shifted here so the existing normalize/tier
+                              # math applies unchanged to the SHADOW ranking.
+
+
+def build_centered_leaderboard(
+    text_sims,
+    year_scores,
+    text_years,
+    text_phrases,
+    text_types,
+    text_baselines,
+    **kwargs,
+):
+    """build_leaderboard with per-slogan BASELINE-CENTERED text sims.
+
+    Logger_14 layer 3: slogans have wildly different background text_scores
+    against arbitrary button crops (measured 0.34–0.80 across 515 phrases) —
+    a "hot"-embedding slogan starts every contest with up to a +0.46 text
+    head start before the crop is even seen, and a "cold" pun is handicapped
+    everywhere (including within its own year, where the year-folded board
+    gives its slot to the hotter sibling).  Centering each row's raw cosine
+    on that slogan's own baseline (mean cosine vs the reference-photo bank)
+    scores the crop-specific EVIDENCE instead of the embedding temperature.
+
+    MEASUREMENT ONLY: this feeds the ``rank_centered`` confirm_log column
+    (the counterfactual "where would the truth rank under centered text?"),
+    never the live ranking.  ``text_baselines`` is parallel to ``text_sims``;
+    on any mismatch or missing baselines the caller should skip the shadow
+    (return []), never guess.
+    """
+    if text_baselines is None or len(text_baselines) != len(text_sims):
+        return []
+    centered = [float(s) - float(b) + TEXT_BASELINE_CENTER
+                for s, b in zip(text_sims, text_baselines)]
+    return build_leaderboard(
+        centered, year_scores, text_years, text_phrases, text_types, **kwargs)
+
+
 def build_leaderboard(
     text_sims,
     year_scores,
@@ -484,6 +525,7 @@ def build_confirm_record(
     rank_image_only=None,
     rank_rerank=None,
     edition_shadow=None,
+    rank_centered=None,
 ):
     """One record per user confirmation, written when the human picks an answer.
 
@@ -550,6 +592,8 @@ def build_confirm_record(
         # edition_twins guard: see docstring above. {} (not None) so
         # flatten_confirm_record always has a dict to json.dumps.
         "edition_shadow": edition_shadow or {},
+        # per-slogan baseline-centered shadow rank (see CONFIRM_HEADER note)
+        "rank_centered": rank_centered,
     }
 
 
@@ -623,6 +667,11 @@ CONFIRM_HEADER = [
     # for twin-family confirmations (source=edition_pick/edition_pick_unknown).
     # {} for every non-twin confirmation.
     "edition_shadow_json",
+    # --- appended: per-slogan baseline-centered SHADOW rank (Logger_14 layer
+    # 3) — rank of the confirmed year when each candidate's text sim is
+    # centered on that slogan's own background baseline.  Blank when the
+    # baseline bank wasn't available at match time.
+    "rank_centered",
 ]
 
 
@@ -735,6 +784,7 @@ def flatten_confirm_record(rec):
         _cell(rec.get("rank_image_only")),
         _cell(rec.get("rank_rerank")),
         json.dumps(rec.get("edition_shadow") or {}, default=str),
+        _cell(rec.get("rank_centered")),
     ]
 
 

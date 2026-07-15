@@ -22,7 +22,7 @@ it is no longer a sync target.)*
 | 2b | Defect A: DT-radius-led re-Hough on fused lots (revised — DT peaks are the radius source, not the counter) | ◐ largely covered by 2a (saturation was the fusion driver in both real lots); re-measure residual non-saturated fusion on the next batch | next batch |
 | 3 | Defect B: concentric/radius dedup (small-lot overcount) | ✅ **merged + deployed** — 0.7–1.3×median band + concentric collapse (keep better fill) on the unguided selection | — |
 | 3.5 | Tighten `ni_gate=auto` | ✅ **merged + deployed** — AUTO requires `scale_path=scale_first` AND a non-bailed guided detector (`demote_auto_on_detector_bailout`, #116/#50); validated at n=329: 96%/100%±1 | — |
-| 4a | Low-res guard (thumbnail-**fallback** auto-confirm — NOT a systemic low-res feed; see 4a note) | ✅ implementable immediately | nothing |
+| 4a | Low-res guard (thumbnail auto-confirm) | ✅ implementable immediately | nothing |
 | 4b | Reference coverage for 0.00-scoring slogans | ⏸ data (exists, needs a run) | one `audit_reference_coverage` run vs GCS |
 | 4c | Measured auto-confirm error rate | ⏸ human data | `correction` rows in confirm_log (~100 auto-confirms reviewed) |
 | 5 | Rollout: drop the guided count (revised: gate-scoped, not bucket-scoped) | ⏸ re-measure after 2a/2b/3 land | next instrumented batch |
@@ -226,21 +226,6 @@ threshold. These items close the remaining risk:
   (`2·det_radius_mean`, or image dimension / grid) is below ~64px, downgrade
   `gemini_auto` → manual review and block reference staging. Threshold can be
   refined later from `det_h/w` + radius columns, but any sane floor beats none.
-
-  **DO NOT read this as "the Gemini pipeline runs on low-quality images"
-  (code-verified 2026-07-12).** It does not, by design or by any downscale step.
-  The feed (`main.py:_feed_lot_to_pipeline`) sends the eBay photo bytes verbatim
-  (`image_proc.download_image` → `seen_items.upload_pipeline_input`, no resize),
-  and Gemini runs on exactly those bytes. Resolution is set entirely by the eBay
-  URL: the normal path (Browse **getItem** primary `image.imageUrl`,
-  `ebay_client.get_item_pictures`) is high-res (~1600px). Low-res only leaks
-  through the **fallback** — when getItem returns `[]`, the feed uses
-  `listing["gallery_url"]`, which in `find_listings` itself falls back to
-  `thumbnailImages[0]` (a ~100px thumbnail, `ebay_client.py`). The 104×104 case
-  came through *that fallback*, not normal operation — so 4a hardens a rare edge,
-  it does not fix a systemic low-res feed. Separately, the code never rewrites the
-  URL up to `s-l1600`; adding that upgrade (and refusing to feed/auto-confirm
-  sub-floor images) is the actual resolution lever, distinct from this guard.
 - **4b — reference coverage for rare slogans** (CCB/CCNB slogans scoring 0.00 in
   HANDOFF). Data exists; it needs one run of
   `tools/audit_reference_coverage.py` against GCS (requires GCP access — run it
@@ -268,6 +253,19 @@ threshold. These items close the remaining risk:
   non-football candidate on the review card without typing) remains open; if
   misses persist because the shadow #1 stays football, widen the gate to "any
   non-football candidate in shadow top-3 outscoring the football top".
+- **4e — per-slogan text-baseline centering (shadow shipped 2026-07-15;
+  decision pending).** Slogans carry a de-facto CLIP text advantage
+  independent of the crop: per-phrase background text_score spans 0.34–0.80
+  (Logger_14, 515 phrases) — the attractor disease quantified, and the
+  mechanism behind the "I-O-…" pun family never charting (see
+  tested_hypothesis Part VI layer 3). The fix candidate is centering each
+  slogan's cosine on its own reference-bank baseline (per-SLOGAN axis, not
+  per-year; ref_sim's centered adjustment is the precedent). Shipped as
+  measurement only: `rank_centered` in confirm_log vs `rank_restricted`.
+  *Enter (flip live) when:* centered places confirmed truths at #1 at least
+  as often as raw AT SCALE, including truths raw ranking leaves off-board —
+  and only together with a recalibration of every score threshold
+  (0.85/green/gap), since all are calibrated to today's distribution.
 - **4c — measured auto-confirm error rate: blocked on human data that doesn't
   exist yet.** No `correction`/`skip_correction` rows have ever been logged, so
   auto-path precision is inferred, not measured. To cross: when an auto-confirm
@@ -404,3 +402,56 @@ instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
   auto-confirm error rate remains inferred, not measured).
 - A durable record of the 759/759 `gemini_auto` visual audit (currently only
   attested in chat; a one-line note in HANDOFF or the Sheet makes it citable).
+
+---
+
+## Gap-widening strategy — boosting score-based automation (2026-07-12)
+
+The `gap >= 0.15` rule (dominant #1-vs-#2 lead => #1 is correct at any
+absolute score; 230/230 across Logger_11 + Logger_12) makes the LEAD the
+automation currency: every point of gap converts to auto coverage. Two
+complementary tracks — widen true gaps, and trust narrow-but-safe ones.
+
+### Track 1 — widen true gaps (make the right answer more dominant)
+
+1. **Reference-shelf completion, log-targeted (dominant lever, proven).**
+   "Stuck in a Rut" went rank-31 -> rank-1 in four days purely from confirms
+   staging references (Logger_12, Jul 4->11). A gap = (crop vs right entry's
+   evidence) − (crop vs runner-up's); references raise only the first term.
+   Action: from each export, list every slogan that won with gap < 0.15 or
+   lost at ranks 2–5; fill those shelves to the 4-cap first (`/reference`
+   promotion + targeted photos). Likely 30–50 slogans do most of the damage.
+2. **Calibrate `REF_CHECK_WEIGHT` (0.15) on real outcomes.** The centered
+   ref-photo check is the score's one explicitly contrastive term — it
+   widens exactly the correct-vs-wrong gap when references exist. Its
+   `ref_sim` telemetry only flows since the 2026-07-09 fix, so the next
+   export is the first calibration opportunity. Compounds with (1).
+3. **TTA on low-gap crops (flagged experiment).** Compressed scores often
+   mean degraded crops (blur/small/glare flatten every sim). The existing
+   TTA machinery (tight re-crop + rotations, `BUTTONMATCHER_TTA`) currently
+   targets sub-0.65 crops; test it on low-GAP crops instead and measure on
+   confirmed rows whether it widens gaps. One export answers it.
+
+### Track 2 — trust narrow gaps where provably safe (segment the risk)
+
+4. **Confusable-pair registry (twin registry, generalized).** Some pairs
+   never widen (0.968 wrestling pin; Slash/Trash the Flash; Mellon-era
+   templates) — but they are ENUMERABLE from logs: any two entries that
+   ever swapped ranks on a confirmed row. Quarantine score-only autos
+   within known pairs (as twin families route to the picker); the remaining
+   population's small gaps become safer — the eventual justification for
+   lowering GAP_ONLY below 0.15 for everyone else.
+5. **Flip `BUTTONMATCHER_GAP_ONLY_LIVE=1`** after one clean shadow batch
+   (~3x score-based auto coverage, already built, zero new engineering).
+
+### Ceiling (by design)
+
+Genuinely ambiguous buttons stay with a second signal (Gemini agreement)
+or a human tap (edition picker). End state: every lot lands in one of three
+buckets — dominant lead (auto) / known-confusable (arbitrated or
+quarantined) / genuinely ambiguous (human) — and the third bucket shrinks
+with every reference photo the flywheel adds.
+
+**Next-week order:** flip gap-only live after a clean shadow batch; mine
+Logger_13's low-gap offender list and fill those shelves; calibrate the
+ref-check weight on the same export.
