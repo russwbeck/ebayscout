@@ -148,6 +148,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
                 "auto": gate_ok,
                 "confidence": conf,
                 "gemini_slogan": g_slogan,
+                "printed_year": assoc.get("printed_year"),
                 "matched_rank": rank,
             }
             era_votes[cand.get("year")] += 1
@@ -157,13 +158,28 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
                 "source": "gemini_auto", "confidence": conf, "matched_rank": rank,
             })
         else:
-            deferred.append((crop_idx, norm_g, matches, conf, gate_ok, g_slogan))
+            deferred.append((crop_idx, norm_g, matches, conf, gate_ok, g_slogan,
+                             assoc.get("printed_year")))
 
-    # --- Pass 2: Scenario B (repeated slogan) — disambiguate by majority -----
+    # --- Pass 2: Scenario B (repeated slogan) -------------------------------
+    # Disambiguation ladder: the button's own PRINTED YEAR marker (when Gemini
+    # read one and it matches exactly one candidate — 1983/84 + 1997-2025
+    # buttons carry the marker) beats the photo's majority era, which beats
+    # CLIP's own ranking.  The printed year is per-button physical evidence;
+    # the majority is an inference from the photo's other buttons.
     anchor_year, clear = _majority_year(era_votes)
     n_disambiguated = 0
-    for crop_idx, norm_g, matches, conf, gate_ok, g_slogan in deferred:
-        if clear and anchor_year is not None:
+    n_printed_year = 0
+    for crop_idx, norm_g, matches, conf, gate_ok, g_slogan, printed_year in deferred:
+        rank = cand = None
+        if printed_year is not None:
+            _py = [(rk, c) for rk, c in matches
+                   if _year_int(c.get("year")) == printed_year]
+            if len(_py) == 1:
+                rank, cand = _py[0]
+                source = "gemini_printed_year"
+                n_printed_year += 1
+        if cand is None and clear and anchor_year is not None:
             # candidate (rank, cand) whose year is closest to the majority era
             def _dist(item):
                 yi = _year_int(item[1].get("year"))
@@ -171,7 +187,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
             rank, cand = min(matches, key=_dist)
             source = "gemini_majority"
             n_disambiguated += 1
-        else:
+        elif cand is None:
             rank, cand = matches[0]  # CLIP's own top-ranked match
             source = "gemini_clip_fallback"
 
@@ -183,6 +199,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
             "auto": gate_ok,
             "confidence": conf,
             "gemini_slogan": g_slogan,
+            "printed_year": printed_year,
             "matched_rank": rank,
         }
         per_crop.append({
@@ -196,6 +213,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         "n_gemini_confirmed": n_confirmed,
         "n_resolved": len(resolutions),
         "n_disambiguated_by_majority": n_disambiguated,
+        "n_printed_year": n_printed_year,
         "n_low_confidence": n_low_confidence,
         "n_manual": len(crop_candidates) - len(resolutions),
         "majority_year": anchor_year,

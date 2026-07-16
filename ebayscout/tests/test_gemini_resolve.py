@@ -175,3 +175,53 @@ def test_normalize_key_collapses_pun_variants():
     assert _norm("I-O-Wouldn't") == "iowouldnt"
     assert _norm("Indi-gestion") == _norm("Indigestion") == "indigestion"
     assert _norm("Panthers' Pittfall") == _norm("Panthers Pittfall") == "pantherspittfall"
+
+
+def _norm_py(s):
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+
+def test_scenario_b_printed_year_beats_majority():
+    """Repeated-slogan disambiguation ladder (2026-07-16): the button's own
+    printed year marker beats the photo's majority era."""
+    from gemini_resolve import resolve_with_gemini_slogans
+    cands = [{"year": 1972, "slogan": "Crush the Orange", "type": "Football"},
+             {"year": 1973, "slogan": "Crush the Orange", "type": "Football"}]
+    # two anchor crops vote 1972 as the majority era; the printed year says 1973
+    anchor = [{"year": 1972, "slogan": f"Anchor {i}", "type": "Football"}
+              for i in range(2)]
+    res = resolve_with_gemini_slogans(
+        {0: [anchor[0]], 1: [anchor[1]], 2: cands},
+        {0: {"slogan": "Anchor 0", "confidence": 0.95, "index": 1},
+         1: {"slogan": "Anchor 1", "confidence": 0.95, "index": 2},
+         2: {"slogan": "Crush the Orange", "confidence": 0.95, "index": 3,
+             "printed_year": 1973}},
+        {}, set(), normalize_fn=_norm_py)
+    r = res[2]
+    assert r["source"] == "gemini_printed_year"
+    assert r["year"] == 1973 and r["printed_year"] == 1973
+
+
+def test_scenario_b_falls_back_to_majority_without_marker():
+    from gemini_resolve import resolve_with_gemini_slogans
+    cands = [{"year": 1972, "slogan": "Crush the Orange", "type": "Football"},
+             {"year": 1973, "slogan": "Crush the Orange", "type": "Football"}]
+    anchor = [{"year": 1972, "slogan": f"Anchor {i}", "type": "Football"}
+              for i in range(2)]
+    res = resolve_with_gemini_slogans(
+        {0: [anchor[0]], 1: [anchor[1]], 2: cands},
+        {0: {"slogan": "Anchor 0", "confidence": 0.95, "index": 1},
+         1: {"slogan": "Anchor 1", "confidence": 0.95, "index": 2},
+         2: {"slogan": "Crush the Orange", "confidence": 0.95, "index": 3}},
+        {}, set(), normalize_fn=_norm_py)
+    assert res[2]["source"] == "gemini_majority" and res[2]["year"] == 1972
+
+
+def test_scenario_a_carries_printed_year_through():
+    from gemini_resolve import resolve_with_gemini_slogans
+    res = resolve_with_gemini_slogans(
+        {0: [{"year": 2019, "slogan": "Idaho'nt Think So", "type": "Football"}]},
+        {0: {"slogan": "Idaho'nt Think So", "confidence": 0.95, "index": 1,
+             "printed_year": 2019}},
+        {}, set(), normalize_fn=_norm_py)
+    assert res[0]["printed_year"] == 2019

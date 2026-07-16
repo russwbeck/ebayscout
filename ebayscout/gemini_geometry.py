@@ -382,6 +382,7 @@ def associate_slogans(final_centers, gemini_px, gemini_slogans, max_dist=None):
             "index": s.get("index"),
             "slogan": s.get("slogan"),
             "confidence": s.get("confidence"),
+            "printed_year": s.get("printed_year"),
             "dist": round(dist, 2),
         }
 

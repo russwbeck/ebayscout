@@ -132,3 +132,27 @@ def test_registry_summary_counts_families_and_entries():
 
 def test_registry_summary_empty():
     assert edt.registry_summary({}) == "0 slogan families with multiple editions (0 entries)"
+
+
+def test_resolve_by_printed_year_unique_match():
+    fam = [{"slogan": "Crush the Orange", "year": 1972, "type": "Football"},
+           {"slogan": "Crush the Orange", "year": 1973, "type": "Football"}]
+    import edition_twins as edt
+    hit = edt.resolve_by_printed_year(fam, 1973)
+    assert hit is fam[1]
+
+
+def test_resolve_by_printed_year_no_match_or_ambiguous_returns_none():
+    import edition_twins as edt
+    fam = [{"year": 1972}, {"year": 1973}]
+    assert edt.resolve_by_printed_year(fam, 1984) is None    # not in family
+    assert edt.resolve_by_printed_year(fam, None) is None    # no marker read
+    assert edt.resolve_by_printed_year([], 1972) is None     # empty family
+    dup = [{"year": 2015}, {"year": 2015}]                   # pathological
+    assert edt.resolve_by_printed_year(dup, 2015) is None
+
+
+def test_resolve_by_printed_year_tolerates_string_years():
+    import edition_twins as edt
+    fam = [{"year": "1972"}, {"year": "1973"}, {"year": "n/a"}]
+    assert edt.resolve_by_printed_year(fam, 1972) is fam[0]
