@@ -753,6 +753,45 @@ conf` 0.98, `det_raw_hough` == expected with tight radius std) followed by
 `detector_used=grid`/`projection` or a `+holeinvert`/refusal tag.
 
 
+## 4.11 Two more doors into the projection-strips failure — the flood floor overfit AGAIN, and the fused band under the saturation trigger (2026-07-16)
+
+Operator report: "a lot of the same errors in /sort" — full-width strip crops.
+Both lots run through the real detector in-session; two distinct mechanisms,
+both now fixed and fixtured:
+
+- **CCB-11 on dark wood — the 4.9 fix's own §4.2 event.**  Guided Hough found
+  every button (12 raw, 11 kept, radius std 2.9) and the flood gate refused
+  them: mask 61% (the wood leaks into the blue range), circles explained only
+  53% < the 0.60 floor.  The explained-RATIO was calibrated on ONE positive
+  case (dense-Mellon 0.83) and conflates "leaky mask" with "circles on
+  background".  **Fix: judge the RESIDUAL** — mask area OUTSIDE the circles
+  as a fraction of the frame (dense-Mellon 0.10, CCB 0.30 → accept;
+  navy-carpet ~0.56, turf ~0.58 → refuse; `FLOOD_RESIDUAL_MAX = 0.42`, ~0.14
+  margins both ways).  Restored 11/11 hough; carpet margins re-verified in
+  the pure tests.
+- **Mellon-13 on a white envelope — the fused band below the trigger.**  The
+  envelope passes the white range → one fused sheet at **72% coverage, just
+  UNDER the 0.75 saturation-fallback trigger** — so no rescue fired, Hough
+  found 0 of 13, and the count-guided projection shipped 13×1 strips.
+  Lowering the trigger blindly was rejected (healthy dense lots live at
+  0.58-0.61 — thin margins).  **Fix: the starved-Hough fused-mask retry** —
+  only when pass-1 finds under 30% of `expected` AND coverage sits in the
+  0.50-0.75 band, rebuild with the SAME satfallback variants and re-run
+  Hough once (`_fused_mask_fallback`, tag `+fusedretry_*`).  Gated on the
+  demonstrated failure of the current mask (§4.2), so a working lot can
+  never switch.  On the real lot: blue variant (34% coverage) → 12 circles +
+  white-rescue recovers the white Fiesta button = **13/13** (the whitepass
+  earning its keep on exactly its designed case).
+
+Fixtures `ccb_darkwood_11.jpg` + `mellon_envelope_13.jpg` lock both; battery
+43 green; buttonmatcher/ebayscout parity verified on identical bytes.
+**Meta-lesson (now twice):** every constant calibrated on one positive
+example WILL meet its counterexample; prefer quantities whose accept/refuse
+populations separate by construction (residual area) and rescues gated on
+the primary path's demonstrated failure (fused retry) over threshold
+tuning.
+
+
 ---
 
 # Part V — slogan auto-confirm signals (Logger_14 dual-run, 2026-07-15)
@@ -803,19 +842,37 @@ coverage.*
   rule), and 35 typed rows had the truth in no leaderboard (reference
   coverage gaps, Phase 4b). The reader keeps the residual.
 
-**Newly instrumented, needs a clean shadow batch before live (§4.2 small-N rule)**
+**Validated on Logger_15 (2026-07-15 batch, 256 reviewed rows) — VERDICTS**
 
-- `slogan_gap ≥ 0.12` certification and the `slogan_gap ≥ 0.05 AND
-  ref_sim ≥ 0.90` combo were both tuned on Logger_14 — so they shipped
-  **shadow-only** (2026-07-15, buttonmatcher `main.py`:
-  `slogan_level_gap` / `slogan_gap_shadow_rule`, `>>> SLOGAN_GAP_SHADOW:`
-  lines, subordinate to both blocks; the unvalidated all-one-slogan
-  snapshot never fires). Gap-only itself went LIVE the same session
-  (default flipped; `BUTTONMATCHER_GAP_ONLY_LIVE=0` is the kill switch),
-  with the annotated-image status pass aligned to the real decision.
-  Replay check: the exact shipped functions on Logger_14 = 327 + 91
-  fires, 0 wrong in 731. Validate the shadow lines on the next batch,
-  then flip.
+- **`slogan_gap ≥ 0.12`: LIVE.**  Second independent clean batch — 121/121
+  (cumulative **448/448** across Logger_14/15) — satisfying its documented
+  gate.  Flipped 2026-07-15 (source `auto_slogan_gap`, kill switch
+  `BUTTONMATCHER_SLOGAN_GAP_LIVE=0`, annotated-image status pass mirrored,
+  both blocks still win, the unvalidated all-one-slogan snapshot never
+  fires).
+- **`ref_combo` (sgap ≥ 0.05 AND ref_sim ≥ 0.90): REFUTED at these
+  thresholds — permanent shadow.**  Its first validation batch produced a
+  wrong fire: "A&M: Remember the Nittany Lions" carried **ref_sim 0.986**
+  against a "Here Come The Voluntears" button (sgap 0.057) — a visual twin
+  WORSE than the 0.968 wrestling pin.  ref_sim alone can hit ~0.99 on the
+  wrong button; the combo stays measurement-only (`SLOGAN_GAP_SHADOW
+  rule=ref_combo` lines) unless a future calibration finds a safe shape.
+  The shadow-first discipline (§4.2) caught this before it cost an
+  inventory error.
+- **`gap_only` (raw ≥ 0.15): fourth clean batch** — 85/85 on Logger_15,
+  cumulative **537/537**.
+- **Deep-agreement tiers: first live day.**  31/233 `gemini_auto` confirms
+  (13.3%) arrived via the new tiers — 10 deep-pool (truth at leaderboard
+  rank 4-10) + 21 DB-direct (truth on NO year-folded board row at all) —
+  vs a 0.7% deep share and ZERO off-board in pre-fix Logger_14 (the
+  attribution control).  Typed entries fell 35 → 2 per batch; "I-Oh-Was"
+  auto-confirmed.  No `correction` rows logged against any deep-tier
+  confirm.  The residual typed class is structural: puns Gemini reads in
+  normalized form ("Voluntears" as "volunteers") — agreement cannot fire
+  on a normalized mismatch; a fuzzy-agreement tier is the candidate lever
+  if volume warrants.
+- **Stage-B accrual:** gated `auto`+`scale_first` vs Gemini count 13/13
+  exact on the day's feed (streak continues).
 
 ---
 

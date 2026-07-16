@@ -163,38 +163,43 @@ def _guided_mask_floods(expected, mask_fraction, enabled):
 
 
 # A flooded mask alone cannot tell "background leaked in" (turf/carpet — the
-# gate's real target) from "big buttons legitimately fill the frame" (a dense
-# 11-lot at r~85 on 644x800 covers ~50% by itself; its mask read 58% and the
-# flood gate threw away a perfect 11/11 Hough set for a degenerate 11x1
-# projection grid — 2026-07-15, the dense-Mellon lot).  The independent
-# on-target check (tested_hypothesis.md §4.2) is whether the accepted circles
-# EXPLAIN the mask: dense lot = circle-union covers ~all mask foreground
-# (measured 0.834 on the failing lot); turf/carpet = the flooded mask vastly
-# exceeds the circles (navy-carpet ~0.1-0.3 by area).  Floor 0.60 clears both
-# with wide margins.
-FLOOD_EXPLAINED_MIN = 0.60
+# gate's real target) from "big buttons legitimately fill the frame" (the
+# dense-Mellon 11-lot, 2026-07-15).  The first check ("circles explain >= 60%
+# of the mask") overfit its single positive example (§4.2 — again): a LEAKY
+# mask on a real dense lot (CCB-12 on dark wood, 2026-07-16: mask 61%, 12/12
+# perfect circles, explained only 53%) was refused, because the ratio
+# conflates "mask has extra background" with "circles are on background".
+# The separating quantity is the RESIDUAL — mask area OUTSIDE the accepted
+# circles, as a fraction of the FRAME: a background sheet is huge whether or
+# not the mask also contains buttons.  Measured: dense-Mellon 0.10, CCB-12
+# 0.28 (both must accept) vs navy-carpet ~0.56 / turf ~0.58 (both must
+# refuse) — 0.42 splits with ~0.14 margins on both sides.
+FLOOD_RESIDUAL_MAX = 0.42
 
 
 def _flood_refusal_decision(expected, mask_fraction, explained, enabled):
     """Decision at the flooded-mask refusal fork of the guided acceptance.
 
     Returns:
-      "refuse"       — mask floods AND the accepted circles do not explain it
-                       (turf/carpet: background hits) → route to projection +
-                       Gemini reconcile, as shipped 2026-07-12.
-      "accept_dense" — mask floods but the circle-union covers >=
-                       FLOOD_EXPLAINED_MIN of the mask foreground: the "flood"
-                       IS the buttons (dense lot of large buttons) — keep the
-                       guided circles.
+      "refuse"       — mask floods AND a large mask sheet remains OUTSIDE the
+                       accepted circles (residual = mask_fraction * (1 -
+                       explained) > FLOOD_RESIDUAL_MAX): turf/carpet
+                       background hits → route to projection + Gemini
+                       reconcile, as shipped 2026-07-12.
+      "accept_dense" — mask floods but nearly all of it is under the circles
+                       (dense lot of large buttons, possibly with a leaky
+                       mask) — keep the guided circles.
       "n/a"          — mask does not flood (or gate disabled / small lot);
                        the fork is not taken.
 
-    ``explained`` None means the check could not run — treat as 0.0 so the
-    behaviour degrades to the shipped refusal, never to a silent accept.
-    Pure (no cv2) so the margins are unit-testable."""
+    ``explained`` (fraction of mask foreground covered by the circle union)
+    None means the check could not run — treated as 0.0 so the behaviour
+    degrades to the shipped refusal, never to a silent accept.  Pure (no
+    cv2) so the margins are unit-testable."""
     if not _guided_mask_floods(expected, mask_fraction, enabled):
         return "n/a"
-    if (explained or 0.0) >= FLOOD_EXPLAINED_MIN:
+    residual = mask_fraction * (1.0 - (explained or 0.0))
+    if residual <= FLOOD_RESIDUAL_MAX:
         return "accept_dense"
     return "refuse"
 
@@ -217,6 +222,48 @@ def _circles_explain_mask(mask, circles):
         cv2.circle(union, (x, y), max(r, 1), 255, -1)
     covered = cv2.countNonZero(cv2.bitwise_and(mask, union))
     return covered / float(fg)
+
+
+# A fused sheet BELOW the 0.75 saturation trigger starves guided Hough the
+# same way the >0.75 lots did (white envelope under 13 navy buttons: coverage
+# 0.72, Hough found 0) — but healthy DENSE lots live at 0.58-0.61 coverage, so
+# lowering the chooser trigger would risk switching masks under working lots.
+# Instead, retry with the same fallback variants ONLY on demonstrated failure:
+# guided pass-1 found under FUSED_RETRY_MAX_FRACTION of `expected` while the
+# mask sits in the fused band (tested_hypothesis §4.2 — gate a new path on an
+# independent check of the current path's own output).
+FUSED_RETRY_MIN_COVERAGE = 0.50
+FUSED_RETRY_MAX_FRACTION = 0.30   # pass-1 short of 30% of expected = starved
+
+
+def _fused_mask_fallback(img_bgr, bg_mean_v, h, w):
+    """Blue-only / bright hole-filled fallback variants for a fused mask —
+    the same two hypotheses the >0.75 saturation chooser uses, packaged for
+    the starved-Hough retry.  Returns (mask, label, coverage) for the first
+    plausible variant (coverage 8-75%), or None."""
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    kernel = np.ones((5, 5), np.uint8)
+
+    def _finish(fb):
+        fb = cv2.morphologyEx(fb, cv2.MORPH_CLOSE, kernel)
+        fb = cv2.morphologyEx(fb, cv2.MORPH_OPEN, kernel)
+        seed = next(((sx, sy) for (sx, sy) in
+                     ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))
+                     if fb[sy, sx] == 0), None)
+        if seed is not None:
+            ff = fb.copy()
+            cv2.floodFill(ff, np.zeros((h + 2, w + 2), np.uint8), seed, 255)
+            fb = cv2.bitwise_or(fb, cv2.bitwise_not(ff))
+        return fb, (cv2.countNonZero(fb) / float(h * w)) if (h * w) else 0.0
+
+    _fb1, _cov1 = _finish(cv2.inRange(
+        hsv, np.array([90, 70, 40]), np.array([140, 255, 255])))
+    _fb2, _cov2 = _finish(((hsv[:, :, 2] > (bg_mean_v or 0) + 60)
+                           & (hsv[:, :, 1] < 80)).astype(np.uint8) * 255)
+    for label, fb, cov in (("blue", _fb1, _cov1), ("bright", _fb2, _cov2)):
+        if 0.08 <= cov <= 0.75:
+            return fb, label, cov
+    return None
 
 
 # --- SHARED IMAGE PREP --------------------------------------------------------
@@ -1944,6 +1991,45 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
     det_count_auto    = None
     det_radius_min = det_radius_max = det_radius_mean = det_radius_std = None
 
+    # --- Starved-Hough fused-mask retry (white-envelope class, 2026-07-16) ---
+    # A background sheet that passes the colour mask below the 0.75 saturation
+    # trigger (envelope 0.72) fuses everything and pass-1 finds ~nothing.
+    # Demonstrated failure + fused-band coverage → rebuild with the fallback
+    # variants and re-run the SAME Hough once.  Healthy dense lots (coverage
+    # 0.58-0.61 with a full pass-1) never enter.  Fail-open.
+    if expected and det_raw_hough < max(2, int(expected * FUSED_RETRY_MAX_FRACTION)):
+        try:
+            _cov_now = (cv2.countNonZero(mask) / float(h * w)) if (h * w) else 0.0
+            if FUSED_RETRY_MIN_COVERAGE < _cov_now <= 0.75:
+                _fr = _fused_mask_fallback(image_bgr, _bg_mean_v, h, w)
+                if _fr is not None:
+                    _fr_mask, _fr_lbl, _fr_cov = _fr
+                    print(f">>> DETECT: fused-mask retry — pass-1 found "
+                          f"{det_raw_hough} of {expected} on a "
+                          f"{_cov_now:.0%} mask; retrying with the "
+                          f"{_fr_lbl} variant (coverage {_fr_cov:.0%}).",
+                          flush=True)
+                    mask = _fr_mask
+                    gray = cv2.GaussianBlur(mask, (9, 9), 2)
+                    _fill_threshold = 0.30
+                    circles = cv2.HoughCircles(
+                        gray, cv2.HOUGH_GRADIENT, dp=_hough_dp,
+                        minDist=_hough_mindist,
+                        param1=_hough_param1, param2=_hough_param2,
+                        minRadius=min_r, maxRadius=max_r)
+                    if circles is not None:
+                        circles = np.around(circles[0]).astype(int)
+                    det_raw_hough = len(circles) if circles is not None else 0
+                    print(f">>> DETECT: fused-mask retry found "
+                          f"{det_raw_hough} circles.", flush=True)
+                    if diag_out is not None:
+                        diag_out["mask_path"] = ((diag_out.get("mask_path") or "")
+                                                 + "+fusedretry_" + _fr_lbl)
+                        diag_out["hough_pass1_count"] = det_raw_hough
+        except Exception as _fr_err:
+            print(f"!!! DETECT: fused-mask retry failed (keeping original "
+                  f"mask): {_fr_err}", flush=True)
+
     # --- Draw ALL raw Hough circles onto debug_img unconditionally (red, thin) ---
     if circles is not None and debug:
         for (x, y, r) in circles:
@@ -2261,16 +2347,19 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
             if diag_out is not None:
                 diag_out["guided_flood_explained"] = round(_explained, 3)
             if _flood_decision == "accept_dense":
-                print(f">>> DETECT: flooded mask ({_mask_fraction:.0%}) is "
-                      f"EXPLAINED {_explained:.0%} by the {len(cleaned)} accepted "
-                      f"circles (>= {FLOOD_EXPLAINED_MIN:.0%}) — dense lot, "
-                      f"keeping guided circles.", flush=True)
+                print(f">>> DETECT: flooded mask ({_mask_fraction:.0%}) sits "
+                      f"almost entirely under the {len(cleaned)} accepted "
+                      f"circles (residual "
+                      f"{_mask_fraction * (1 - _explained):.0%} <= "
+                      f"{FLOOD_RESIDUAL_MAX:.0%}) — dense lot, keeping "
+                      f"guided circles.", flush=True)
             else:
                 print(f">>> DETECT: guided acceptance REFUSED — mask floods "
                       f"{_mask_fraction:.0%} of frame (> {DEFICIT_FILL_MAX_MASK_FRACTION:.0%}) "
-                      f"on a {expected}-button lot and circles explain only "
-                      f"{_explained:.0%} (< {FLOOD_EXPLAINED_MIN:.0%}); guided "
-                      f"circles are background hits, routing to projection.",
+                      f"on a {expected}-button lot with residual "
+                      f"{_mask_fraction * (1 - _explained):.0%} outside the "
+                      f"circles (> {FLOOD_RESIDUAL_MAX:.0%}); guided circles "
+                      f"are background hits, routing to projection.",
                       flush=True)
                 if diag_out is not None:
                     diag_out["guided_refused_mask_fraction"] = round(_mask_fraction, 3)
