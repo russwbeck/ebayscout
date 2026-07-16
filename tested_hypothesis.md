@@ -785,6 +785,8 @@ both now fixed and fixtured:
 
 Fixtures `ccb_darkwood_11.jpg` + `mellon_envelope_13.jpg` lock both; battery
 43 green; buttonmatcher/ebayscout parity verified on identical bytes.
+**Operator-verified live 2026-07-16:** both original problem photos re-run
+through `/sort` on the deployed build — fixed.
 **Meta-lesson (now twice):** every constant calibrated on one positive
 example WILL meet its counterexample; prefer quantities whose accept/refuse
 populations separate by construction (residual area) and rescues gated on
