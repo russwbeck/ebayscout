@@ -753,6 +753,45 @@ conf` 0.98, `det_raw_hough` == expected with tight radius std) followed by
 `detector_used=grid`/`projection` or a `+holeinvert`/refusal tag.
 
 
+## 4.11 Two more doors into the projection-strips failure — the flood floor overfit AGAIN, and the fused band under the saturation trigger (2026-07-16)
+
+Operator report: "a lot of the same errors in /sort" — full-width strip crops.
+Both lots run through the real detector in-session; two distinct mechanisms,
+both now fixed and fixtured:
+
+- **CCB-11 on dark wood — the 4.9 fix's own §4.2 event.**  Guided Hough found
+  every button (12 raw, 11 kept, radius std 2.9) and the flood gate refused
+  them: mask 61% (the wood leaks into the blue range), circles explained only
+  53% < the 0.60 floor.  The explained-RATIO was calibrated on ONE positive
+  case (dense-Mellon 0.83) and conflates "leaky mask" with "circles on
+  background".  **Fix: judge the RESIDUAL** — mask area OUTSIDE the circles
+  as a fraction of the frame (dense-Mellon 0.10, CCB 0.30 → accept;
+  navy-carpet ~0.56, turf ~0.58 → refuse; `FLOOD_RESIDUAL_MAX = 0.42`, ~0.14
+  margins both ways).  Restored 11/11 hough; carpet margins re-verified in
+  the pure tests.
+- **Mellon-13 on a white envelope — the fused band below the trigger.**  The
+  envelope passes the white range → one fused sheet at **72% coverage, just
+  UNDER the 0.75 saturation-fallback trigger** — so no rescue fired, Hough
+  found 0 of 13, and the count-guided projection shipped 13×1 strips.
+  Lowering the trigger blindly was rejected (healthy dense lots live at
+  0.58-0.61 — thin margins).  **Fix: the starved-Hough fused-mask retry** —
+  only when pass-1 finds under 30% of `expected` AND coverage sits in the
+  0.50-0.75 band, rebuild with the SAME satfallback variants and re-run
+  Hough once (`_fused_mask_fallback`, tag `+fusedretry_*`).  Gated on the
+  demonstrated failure of the current mask (§4.2), so a working lot can
+  never switch.  On the real lot: blue variant (34% coverage) → 12 circles +
+  white-rescue recovers the white Fiesta button = **13/13** (the whitepass
+  earning its keep on exactly its designed case).
+
+Fixtures `ccb_darkwood_11.jpg` + `mellon_envelope_13.jpg` lock both; battery
+43 green; buttonmatcher/ebayscout parity verified on identical bytes.
+**Meta-lesson (now twice):** every constant calibrated on one positive
+example WILL meet its counterexample; prefer quantities whose accept/refuse
+populations separate by construction (residual area) and rescues gated on
+the primary path's demonstrated failure (fused retry) over threshold
+tuning.
+
+
 ---
 
 # Part V — slogan auto-confirm signals (Logger_14 dual-run, 2026-07-15)
