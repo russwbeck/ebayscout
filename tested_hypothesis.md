@@ -803,19 +803,37 @@ coverage.*
   rule), and 35 typed rows had the truth in no leaderboard (reference
   coverage gaps, Phase 4b). The reader keeps the residual.
 
-**Newly instrumented, needs a clean shadow batch before live (§4.2 small-N rule)**
+**Validated on Logger_15 (2026-07-15 batch, 256 reviewed rows) — VERDICTS**
 
-- `slogan_gap ≥ 0.12` certification and the `slogan_gap ≥ 0.05 AND
-  ref_sim ≥ 0.90` combo were both tuned on Logger_14 — so they shipped
-  **shadow-only** (2026-07-15, buttonmatcher `main.py`:
-  `slogan_level_gap` / `slogan_gap_shadow_rule`, `>>> SLOGAN_GAP_SHADOW:`
-  lines, subordinate to both blocks; the unvalidated all-one-slogan
-  snapshot never fires). Gap-only itself went LIVE the same session
-  (default flipped; `BUTTONMATCHER_GAP_ONLY_LIVE=0` is the kill switch),
-  with the annotated-image status pass aligned to the real decision.
-  Replay check: the exact shipped functions on Logger_14 = 327 + 91
-  fires, 0 wrong in 731. Validate the shadow lines on the next batch,
-  then flip.
+- **`slogan_gap ≥ 0.12`: LIVE.**  Second independent clean batch — 121/121
+  (cumulative **448/448** across Logger_14/15) — satisfying its documented
+  gate.  Flipped 2026-07-15 (source `auto_slogan_gap`, kill switch
+  `BUTTONMATCHER_SLOGAN_GAP_LIVE=0`, annotated-image status pass mirrored,
+  both blocks still win, the unvalidated all-one-slogan snapshot never
+  fires).
+- **`ref_combo` (sgap ≥ 0.05 AND ref_sim ≥ 0.90): REFUTED at these
+  thresholds — permanent shadow.**  Its first validation batch produced a
+  wrong fire: "A&M: Remember the Nittany Lions" carried **ref_sim 0.986**
+  against a "Here Come The Voluntears" button (sgap 0.057) — a visual twin
+  WORSE than the 0.968 wrestling pin.  ref_sim alone can hit ~0.99 on the
+  wrong button; the combo stays measurement-only (`SLOGAN_GAP_SHADOW
+  rule=ref_combo` lines) unless a future calibration finds a safe shape.
+  The shadow-first discipline (§4.2) caught this before it cost an
+  inventory error.
+- **`gap_only` (raw ≥ 0.15): fourth clean batch** — 85/85 on Logger_15,
+  cumulative **537/537**.
+- **Deep-agreement tiers: first live day.**  31/233 `gemini_auto` confirms
+  (13.3%) arrived via the new tiers — 10 deep-pool (truth at leaderboard
+  rank 4-10) + 21 DB-direct (truth on NO year-folded board row at all) —
+  vs a 0.7% deep share and ZERO off-board in pre-fix Logger_14 (the
+  attribution control).  Typed entries fell 35 → 2 per batch; "I-Oh-Was"
+  auto-confirmed.  No `correction` rows logged against any deep-tier
+  confirm.  The residual typed class is structural: puns Gemini reads in
+  normalized form ("Voluntears" as "volunteers") — agreement cannot fire
+  on a normalized mismatch; a fuzzy-agreement tier is the candidate lever
+  if volume warrants.
+- **Stage-B accrual:** gated `auto`+`scale_first` vs Gemini count 13/13
+  exact on the day's feed (streak continues).
 
 ---
 
