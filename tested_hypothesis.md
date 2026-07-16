@@ -874,6 +874,28 @@ coverage.*
 - **Stage-B accrual:** gated `auto`+`scale_first` vs Gemini count 13/13
   exact on the day's feed (streak continues).
 
+**Newly instrumented (2026-07-16) — printed-year + visual-final shadow**
+
+- **`printed_year`** (Gem prompt field, parser strict 1960-2035): scenario-B
+  repeated-slogan disambiguation now prefers the button's own printed year
+  marker over the photo's majority era (`source=gemini_printed_year`), and
+  the buttonmatcher twin guard auto-confirms the matching edition instead of
+  demoting when the marker matches exactly one family member (kill switch
+  `BUTTONMATCHER_PRINTED_YEAR=0`; a non-unique or out-of-family read never
+  resolves).  Targets the 91-per-batch `edition_pick` tap class — visual
+  arbitration cannot do this job (`edition_shadow` agrees with the human
+  only 76%, n=88).  Also the year-axis audit ruler: label records ×
+  confirm_log measures year-selection error against physical evidence.
+- **Visual-final shadow** (`>>> VISUAL_FINAL_SHADOW` + `visual_shadow` key
+  on row 0 of `restricted_top_json`): argmax-`ref_sim` over the top-10 beats
+  the blend as a raw ranker (91.3% vs 88.6% truth-at-#1, n=969) but its
+  failure class is same-design twins (ref_sim 0.986 on the WRONG button), so
+  giving it the final say requires an inter-candidate reference
+  DISSIMILARITY gate.  The shadow logs every would-flip with `margin` and
+  `inter_sim` so the gate threshold is calibrated from data before anything
+  acts.  Verdict pending.
+
+
 ---
 
 # Part VI — the text-blocked pun slogans (Logger_14 layer 2, 2026-07-15)

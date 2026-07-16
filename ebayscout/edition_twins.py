@@ -60,6 +60,28 @@ def twin_family(registry, slogan, normalize_fn):
     return registry.get(key)
 
 
+def resolve_by_printed_year(family, printed_year):
+    """The single family edition whose year equals the button's PRINTED year
+    marker, or None.
+
+    ``family`` is a twin_family() list (entries with a ``year``);
+    ``printed_year`` is the int Gemini read off the button (1983/84 and
+    1997-2025 buttons carry a small year marker).  Returns the matching entry
+    ONLY when exactly one edition matches — no match, an unparseable year, or
+    (pathologically) two same-year editions all return None, so a misread can
+    never resolve a twin.  Pure; callers keep their fail-open wrappers."""
+    if printed_year is None or not family:
+        return None
+    hits = []
+    for entry in family:
+        try:
+            if int(str((entry or {}).get("year")).strip()) == int(printed_year):
+                hits.append(entry)
+        except (TypeError, ValueError):
+            continue
+    return hits[0] if len(hits) == 1 else None
+
+
 def should_demote(registry, slogan, normalize_fn):
     """True iff ``slogan`` belongs to a registered multi-edition family — the
     pure yes/no at the heart of the auto-confirm guard. Callers wrap this in

@@ -306,3 +306,32 @@ def test_coord_scale_boundary_100_is_percent():
         {"slogan": "Edge", "x": 100.0, "y": 50.0},
     ]}}
     assert pi.parse_gemini_response(blob)["coord_scale"] == "percent"
+
+
+def test_printed_year_parses_valid_and_rejects_junk():
+    """printed_year (2026-07-16): the on-button year marker, strict by design
+    — a bad read must never resolve a twin edition."""
+    import pipeline_ingest as pi
+    assert pi._parse_printed_year(1984) == 1984
+    assert pi._parse_printed_year("2019") == 2019
+    assert pi._parse_printed_year(" 1997 ") == 1997
+    assert pi._parse_printed_year(2019.0) == 2019
+    assert pi._parse_printed_year(None) is None
+    assert pi._parse_printed_year("84") is None          # 2-digit
+    assert pi._parse_printed_year("198") is None
+    assert pi._parse_printed_year(3019) is None          # out of range
+    assert pi._parse_printed_year("next year") is None
+
+
+def test_printed_year_flows_through_parse_gemini_response():
+    import json as _json
+    import pipeline_ingest as pi
+    resp = {"response": {"total_button_count": 2, "detected_slogans": [
+        {"index": 1, "slogan": "Crush the Orange", "x": 20, "y": 30,
+         "confidence": 0.9, "printed_year": 1973},
+        {"index": 2, "slogan": "No Marker", "x": 60, "y": 30,
+         "confidence": 0.9},
+    ]}}
+    out = pi.parse_gemini_response(_json.dumps(resp))
+    assert out["detected_slogans"][0]["printed_year"] == 1973
+    assert out["detected_slogans"][1]["printed_year"] is None

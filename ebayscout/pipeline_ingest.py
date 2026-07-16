@@ -225,6 +225,22 @@ def _loads_loose(s):
         return {}
 
 
+def _parse_printed_year(v):
+    """The on-button printed year marker as an int, or None.
+
+    Strict on purpose: a 4-digit year in [1960, 2035] (tolerates "1984",
+    1984.0, " 2019 ").  Anything else — including 2-digit years, null, or a
+    hallucinated century — parses to None so a bad read can never resolve a
+    twin edition."""
+    if v is None:
+        return None
+    try:
+        y = int(float(str(v).strip()))
+    except (TypeError, ValueError):
+        return None
+    return y if 1960 <= y <= 2035 else None
+
+
 def parse_gemini_response(json_text):
     """Parse the stored ``.response.json`` into a normalized analysis dict.
 
@@ -235,8 +251,11 @@ def parse_gemini_response(json_text):
     ``EMPTY_ANALYSIS``.
 
     Returned ``detected_slogans`` entries are normalized to
-    ``{index, slogan, x, y, size, confidence}`` with ``size``/``confidence`` as
-    ``float`` or ``None``.
+    ``{index, slogan, x, y, size, confidence, printed_year}`` with
+    ``size``/``confidence`` as ``float`` or ``None`` and ``printed_year`` the
+    small on-button year marker (int, 1960-2035) when the Gem reported one —
+    None otherwise.  Buttons from 1983, 1984 and 1997-2025 carry the marker;
+    the field powers twin-edition resolution and the year-bias audit.
     """
     data = json_text
     if isinstance(data, (bytes, bytearray)):
@@ -288,6 +307,7 @@ def parse_gemini_response(json_text):
                 "edge_x": _edge_coord(s, "x"),
                 "edge_y": _edge_coord(s, "y"),
                 "confidence": _parse_confidence(s.get("confidence")),
+                "printed_year": _parse_printed_year(s.get("printed_year")),
             })
 
     # --- coordinate-scale normalization -------------------------------------
