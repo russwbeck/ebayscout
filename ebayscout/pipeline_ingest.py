@@ -228,16 +228,28 @@ def _loads_loose(s):
 def _parse_printed_year(v):
     """The on-button printed year marker as an int, or None.
 
-    Strict on purpose: a 4-digit year in [1960, 2035] (tolerates "1984",
-    1984.0, " 2019 ").  Anything else — including 2-digit years, null, or a
-    hallucinated century — parses to None so a bad read can never resolve a
-    twin edition."""
+    Accepts a 4-digit year in [1960, 2035] ("1984", 1984.0, " 2019 ") and
+    the two-digit marker forms the Gem prompt acknowledges exist on the
+    buttons ("'97", "'19", 97, 19): the marker eras make two digits
+    unambiguous — 83/84 are 1983/1984, 97-99 are 19xx, 00-35 are 20xx.
+    Everything else (85-96 two-digit, junk, null, hallucinated centuries)
+    parses to None so a bad read can never resolve a twin edition."""
     if v is None:
         return None
     try:
-        y = int(float(str(v).strip()))
+        y = int(float(str(v).strip().lstrip("'\u2019")))
     except (TypeError, ValueError):
         return None
+    if 0 <= y <= 99:
+        # two-digit marker: map through the known marker eras only
+        if y in (83, 84):
+            y += 1900
+        elif 97 <= y <= 99:
+            y += 1900
+        elif y <= 35:
+            y += 2000
+        else:
+            return None
     return y if 1960 <= y <= 2035 else None
 
 

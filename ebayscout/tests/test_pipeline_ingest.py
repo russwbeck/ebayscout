@@ -317,8 +317,7 @@ def test_printed_year_parses_valid_and_rejects_junk():
     assert pi._parse_printed_year(" 1997 ") == 1997
     assert pi._parse_printed_year(2019.0) == 2019
     assert pi._parse_printed_year(None) is None
-    assert pi._parse_printed_year("84") is None          # 2-digit
-    assert pi._parse_printed_year("198") is None
+    assert pi._parse_printed_year("198") is None         # 3-digit junk maps to no era
     assert pi._parse_printed_year(3019) is None          # out of range
     assert pi._parse_printed_year("next year") is None
 
@@ -335,3 +334,19 @@ def test_printed_year_flows_through_parse_gemini_response():
     out = pi.parse_gemini_response(_json.dumps(resp))
     assert out["detected_slogans"][0]["printed_year"] == 1973
     assert out["detected_slogans"][1]["printed_year"] is None
+
+
+def test_printed_year_two_digit_marker_forms():
+    """The Gem prompt acknowledges two-digit markers ('97, '19, '26) and asks
+    for four digits — but when Gemini echoes the marker form anyway, the
+    known marker eras make it unambiguous: 83/84 -> 19xx, 97-99 -> 19xx,
+    00-35 -> 20xx.  85-96 two-digit stays None (no such markers — a misread)."""
+    import pipeline_ingest as pi
+    assert pi._parse_printed_year("'97") == 1997
+    assert pi._parse_printed_year("'19") == 2019
+    assert pi._parse_printed_year("'26") == 2026
+    assert pi._parse_printed_year(83) == 1983
+    assert pi._parse_printed_year("84") == 1984
+    assert pi._parse_printed_year("00") == 2000
+    assert pi._parse_printed_year(90) is None      # no 1990 marker exists
+    assert pi._parse_printed_year("'86") is None
