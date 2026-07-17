@@ -259,7 +259,8 @@ behind this list.)*
 5. When Stage B enters: flip the unguided count to primary on gated lots
    behind an env flag, shadow-log disagreement vs truth for two weeks, then
    stop guiding those lots.
-6. *(added 2026-07-15)* **Read the `rank_centered` shadow when it accrues** —
+6. *(added 2026-07-15; RESOLVED 2026-07-16 — REFUTED at n=478, see
+   `AUTOMATION_ROADMAP.md` 4e)* **Read the `rank_centered` shadow when it accrues** —
    the per-slogan baseline advantage (background text_score 0.34–0.80 across
    515 phrases) is the measured mechanism behind text-suppressed slogans
    never charting; centering on each slogan's reference-bank baseline is the

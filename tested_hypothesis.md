@@ -888,14 +888,18 @@ coverage.*
   arbitration cannot do this job (`edition_shadow` agrees with the human
   only 76%, n=88).  Also the year-axis audit ruler: label records ×
   confirm_log measures year-selection error against physical evidence.
-- **Visual-final shadow** (`>>> VISUAL_FINAL_SHADOW` + `visual_shadow` key
-  on row 0 of `restricted_top_json`): argmax-`ref_sim` over the top-10 beats
-  the blend as a raw ranker (91.3% vs 88.6% truth-at-#1, n=969) but its
-  failure class is same-design twins (ref_sim 0.986 on the WRONG button), so
-  giving it the final say requires an inter-candidate reference
-  DISSIMILARITY gate.  The shadow logs every would-flip with `margin` and
-  `inter_sim` so the gate threshold is calibrated from data before anything
-  acts.  Verdict pending.
+- **Visual-final shadow — VERDICT (Logger_18, 47 flips on 473 reviewed
+  rows): REFUTED as a resolver, CONFIRMED (inverted) as a veto.**  Acting on
+  the flip would have fixed 8 wrong #1s but committed 37 wrong answers, and
+  the inter_sim dissimilarity gate did NOT separate them (fixes at
+  0.66–0.91, the one break at 0.58 — the "different-looking years are safe"
+  hypothesis fails).  But the flip EVENT is a powerful wrongness detector:
+  **P(#1 wrong | flip) = 94% vs 11% baseline**, and no score-based auto ever
+  fired on a flip row — so the flip now VETOES all score-based auto-confirm
+  rules (`_visual_veto_enabled`, default ON, kill switch
+  `BUTTONMATCHER_VISUAL_VETO=0`; Gemini-agreement paths unaffected — 31/47
+  flip rows were correctly rescued by agreement).  Zero observed coverage
+  cost; pure downside protection.
 
 
 ---
@@ -969,6 +973,13 @@ fixes verified by replaying the real shipped functions over the batch.*
   (17 improved / 10 worsened / 464 same).  It cannot see the cases centering
   should help most (truths shadowed OFF the board), and top-10-only baseline
   estimates are biased — the honest verdict needs the live shadow.
+- **VERDICT (Logger_18, n=478): REFUTED as a live-formula change.**
+  Centered vs raw on healthy rows: 394 same, 19 better, **65 worse**;
+  truth@#1 423 raw vs 386 centered.  The de-facto advantage is real, but
+  the "hot" baselines evidently encode useful prior signal (frequency /
+  reference density) — subtracting them costs more truths than it saves.
+  The column keeps logging (costless) but the live formula stays.  Phase
+  4e closes REFUTED.
 - **Shipped (measurement only): `rank_centered`.**  Baselines = mean cosine
   of each text row vs the ENTIRE reference bank, one matmul at hydration
   (`_recompute_text_baselines`, fail-open); `build_centered_leaderboard`

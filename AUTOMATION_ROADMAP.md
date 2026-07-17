@@ -253,8 +253,11 @@ threshold. These items close the remaining risk:
   non-football candidate on the review card without typing) remains open; if
   misses persist because the shadow #1 stays football, widen the gate to "any
   non-football candidate in shadow top-3 outscoring the football top".
-- **4e — per-slogan text-baseline centering (shadow shipped 2026-07-15;
-  decision pending).** Slogans carry a de-facto CLIP text advantage
+- **4e — per-slogan text-baseline centering: CLOSED, REFUTED (2026-07-16,
+  n=478).**  Centered ranking placed the truth at #1 LESS often than raw
+  (423→386); the baseline "advantage" carries useful prior signal.  The
+  `rank_centered` column keeps logging for the record.  Original phase
+  text below for provenance.** Slogans carry a de-facto CLIP text advantage
   independent of the crop: per-phrase background text_score spans 0.34–0.80
   (Logger_14, 515 phrases) — the attractor disease quantified, and the
   mechanism behind the "I-O-…" pun family never charting (see
