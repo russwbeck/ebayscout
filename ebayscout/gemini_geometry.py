@@ -369,6 +369,47 @@ def assoc_anchored(dist, r_px, max_frac=0.75):
         return True
 
 
+def plan_anchor_recovery(final_centers, final_radii, crop_to_slogan, gemini_px,
+                         gemini_slogans, median_r, max_frac=0.75):
+    """Gemini indices whose slogans should get a SYNTHESIZED crop because their
+    association is unanchored and their point sits clear of every crop.
+
+    The 1979-front incident's second half: the anchoring gate stops the wrong
+    AUTOs, but the real buttons the phantoms displaced stay silently absent
+    (deficit = 0, and on a flooded mask the fill-gated swap can't fire).  An
+    UNANCHORED pair is itself the recovery evidence the swap lacks there: a
+    crop no Gemini point explains + a slogan no crop explains.  When that
+    slogan's point is ALSO clear of every final crop center (> ``median_r`` —
+    same coverage notion as plan_reconciliation, so a merely sloppy-but-correct
+    pair can never double-count) and Gemini was confident
+    (>= SWAP_MIN_CONFIDENCE, the same trust gate as the swap), synthesize a
+    crop at the point.  No crop is dropped — the phantom stays, demoted to a
+    manual card by the anchoring gate.  Pure; the caller slices pixels.
+    """
+    if not median_r or median_r <= 0:
+        return []
+    out = []
+    for crop_idx, assoc in crop_to_slogan.items():
+        r = None
+        if final_radii is not None and 0 <= crop_idx < len(final_radii):
+            r = final_radii[crop_idx]
+        if assoc_anchored(assoc.get("dist"), r or median_r, max_frac):
+            continue
+        gi = assoc.get("gemini_idx")
+        if gi is None or not (0 <= gi < len(gemini_px)) or gemini_px[gi] is None:
+            continue
+        conf = gemini_slogans[gi].get("confidence")
+        if not isinstance(conf, (int, float)) or conf < SWAP_MIN_CONFIDENCE:
+            continue
+        gx, gy = gemini_px[gi]
+        if final_centers and min(
+                math.hypot(gx - cx, gy - cy) for cx, cy in final_centers
+        ) <= median_r:
+            continue  # point overlaps an existing crop — would double-count
+        out.append(gi)
+    return out
+
+
 def associate_slogans(final_centers, gemini_px, gemini_slogans, max_dist=None):
     """Link each final crop (detected + recovered) to its nearest Gemini slogan.
 

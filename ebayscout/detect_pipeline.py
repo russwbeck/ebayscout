@@ -91,6 +91,17 @@ def _reconcile_swap_enabled():
     return _flag_on("EBAYSCOUT_RECONCILE_SWAP", "BUTTONMATCHER_RECONCILE_SWAP")
 
 
+def _anchor_recovery_enabled():
+    """Anchor-gated recovery (1979-front incident): when a crop→slogan
+    association is UNANCHORED and the slogan's own Gemini point is clear of
+    every crop, synthesize a crop at the point — the recovery the fill-gated
+    swap can't do on a flooded mask (phantoms score high fill there, so the
+    count stays wrong and the deficit is 0).  No crop is dropped.  On by
+    default; EBAYSCOUT_ANCHOR_RECOVERY=0 (or BUTTONMATCHER_ANCHOR_RECOVERY=0)
+    disables it (instant rollback)."""
+    return _flag_on("EBAYSCOUT_ANCHOR_RECOVERY", "BUTTONMATCHER_ANCHOR_RECOVERY")
+
+
 def _auto_detect_enabled():
     """Auto detection (no count prompt) — default OFF until the gate is
     calibrated; BUTTONMATCHER_AUTO_DETECT=1 enables."""
@@ -2896,7 +2907,56 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
         final_centers, plan["gemini_px"], gemini_slogans,
     )
 
+    # Anchor-gated recovery (1979-front): an unanchored association is the
+    # evidence the fill-gated swap lacks on a flooded mask — a crop no Gemini
+    # point explains, holding a slogan no crop explains.  Synthesize a crop at
+    # that slogan's own point (same recipe/trust as the deficit misses) and
+    # re-associate; the phantom crop is NOT dropped (the anchoring gate demotes
+    # it to a manual card), so a wrong fire costs one extra card, never a lost
+    # button.  Kill switch: BUTTONMATCHER_ANCHOR_RECOVERY=0.
+    n_anchor_recovered = 0
+    _ar_median = plan["median_r"] or ggeo.median_radius(detected_radii)
+    if _anchor_recovery_enabled() and crop_to_slogan and _ar_median:
+        final_radii = [detected_radii[i] for i in kept_idx] + \
+                      [rc["r"] for rc in recovered_circle_info]
+        _ar_fallback = _ar_median if _ar_median else max(1.0, 0.04 * min(h, w))
+        for gi in ggeo.plan_anchor_recovery(
+                final_centers, final_radii, crop_to_slogan,
+                plan["gemini_px"], gemini_slogans, _ar_median):
+            s = gemini_slogans[gi]
+            gx, gy = plan["gemini_px"][gi]
+            edge_r = ggeo.radius_from_edge(s, gx, gy, w, h)
+            if edge_r is not None:
+                r_px = min(3.0 * _ar_fallback, max(0.25 * _ar_fallback, edge_r))
+            else:
+                r_px = ggeo.size_to_radius_px(s.get("size"), w, h) or _ar_fallback
+            x1, y1, x2, y2 = ggeo.synth_box(gx, gy, r_px, w, h)
+            crop = image_bgr[y1:y2, x1:x2]
+            if crop is None or crop.size == 0:
+                continue
+            recovered_crops.append(crop)
+            recovered_circle_info.append({
+                "shape": "circle",
+                "x": int((x1 + x2) / 2),
+                "y": int((y1 + y2) / 2),
+                "r": int(r_px),
+                "source": "gemini_recovered",
+                "slogan": s.get("slogan"),
+                "gemini_index": s.get("index"),
+                "confidence": s.get("confidence"),
+            })
+            final_centers.append((int((x1 + x2) / 2), int((y1 + y2) / 2)))
+            n_anchor_recovered += 1
+        if n_anchor_recovered:
+            crop_to_slogan, unmatched_gemini = ggeo.associate_slogans(
+                final_centers, plan["gemini_px"], gemini_slogans,
+            )
+            print(f">>> RECONCILE ANCHOR_RECOVERY: {n_anchor_recovered} "
+                  f"unanchored slogan(s) re-anchored to synthesized crops at "
+                  f"their Gemini points.", flush=True)
+
     telemetry = dict(plan["telemetry"])
+    telemetry["n_anchor_recovered"] = n_anchor_recovered
     telemetry["unmatched_gemini_slogans"] = [
         gemini_slogans[i].get("slogan") for i in unmatched_gemini
     ]

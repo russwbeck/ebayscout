@@ -327,3 +327,57 @@ def test_assoc_anchored_fails_open_on_missing_or_bad_data():
     assert gg.assoc_anchored(10.0, None) is True
     assert gg.assoc_anchored("bad", 50) is True
     assert gg.assoc_anchored(10.0, "bad") is True
+
+
+# --- plan_anchor_recovery (1979-front, second half) ----------------------------
+
+def _ar_scene():
+    """Miniature of the incident: 2 good crops, 1 blank-bag phantom; 3 Gemini
+    points; the phantom holds the orphaned slogan at ~4x radius."""
+    final_centers = [(100, 100), (300, 100), (150, 400)]   # c2 = phantom
+    final_radii = [50, 50, 50]
+    gemini_px = [(102, 103), (297, 101), (300, 300)]       # g2 = real missed button
+    gem = [{"index": 1, "slogan": "A", "confidence": 0.9},
+           {"index": 2, "slogan": "B", "confidence": 0.9},
+           {"index": 3, "slogan": "C", "confidence": 0.9}]
+    c2s = {0: {"gemini_idx": 0, "slogan": "A", "dist": 3.6},
+           1: {"gemini_idx": 1, "slogan": "B", "dist": 3.2},
+           2: {"gemini_idx": 2, "slogan": "C", "dist": 180.3}}  # unanchored
+    return final_centers, final_radii, gemini_px, gem, c2s
+
+
+def test_anchor_recovery_recovers_the_orphaned_slogan():
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == [2]
+
+
+def test_anchor_recovery_skips_anchored_pairs():
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    c2s[2]["dist"] = 30.0                      # 0.6x r — anchored
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+def test_anchor_recovery_requires_gemini_confidence():
+    # Same trust gate as the fill-gated swap (SWAP_MIN_CONFIDENCE).
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    gem[2]["confidence"] = 0.3
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+    gem[2]["confidence"] = None
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+def test_anchor_recovery_never_double_counts_a_sloppy_pair():
+    # A correct-but-sloppy pair (dist just over the gate) has its point ON the
+    # crop, well inside median_r of an existing center — must NOT synthesize a
+    # duplicate crop next to the real one.
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    gpx[2] = (155, 430)                        # 30px from the crop at (150,400)
+    c2s[2]["dist"] = 40.0                      # 0.8x r — unanchored by a hair
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+def test_anchor_recovery_fails_open_on_missing_geometry():
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, None) == []
+    gpx[2] = None
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []

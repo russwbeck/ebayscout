@@ -1056,12 +1056,41 @@ correct association untouched — zero false positives on the data in hand.
   permutation, so `gemini_backed` flags land on the right circles again
   (buttonmatcher only; ebayscout's pipeline never renumbers).
 
-## What the gate does NOT fix (open, needs the raw photo)
+## Root cause CONFIRMED on the real detector (raw photo, this session)
 
-- The three **missed buttons stay missed** — the gate stops wrong autos but
-  recovers nothing.  Detection put circles on blank bag under `sweep_fallback`
-  + a 0.55-coverage mask; root-causing THAT needs the raw photo run through
-  the real detector (§4.7 doctrine — no fixes from renders).
+The operator supplied the raw photo (2160×3840: 12 buttons on a WHITE plastic
+bag, incl. one white button — "Wave Good-bye").  Rerunning the exact
+`/pipeline` detection path reproduced the failure class end-to-end:
+
+- Hough found only 8; the radius-correction pass added 3 and the blob-buster
+  added 1 distance-peak **on the bag** → 12 circles, two on blank bag, with
+  Can the Juice + Wave Good-bye (white-on-white) missed.
+- The white-inclusive mask flooded on the white bag (coverage 0.55), so the
+  flood residual check read "dense lot" and — the known §4.6 blind spot —
+  **the fill-gated swap could not fire: phantoms score high fill on a flooded
+  mask.**  deficit 12−12 = 0 → nothing recovered.
+- Association pinned the two orphaned slogans on the blank crops at 3.67× and
+  5.15× radius; the anchoring gate flagged exactly those two and passed all
+  ten correct pairs (max correct 0.69×).
+
+## Anchor-gated recovery — the swap's flooded-mask replacement (SHIPPED 2026-07-17)
+
+An unanchored association is itself the recovery evidence fill can't give: a
+crop no Gemini point explains, holding a slogan no crop explains.  When that
+slogan's point is ALSO clear of every final crop center (> median_r — the
+plan_reconciliation coverage notion, so a sloppy-but-correct pair can never
+double-count) and Gemini was confident (>= SWAP_MIN_CONFIDENCE, the swap's own
+trust gate), `reconcile_with_gemini` synthesizes a crop at the point (the
+deficit-miss recipe) and re-associates.  **No crop is dropped** — the phantom
+stays as a manual card the anchoring gate already demoted, so a wrong fire
+costs one extra card, never a lost button.  Replayed on the raw photo: all 12
+real buttons end anchored (the two recovered at dist 0), the two blank crops
+end associationless (manual), n_unanchored 0.  Kill switch
+`BUTTONMATCHER_ANCHOR_RECOVERY=0` (ebayscout: `EBAYSCOUT_ANCHOR_RECOVERY`).
+Telemetry `n_anchor_recovered` + a RECONCILE ANCHOR_RECOVERY print.  Rollback
+trigger: any anchor-recovered crop confirmed wrong or blank.
+
+## Still open
 - **Count-consistency is logged but unused**: both lots in the batch carried
   `count_inconsistent: true` (Gemini declared 11, listed 12).  A miscount
   gate (downgrade autos when Gemini's own list disagrees with its count) is a
