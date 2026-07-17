@@ -381,3 +381,96 @@ def test_anchor_recovery_fails_open_on_missing_geometry():
     assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, None) == []
     gpx[2] = None
     assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+# --- fit_frame_map (1987-front dual incident) ----------------------------------
+
+# The live sidecar's 9 real hough circles (job efb99c29, "1987 front.jpg",
+# 599x800): detection found rows at y~166/300/437 (+1 table phantom at 689),
+# while Gemini reported the same grid stretched over the full frame
+# (rows at 19/48/76% -> y 152/384/608).
+DET_1987 = [(99, 168, 67), (223, 163, 58), (89, 304, 64), (215, 298, 63),
+            (365, 297, 62), (109, 445, 64), (231, 432, 65), (369, 434, 63),
+            (34, 689, 74)]
+
+
+def _gem_1987():
+    xs = [15.0, 37.0, 60.0, 82.0]
+    ys = [19.5, 48.0, 76.0]
+    out = []
+    i = 0
+    for y in ys:
+        for x in xs:
+            i += 1
+            out.append({"index": i, "slogan": f"s{i}", "x": x, "y": y,
+                        "edge_x": x, "edge_y": y - 9.5, "confidence": 0.9})
+    return out
+
+
+def test_frame_fit_1987_regression():
+    centers = [(x, y) for x, y, _ in DET_1987]
+    radii = [r for _, _, r in DET_1987]
+    med = gg.median_radius(radii)
+    pts = [gg.pct_to_px(s["x"], s["y"], 599, 800) for s in _gem_1987()]
+    fm = gg.fit_frame_map(centers, radii, pts, med)
+    assert fm["applied"] is True
+    assert abs(fm["ax"] - 1.0) < 1e-9 and abs(fm["bx"]) < 1e-9   # x was fine
+    assert 0.55 < fm["ay"] < 0.65                                 # the y stretch
+    assert fm["anchored_identity"] <= 3 and fm["anchored_fit"] >= 8
+
+
+def test_frame_fit_heals_1987_recovery_positions():
+    """Through plan_reconciliation: the corrected frame recovers the deficit at
+    the REAL button positions (row1 col3/col4, row2 col4) instead of on blank
+    table, and the only phantom suspect is the y=689 table circle."""
+    centers = [(x, y) for x, y, _ in DET_1987]
+    radii = [r for _, _, r in DET_1987]
+    plan = gg.plan_reconciliation(centers, radii, _gem_1987(), 599, 800)
+    ff = plan["telemetry"]["frame_fit"]
+    assert ff["applied"] is True
+    assert plan["telemetry"]["deficit"] == 3
+    rec = sorted((round(m["gx"]), round(m["gy"])) for m in plan["misses"])
+    for gx, gy in rec:
+        assert gy < 320, rec           # all recovered in rows 1-2, never y~608
+    assert plan["unmatched_crops"] == [8]
+    # rim-point radii are measured in the CORRECTED frame (raw 9.5% of h = 76px
+    # would blow the crop up; corrected ~0.6x that)
+    for m in plan["misses"]:
+        assert 35 <= m["r_px"] <= 55, m
+
+
+def test_frame_fit_keeps_identity_on_healthy_lot():
+    """1979-front: phantoms are not a linear-frame problem — no fit beats
+    identity decisively, so the raw frame is kept."""
+    det = [(328, 174, 42), (75, 237, 46), (184, 245, 47), (275, 246, 51),
+           (383, 254, 42), (77, 341, 62), (187, 340, 51), (41, 447, 44),
+           (175, 441, 49), (283, 449, 58), (112, 536, 49), (269, 537, 54)]
+    xs = [16.0, 41.0, 63.0, 84.0]
+    gem = []
+    i = 0
+    for y in (29.5, 43.0, 55.5):
+        for x in xs:
+            i += 1
+            gem.append({"index": i, "slogan": f"s{i}", "x": x, "y": y,
+                        "confidence": 0.9})
+    plan = gg.plan_reconciliation([(x, y) for x, y, _ in det],
+                                  [r for _, _, r in det], gem, 449, 800)
+    ff = plan["telemetry"]["frame_fit"]
+    assert ff["applied"] is False
+    assert ff["ay"] == 1.0 and ff["by"] == 0.0
+
+
+def test_frame_fit_fails_closed_on_small_or_degenerate_input():
+    ident = {"ax": 1.0, "bx": 0.0, "ay": 1.0, "by": 0.0}
+    fm = gg.fit_frame_map([(10, 10), (50, 50)], [5, 5], [(11, 11)], 5)
+    assert fm["applied"] is False and {k: fm[k] for k in ident} == ident
+    fm = gg.fit_frame_map([], [], [], None)
+    assert fm["applied"] is False
+
+
+def test_frame_fit_skips_when_already_fully_anchored():
+    centers = [(100, 100), (300, 100), (100, 300), (300, 300)]
+    radii = [50] * 4
+    pts = [(102, 101), (297, 99), (99, 303), (301, 298)]
+    fm = gg.fit_frame_map(centers, radii, pts, 50)
+    assert fm["applied"] is False and fm["anchored_identity"] == 4

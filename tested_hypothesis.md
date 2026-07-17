@@ -1097,3 +1097,43 @@ trigger: any anchor-recovered crop confirmed wrong or blank.
   candidate second signal, but on the sibling lot the 12-slogan list was
   correct and the count wrong — gating on it would have cost 12 good autos.
   Leave as telemetry until data says otherwise.
+
+## The DUAL incident — "1987 front" (job efb99c29): Gemini's frame stretched (2026-07-17)
+
+Problem two, same symptom, INVERTED root.  1979-front was detection wrong /
+Gemini right; 1987-front is detection (mostly) right / **Gemini's y-frame
+wrong**: it reported the 4×3 grid's rows at 19/48/76% of image height, but the
+real rows sit at ~21/38/55% — the photo's bottom half is empty table and
+Gemini stretched the layout over the full frame (x-columns matched exactly).
+Consequences in the live sidecar: rows 2-3's points landed 80-170px below
+their buttons, and deficit recovery synthesized crops at the STRETCHED points
+— two blank-table crops that arrived with dist-0, anchored-by-construction
+associations ("Irish Eyes Are Crying", "Lions' Pride") and auto-confirmed.
+Position-trust inverts every guard built for the 1979 class: the anchoring
+gate can't veto a crop synthesized AT the (wrong) Gemini point, and anchor
+recovery actively makes it worse (replayed: 5 crops synthesized at stretched
+points).  Precedent: §4.5's 0-100-vs-0-1000 coordinate-scale bug — same
+disease, continuous instead of discrete.
+
+## Frame fit — reconcile the coordinate FRAME before trusting positions (SHIPPED 2026-07-17)
+
+`gemini_geometry.fit_frame_map`: cluster each axis into row/column centers on
+both sides (the reading_order 1.3×median_r recipe), enumerate every
+order-preserving assignment of Gemini clusters to detected clusters, fit a
+per-axis line (slope sanity 0.4-2.5), and score every x×y candidate pair by
+ANCHORED one-to-one pairs produced.  Applied in `plan_reconciliation` before
+ANY position is consumed — coverage, deficit recovery, swap, association,
+anchoring gate, anchor recovery all heal from the one insertion — and only
+when the best fit beats identity by >= 2 anchored pairs (healthy lots keep the
+raw frame; replayed 1979-front: identity kept, unchanged output).  Rim-point
+radii are measured in the corrected frame (a mixed-frame distance would
+inflate the crop).  Replayed on the live 1987 geometry: fit y' = 0.598y+72.3,
+anchored 2→8, all 3 deficit recoveries land on REAL buttons, the white
+"Lions' Pride" button is recovered by the anchor-recovery pass at its true
+position, and the only leftover is the y=689 table phantom — unanchored,
+demoted to a manual card (or dropped by the fill swap when the mask
+cooperates).  Kill switch `BUTTONMATCHER_FRAME_FIT=0` (ebayscout:
+`EBAYSCOUT_FRAME_FIT`).  Telemetry: `frame_fit` in reconcile telemetry + a
+RECONCILE FRAME_FIT print.  Rollback trigger: a frame-fit lot whose
+confirmations show the map was wrong (watch any `applied=true` lot's confirms
+closely in the next Logger export).

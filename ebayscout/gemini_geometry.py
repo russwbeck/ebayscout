@@ -117,6 +117,127 @@ def match_points(centers_a, centers_b, max_dist=None):
     return pairs, unmatched_a, unmatched_b
 
 
+# --- Frame fit (1987-front dual incident, 2026-07-17) -------------------------
+# 1979-front: Gemini right, detection wrong (phantoms) — fixed by the anchoring
+# gate + anchor recovery, both of which TRUST Gemini's coordinates.  1987-front
+# is the DUAL: detection found the real buttons, but Gemini's y-frame was
+# STRETCHED (rows reported at 19/48/76% of image height vs real 21/38/55% — it
+# spread the grid over the full frame though the photo's bottom half is empty
+# table).  Position-trust then inverts every guard: deficit/anchor recovery
+# synthesize blank-table crops AT the wrong points, which arrive anchored-by-
+# construction and auto-confirm.  The structures still agree (same columns,
+# same row ORDER) — only the axis scale is off — so fit a per-axis linear map
+# from Gemini's row/column centers to detection's, and apply it ONLY when it
+# strictly improves physical agreement by FRAME_FIT_MIN_GAIN anchored pairs
+# (a healthy lot keeps the identity map — zero risk of jitter re-fits).
+FRAME_FIT_MIN_GAIN = 2
+FRAME_FIT_SLOPE_RANGE = (0.4, 2.5)
+FRAME_FIT_MAX_CLUSTERS = 8
+
+
+def _cluster_1d(vals, gap):
+    """Agglomerative 1-D clustering (the reading_order row recipe): merge the
+    closest adjacent clusters until the smallest gap exceeds ``gap``.  Returns
+    sorted cluster centers."""
+    pts = sorted(float(v) for v in vals)
+    if not pts:
+        return []
+    if gap <= 0:
+        return [sum(pts) / len(pts)]
+    clusters = [[p] for p in pts]
+    while len(clusters) > 1:
+        centers = [sum(c) / len(c) for c in clusters]
+        g, i = min((centers[j + 1] - centers[j], j)
+                   for j in range(len(clusters) - 1))
+        if g > gap:
+            break
+        clusters[i] += clusters[i + 1]
+        del clusters[i + 1]
+    return [sum(c) / len(c) for c in clusters]
+
+
+def _lsq_line(xs, ys):
+    """Least-squares (slope, intercept) for y = a*x + b; None when degenerate."""
+    n = len(xs)
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    den = sum((x - mx) ** 2 for x in xs)
+    if den <= 0:
+        return None
+    a = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
+    return a, my - a * mx
+
+
+def _anchored_count(det_centers, det_radii, pts, median_r, max_frac=0.75):
+    """How many one-to-one NN pairs between detected crops and (mapped) Gemini
+    points are physically anchored — the frame-fit objective."""
+    pairs, _ua, _ub = match_points(det_centers, pts)
+    n = 0
+    for ci, _pj, d in pairs:
+        r = None
+        if det_radii and ci < len(det_radii) and det_radii[ci]:
+            r = det_radii[ci]
+        r = r or median_r
+        if r and d <= max_frac * r:
+            n += 1
+    return n
+
+
+def fit_frame_map(detected_centers, detected_radii, gemini_pts, median_r):
+    """Per-axis linear correction of Gemini's coordinate frame.
+
+    Clusters each axis into row/column centers on both sides, enumerates every
+    order-preserving assignment of Gemini clusters to detected clusters, fits a
+    line per assignment (slope sanity: FRAME_FIT_SLOPE_RANGE), and scores every
+    x-candidate × y-candidate combination by the number of ANCHORED one-to-one
+    pairs it produces.  Returns ``{ax, bx, ay, by, applied, anchored_identity,
+    anchored_fit}`` — identity with ``applied=False`` unless the best fit beats
+    identity by >= FRAME_FIT_MIN_GAIN anchored pairs.  Pure; fail-closed to
+    identity on any doubt (degenerate clusters, too few points, wild slopes).
+    """
+    from itertools import combinations
+
+    ident = {"ax": 1.0, "bx": 0.0, "ay": 1.0, "by": 0.0, "applied": False,
+             "anchored_identity": None, "anchored_fit": None}
+    pts = [p for p in gemini_pts if p is not None]
+    if not median_r or median_r <= 0 or len(pts) < 4 or len(detected_centers) < 4:
+        return ident
+    base = _anchored_count(detected_centers, detected_radii, pts, median_r)
+    ident["anchored_identity"] = ident["anchored_fit"] = base
+    if base >= len(pts):
+        return ident                      # already fully anchored — nothing to fix
+
+    gap = 1.3 * median_r                  # the reading_order row threshold
+    axis_candidates = []
+    for axis in (0, 1):
+        cands = [(1.0, 0.0)]
+        d_cent = _cluster_1d([c[axis] for c in detected_centers], gap)
+        g_cent = _cluster_1d([p[axis] for p in pts], gap)
+        if (2 <= len(g_cent) <= len(d_cent)
+                and len(d_cent) <= FRAME_FIT_MAX_CLUSTERS):
+            for combo in combinations(range(len(d_cent)), len(g_cent)):
+                fit = _lsq_line(g_cent, [d_cent[i] for i in combo])
+                if fit and FRAME_FIT_SLOPE_RANGE[0] <= fit[0] <= FRAME_FIT_SLOPE_RANGE[1]:
+                    cands.append(fit)
+        axis_candidates.append(cands)
+
+    best = ident
+    best_n = base
+    for ax, bx in axis_candidates[0]:
+        for ay, by in axis_candidates[1]:
+            if ax == 1.0 and bx == 0.0 and ay == 1.0 and by == 0.0:
+                continue
+            mapped = [(ax * x + bx, ay * y + by) for x, y in pts]
+            n = _anchored_count(detected_centers, detected_radii, mapped, median_r)
+            if n > best_n:
+                best_n = n
+                best = {"ax": ax, "bx": bx, "ay": ay, "by": by, "applied": True,
+                        "anchored_identity": base, "anchored_fit": n}
+    if best["applied"] and best_n < base + FRAME_FIT_MIN_GAIN:
+        return ident                      # not a decisive improvement — keep raw
+    return best
+
+
 # Reconcile swap (see plan_reconciliation): the RISKY action is DROPPING a Hough
 # circle, so it takes two independent signals — the circle must be BOTH unbacked
 # (coverage geometry) AND off the button mask (fill < SWAP_OFF_MASK_MAX, the
@@ -133,7 +254,7 @@ SWAP_MIN_CONFIDENCE = 0.70
 
 def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
                         cover_factor=1.0, median_r=None,
-                        detected_fills=None):
+                        detected_fills=None, frame_fit=True):
     """Decide which Gemini buttons Hough missed and where to synthesize crops.
 
     Parameters
@@ -177,6 +298,21 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
             continue
         gemini_px.append(pct_to_px(s["x"], s["y"], w, h))
         valid_idx.append(gi)
+
+    # Frame fit (1987-front): correct a stretched/offset Gemini coordinate
+    # frame BEFORE any position is trusted — coverage, deficit recovery, swap,
+    # association, anchoring, and anchor recovery all consume gemini_px, so
+    # this one insertion heals them together.  Identity unless the fit
+    # decisively improves anchored agreement (see fit_frame_map).
+    frame = None
+    if frame_fit and median_r:
+        frame = fit_frame_map(detected_centers, detected_radii,
+                              [gemini_px[gi] for gi in valid_idx], median_r)
+        if frame["applied"]:
+            for gi in valid_idx:
+                x, y = gemini_px[gi]
+                gemini_px[gi] = (frame["ax"] * x + frame["bx"],
+                                 frame["ay"] * y + frame["by"])
 
     # Coverage matching: only Gemini points with valid coordinates participate.
     g_points = [gemini_px[gi] for gi in valid_idx]
@@ -282,7 +418,18 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
         # Prefer a rim-point radius (two trusted positions); clamp to 0.25–3× the
         # base so a stray edge point can't blow up the crop.  Fall back to the
         # numeric size, then the base radius.
-        edge_r = radius_from_edge(s, gx, gy, w, h)
+        # The rim point shares Gemini's (possibly corrected) frame — when a
+        # frame map was applied, map the edge point too before measuring, or
+        # the mixed-frame distance inflates/deflates the radius.
+        if frame is not None and frame.get("applied"):
+            edge_r = None
+            if s.get("edge_x") is not None and s.get("edge_y") is not None:
+                ex, ey = pct_to_px(s["edge_x"], s["edge_y"], w, h)
+                _er = math.hypot(frame["ax"] * ex + frame["bx"] - gx,
+                                 frame["ay"] * ey + frame["by"] - gy)
+                edge_r = _er if _er > 0 else None
+        else:
+            edge_r = radius_from_edge(s, gx, gy, w, h)
         if edge_r is not None:
             r_px = min(3.0 * fallback_r, max(0.25 * fallback_r, edge_r))
         else:
@@ -323,6 +470,8 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
     telemetry = {
         "gemini_count": len(gemini_slogans),
         "hough_count": len(detected_centers),
+        "frame_fit": ({k: (round(v, 4) if isinstance(v, float) else v)
+                       for k, v in frame.items()} if frame is not None else None),
         "deficit": deficit,
         "n_uncovered": len(unmatched_g_local),
         "n_recovered": len(misses),

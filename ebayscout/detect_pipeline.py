@@ -102,6 +102,15 @@ def _anchor_recovery_enabled():
     return _flag_on("EBAYSCOUT_ANCHOR_RECOVERY", "BUTTONMATCHER_ANCHOR_RECOVERY")
 
 
+def _frame_fit_enabled():
+    """Gemini frame fit (1987-front dual incident): correct a stretched/offset
+    Gemini coordinate frame against detection's row/column structure before any
+    position is trusted (see gemini_geometry.fit_frame_map — identity unless
+    the fit decisively improves anchored agreement).  On by default;
+    EBAYSCOUT_FRAME_FIT=0 (or BUTTONMATCHER_FRAME_FIT=0) disables it."""
+    return _flag_on("EBAYSCOUT_FRAME_FIT", "BUTTONMATCHER_FRAME_FIT")
+
+
 def _auto_detect_enabled():
     """Auto detection (no count prompt) — default OFF until the gate is
     calibrated; BUTTONMATCHER_AUTO_DETECT=1 enables."""
@@ -2846,6 +2855,7 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
     plan = ggeo.plan_reconciliation(
         detected_centers, detected_radii, gemini_slogans, w, h,
         cover_factor=cover_factor, median_r=median_r,
+        frame_fit=_frame_fit_enabled(),
     )
 
     # Two-signal swap/drop: fire whenever Hough has unmatched phantom-candidate
@@ -2869,6 +2879,7 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
                 detected_centers, detected_radii, gemini_slogans, w, h,
                 cover_factor=cover_factor, median_r=median_r,
                 detected_fills=_det_fills,
+                frame_fit=_frame_fit_enabled(),
             )
         except Exception as _swap_err:
             print(f">>> RECONCILE: swap fill probe skipped: {_swap_err}", flush=True)
@@ -2965,6 +2976,12 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
         [_old2new[i] for i in _um if i not in dropped] if _um is not None else None
     )
     telemetry["dropped_crop_indices"] = sorted(dropped)
+    _ff = telemetry.get("frame_fit") or {}
+    if _ff.get("applied"):
+        print(f">>> RECONCILE FRAME_FIT: Gemini frame corrected "
+              f"(x*{_ff['ax']}+{_ff['bx']}, y*{_ff['ay']}+{_ff['by']}) — "
+              f"anchored {_ff['anchored_identity']}→{_ff['anchored_fit']}.",
+              flush=True)
     print(
         f">>> RECONCILE: hough={telemetry['hough_count']} "
         f"gemini={telemetry['gemini_count']} recovered={len(recovered_crops)} "
