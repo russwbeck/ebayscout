@@ -288,3 +288,189 @@ def test_swap_drops_lone_phantom_no_uncovered_button():
     assert out["dropped_crop_indices"] == [1]
     assert out["telemetry"]["n_swapped"] == 1
     assert out["telemetry"]["swaps"][0]["recovered"] is False
+
+
+# --- assoc_anchored (2026-07-16 shifted-lot incident) --------------------------
+
+def test_assoc_anchored_separates_correct_from_wrong_neighbor():
+    # Fleet-wide correct associations measure ~0.07x radius
+    # (det_gemini_anchored_json snap_frac_median); wrong-neighbor pairs ~2x.
+    assert gg.assoc_anchored(3.5, 50) is True        # 0.07x — typical correct
+    assert gg.assoc_anchored(100.0, 50) is False     # 2x — wrong neighbor
+    # gate boundary: dist <= 0.75 * r
+    assert gg.assoc_anchored(37.5, 50) is True
+    assert gg.assoc_anchored(37.6, 50) is False
+
+
+def test_assoc_anchored_1979_front_regression():
+    # Real incident lot (job 822d38f1, "1979 front.jpg", 449x800): detection
+    # dropped 3 circles on blank bag and missed 3 real buttons; the count
+    # matched (12=12) so nothing was recovered, and unlimited nearest-neighbor
+    # association paired the orphaned slogans onto the blank crops.  Distances
+    # below are computed from the lot's detect_labels record.
+    correct_pairs = [  # (dist, r) — all nine detected-on-button associations
+        (5.9, 46), (5.0, 47), (8.1, 51), (8.6, 42), (6.0, 62),
+        (8.4, 51), (31.6, 44), (4.7, 49), (10.1, 58),
+    ]
+    wrong_pairs = [    # blank-bag crops that got a real slogan and auto-confirmed
+        (142.0, 54),   # c11 <- "Wave Good-bye"   (2.6x r)
+        (177.0, 42),   # c0  <- "Turtle Soup"     (4.2x r)
+        (324.0, 49),   # c10 <- "Can the Juice"   (6.6x r)
+    ]
+    assert all(gg.assoc_anchored(d, r) for d, r in correct_pairs)
+    assert not any(gg.assoc_anchored(d, r) for d, r in wrong_pairs)
+
+
+def test_assoc_anchored_fails_open_on_missing_or_bad_data():
+    # Pre-telemetry lots (no dist) and rect crops (no radius) must not break.
+    assert gg.assoc_anchored(None, 50) is True
+    assert gg.assoc_anchored(10.0, None) is True
+    assert gg.assoc_anchored("bad", 50) is True
+    assert gg.assoc_anchored(10.0, "bad") is True
+
+
+# --- plan_anchor_recovery (1979-front, second half) ----------------------------
+
+def _ar_scene():
+    """Miniature of the incident: 2 good crops, 1 blank-bag phantom; 3 Gemini
+    points; the phantom holds the orphaned slogan at ~4x radius."""
+    final_centers = [(100, 100), (300, 100), (150, 400)]   # c2 = phantom
+    final_radii = [50, 50, 50]
+    gemini_px = [(102, 103), (297, 101), (300, 300)]       # g2 = real missed button
+    gem = [{"index": 1, "slogan": "A", "confidence": 0.9},
+           {"index": 2, "slogan": "B", "confidence": 0.9},
+           {"index": 3, "slogan": "C", "confidence": 0.9}]
+    c2s = {0: {"gemini_idx": 0, "slogan": "A", "dist": 3.6},
+           1: {"gemini_idx": 1, "slogan": "B", "dist": 3.2},
+           2: {"gemini_idx": 2, "slogan": "C", "dist": 180.3}}  # unanchored
+    return final_centers, final_radii, gemini_px, gem, c2s
+
+
+def test_anchor_recovery_recovers_the_orphaned_slogan():
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == [2]
+
+
+def test_anchor_recovery_skips_anchored_pairs():
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    c2s[2]["dist"] = 30.0                      # 0.6x r — anchored
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+def test_anchor_recovery_requires_gemini_confidence():
+    # Same trust gate as the fill-gated swap (SWAP_MIN_CONFIDENCE).
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    gem[2]["confidence"] = 0.3
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+    gem[2]["confidence"] = None
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+def test_anchor_recovery_never_double_counts_a_sloppy_pair():
+    # A correct-but-sloppy pair (dist just over the gate) has its point ON the
+    # crop, well inside median_r of an existing center — must NOT synthesize a
+    # duplicate crop next to the real one.
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    gpx[2] = (155, 430)                        # 30px from the crop at (150,400)
+    c2s[2]["dist"] = 40.0                      # 0.8x r — unanchored by a hair
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+def test_anchor_recovery_fails_open_on_missing_geometry():
+    fc, fr, gpx, gem, c2s = _ar_scene()
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, None) == []
+    gpx[2] = None
+    assert gg.plan_anchor_recovery(fc, fr, c2s, gpx, gem, 50) == []
+
+
+# --- fit_frame_map (1987-front dual incident) ----------------------------------
+
+# The live sidecar's 9 real hough circles (job efb99c29, "1987 front.jpg",
+# 599x800): detection found rows at y~166/300/437 (+1 table phantom at 689),
+# while Gemini reported the same grid stretched over the full frame
+# (rows at 19/48/76% -> y 152/384/608).
+DET_1987 = [(99, 168, 67), (223, 163, 58), (89, 304, 64), (215, 298, 63),
+            (365, 297, 62), (109, 445, 64), (231, 432, 65), (369, 434, 63),
+            (34, 689, 74)]
+
+
+def _gem_1987():
+    xs = [15.0, 37.0, 60.0, 82.0]
+    ys = [19.5, 48.0, 76.0]
+    out = []
+    i = 0
+    for y in ys:
+        for x in xs:
+            i += 1
+            out.append({"index": i, "slogan": f"s{i}", "x": x, "y": y,
+                        "edge_x": x, "edge_y": y - 9.5, "confidence": 0.9})
+    return out
+
+
+def test_frame_fit_1987_regression():
+    centers = [(x, y) for x, y, _ in DET_1987]
+    radii = [r for _, _, r in DET_1987]
+    med = gg.median_radius(radii)
+    pts = [gg.pct_to_px(s["x"], s["y"], 599, 800) for s in _gem_1987()]
+    fm = gg.fit_frame_map(centers, radii, pts, med)
+    assert fm["applied"] is True
+    assert abs(fm["ax"] - 1.0) < 1e-9 and abs(fm["bx"]) < 1e-9   # x was fine
+    assert 0.55 < fm["ay"] < 0.65                                 # the y stretch
+    assert fm["anchored_identity"] <= 3 and fm["anchored_fit"] >= 8
+
+
+def test_frame_fit_heals_1987_recovery_positions():
+    """Through plan_reconciliation: the corrected frame recovers the deficit at
+    the REAL button positions (row1 col3/col4, row2 col4) instead of on blank
+    table, and the only phantom suspect is the y=689 table circle."""
+    centers = [(x, y) for x, y, _ in DET_1987]
+    radii = [r for _, _, r in DET_1987]
+    plan = gg.plan_reconciliation(centers, radii, _gem_1987(), 599, 800)
+    ff = plan["telemetry"]["frame_fit"]
+    assert ff["applied"] is True
+    assert plan["telemetry"]["deficit"] == 3
+    rec = sorted((round(m["gx"]), round(m["gy"])) for m in plan["misses"])
+    for gx, gy in rec:
+        assert gy < 320, rec           # all recovered in rows 1-2, never y~608
+    assert plan["unmatched_crops"] == [8]
+    # rim-point radii are measured in the CORRECTED frame (raw 9.5% of h = 76px
+    # would blow the crop up; corrected ~0.6x that)
+    for m in plan["misses"]:
+        assert 35 <= m["r_px"] <= 55, m
+
+
+def test_frame_fit_keeps_identity_on_healthy_lot():
+    """1979-front: phantoms are not a linear-frame problem — no fit beats
+    identity decisively, so the raw frame is kept."""
+    det = [(328, 174, 42), (75, 237, 46), (184, 245, 47), (275, 246, 51),
+           (383, 254, 42), (77, 341, 62), (187, 340, 51), (41, 447, 44),
+           (175, 441, 49), (283, 449, 58), (112, 536, 49), (269, 537, 54)]
+    xs = [16.0, 41.0, 63.0, 84.0]
+    gem = []
+    i = 0
+    for y in (29.5, 43.0, 55.5):
+        for x in xs:
+            i += 1
+            gem.append({"index": i, "slogan": f"s{i}", "x": x, "y": y,
+                        "confidence": 0.9})
+    plan = gg.plan_reconciliation([(x, y) for x, y, _ in det],
+                                  [r for _, _, r in det], gem, 449, 800)
+    ff = plan["telemetry"]["frame_fit"]
+    assert ff["applied"] is False
+    assert ff["ay"] == 1.0 and ff["by"] == 0.0
+
+
+def test_frame_fit_fails_closed_on_small_or_degenerate_input():
+    ident = {"ax": 1.0, "bx": 0.0, "ay": 1.0, "by": 0.0}
+    fm = gg.fit_frame_map([(10, 10), (50, 50)], [5, 5], [(11, 11)], 5)
+    assert fm["applied"] is False and {k: fm[k] for k in ident} == ident
+    fm = gg.fit_frame_map([], [], [], None)
+    assert fm["applied"] is False
+
+
+def test_frame_fit_skips_when_already_fully_anchored():
+    centers = [(100, 100), (300, 100), (100, 300), (300, 300)]
+    radii = [50] * 4
+    pts = [(102, 101), (297, 99), (99, 303), (301, 298)]
+    fm = gg.fit_frame_map(centers, radii, pts, 50)
+    assert fm["applied"] is False and fm["anchored_identity"] == 4

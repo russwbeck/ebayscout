@@ -785,6 +785,8 @@ both now fixed and fixtured:
 
 Fixtures `ccb_darkwood_11.jpg` + `mellon_envelope_13.jpg` lock both; battery
 43 green; buttonmatcher/ebayscout parity verified on identical bytes.
+**Operator-verified live 2026-07-16:** both original problem photos re-run
+through `/sort` on the deployed build — fixed.
 **Meta-lesson (now twice):** every constant calibrated on one positive
 example WILL meet its counterexample; prefer quantities whose accept/refuse
 populations separate by construction (residual area) and rescues gated on
@@ -886,14 +888,18 @@ coverage.*
   arbitration cannot do this job (`edition_shadow` agrees with the human
   only 76%, n=88).  Also the year-axis audit ruler: label records ×
   confirm_log measures year-selection error against physical evidence.
-- **Visual-final shadow** (`>>> VISUAL_FINAL_SHADOW` + `visual_shadow` key
-  on row 0 of `restricted_top_json`): argmax-`ref_sim` over the top-10 beats
-  the blend as a raw ranker (91.3% vs 88.6% truth-at-#1, n=969) but its
-  failure class is same-design twins (ref_sim 0.986 on the WRONG button), so
-  giving it the final say requires an inter-candidate reference
-  DISSIMILARITY gate.  The shadow logs every would-flip with `margin` and
-  `inter_sim` so the gate threshold is calibrated from data before anything
-  acts.  Verdict pending.
+- **Visual-final shadow — VERDICT (Logger_18, 47 flips on 473 reviewed
+  rows): REFUTED as a resolver, CONFIRMED (inverted) as a veto.**  Acting on
+  the flip would have fixed 8 wrong #1s but committed 37 wrong answers, and
+  the inter_sim dissimilarity gate did NOT separate them (fixes at
+  0.66–0.91, the one break at 0.58 — the "different-looking years are safe"
+  hypothesis fails).  But the flip EVENT is a powerful wrongness detector:
+  **P(#1 wrong | flip) = 94% vs 11% baseline**, and no score-based auto ever
+  fired on a flip row — so the flip now VETOES all score-based auto-confirm
+  rules (`_visual_veto_enabled`, default ON, kill switch
+  `BUTTONMATCHER_VISUAL_VETO=0`; Gemini-agreement paths unaffected — 31/47
+  flip rows were correctly rescued by agreement).  Zero observed coverage
+  cost; pure downside protection.
 
 
 ---
@@ -967,6 +973,13 @@ fixes verified by replaying the real shipped functions over the batch.*
   (17 improved / 10 worsened / 464 same).  It cannot see the cases centering
   should help most (truths shadowed OFF the board), and top-10-only baseline
   estimates are biased — the honest verdict needs the live shadow.
+- **VERDICT (Logger_18, n=478): REFUTED as a live-formula change.**
+  Centered vs raw on healthy rows: 394 same, 19 better, **65 worse**;
+  truth@#1 423 raw vs 386 centered.  The de-facto advantage is real, but
+  the "hot" baselines evidently encode useful prior signal (frequency /
+  reference density) — subtracting them costs more truths than it saves.
+  The column keeps logging (costless) but the live formula stays.  Phase
+  4e closes REFUTED.
 - **Shipped (measurement only): `rank_centered`.**  Baselines = mean cosine
   of each text row vs the ENTIRE reference bank, one matmul at hydration
   (`_recompute_text_baselines`, fail-open); `build_centered_leaderboard`
@@ -976,3 +989,151 @@ fixes verified by replaying the real shipped functions over the batch.*
   beats raw at scale on confirmed truths (including off-board ones), and
   only WITH a recalibration of every score threshold (0.85 auto, green,
   gap rules) — they are all calibrated to today's distribution.
+---
+
+# Part VII — the shifted-lot mass-wrong-auto incident: unanchored associations (2026-07-17)
+
+## The incident ("1979 front", job 822d38f1, /pipeline)
+
+The pipeline auto-confirmed nearly every button wrong on one photo AND
+auto-confirmed blank-bag crops — the operator's annotated render showed the
+circle grid displaced (circles on empty bag, three real buttons uncovered).
+The detect_labels record gives the full measured mechanism:
+
+1. **Detection degraded but count-plausible.** `hough+blob`, scale via
+   `sweep_fallback`, mask_coverage 0.55.  Gemini localized a clean 4×3 grid of
+   12 buttons; detection also produced 12 circles — but **three of them sit on
+   blank bag** (1.8–2.1×radius from ANY Gemini point) and **three real buttons
+   got no circle** (Turtle Soup, Can the Juice, Wave Good-bye).
+2. **The count matched, so nothing was recovered.** deficit = max(0, 12−12) = 0
+   — the three phantoms filled the count and suppressed recovery of the three
+   misses (the documented deficit-cap blind spot, §4.6: the fill-gated swap is
+   the intended counter, but fill can't act on a degraded/flooded mask).
+3. **Unlimited nearest-neighbor association papered over the hole.**
+   `associate_slogans(max_dist=None)` pairs every orphaned slogan with SOME
+   crop: the three uncovered slogans attached to the three blank-bag crops at
+   **2.6× / 4.2× / 6.6× radius**.  Every correct pair on the same lot measures
+   **≤0.72×radius** (median ~0.14; fleet-wide `det_gemini_anchored_json`
+   snap_frac_median ≈ 0.07).  The separation between right and wrong is a
+   factor of ~4 at the closest approach — a huge margin.
+4. **The DB-direct agreement tier then auto-confirmed them.** It trusts a
+   high-confidence Gemini read with NO CLIP corroboration (by design — it
+   exists for slogans CLIP never surfaces), so a blank crop + a wrong-neighbor
+   slogan sailed through as `gemini_auto`.
+5. **A separate telemetry bug hid the evidence.** `unmatched_crop_indices`
+   (reconcile's phantom list) was logged WITHOUT being remapped through the
+   reading-order permutation, so the label sidecar's per-circle
+   `gemini_backed` flags were shifted — a blank-bag phantom logged as backed,
+   a real button as unbacked.  Training labels from renumbered lots carried
+   scrambled backing flags.
+
+## CONFIRMED: physical anchoring separates right from wrong associations
+
+An association is *anchored* when Gemini's point sits ON the crop it would
+confirm: `dist ≤ 0.75×radius` (`gemini_geometry.assoc_anchored`, fail-open on
+missing dist/radius).  Margins measured on the incident batch:
+
+| population | dist/radius |
+|---|---|
+| correct pairs, incident lot (n=9) | 0.10–0.72 |
+| correct pairs, sibling lot "1977 front" (n=12, incl. 1 recovered) | 0.06–0.38 |
+| fleet-wide snap_frac_median (det_gemini_anchored_json) | ≈0.07 |
+| wrong-neighbor pairs, incident lot (n=3, all blank crops) | 2.6–6.6 |
+
+The sibling lot (same batch, healthy detection) shows the gate passes every
+correct association untouched — zero false positives on the data in hand.
+
+## Fixes shipped (2026-07-17, both repos)
+
+- **Anchoring gate** — each crop→slogan association is stamped `anchored` in
+  both pipelines; `gemini_resolve.gate_ok` now requires it, so an unanchored
+  pair can NEVER auto-resolve (it still surfaces as a boosted suggestion —
+  blocks demote, they don't hide).  Telemetry: `n_unanchored` + a per-lot
+  ANCHOR_GATE print.  Kill switch `BUTTONMATCHER_ANCHOR_GATE=0`.
+- **DB-direct tier hard-skips unanchored associations** — the one tier with no
+  CLIP corroboration gets no candidate rows at all for an unanchored crop.
+- **Label-sidecar fix** — `unmatched_crop_indices` now rides the reading-order
+  permutation, so `gemini_backed` flags land on the right circles again
+  (buttonmatcher only; ebayscout's pipeline never renumbers).
+
+## Root cause CONFIRMED on the real detector (raw photo, this session)
+
+The operator supplied the raw photo (2160×3840: 12 buttons on a WHITE plastic
+bag, incl. one white button — "Wave Good-bye").  Rerunning the exact
+`/pipeline` detection path reproduced the failure class end-to-end:
+
+- Hough found only 8; the radius-correction pass added 3 and the blob-buster
+  added 1 distance-peak **on the bag** → 12 circles, two on blank bag, with
+  Can the Juice + Wave Good-bye (white-on-white) missed.
+- The white-inclusive mask flooded on the white bag (coverage 0.55), so the
+  flood residual check read "dense lot" and — the known §4.6 blind spot —
+  **the fill-gated swap could not fire: phantoms score high fill on a flooded
+  mask.**  deficit 12−12 = 0 → nothing recovered.
+- Association pinned the two orphaned slogans on the blank crops at 3.67× and
+  5.15× radius; the anchoring gate flagged exactly those two and passed all
+  ten correct pairs (max correct 0.69×).
+
+## Anchor-gated recovery — the swap's flooded-mask replacement (SHIPPED 2026-07-17)
+
+An unanchored association is itself the recovery evidence fill can't give: a
+crop no Gemini point explains, holding a slogan no crop explains.  When that
+slogan's point is ALSO clear of every final crop center (> median_r — the
+plan_reconciliation coverage notion, so a sloppy-but-correct pair can never
+double-count) and Gemini was confident (>= SWAP_MIN_CONFIDENCE, the swap's own
+trust gate), `reconcile_with_gemini` synthesizes a crop at the point (the
+deficit-miss recipe) and re-associates.  **No crop is dropped** — the phantom
+stays as a manual card the anchoring gate already demoted, so a wrong fire
+costs one extra card, never a lost button.  Replayed on the raw photo: all 12
+real buttons end anchored (the two recovered at dist 0), the two blank crops
+end associationless (manual), n_unanchored 0.  Kill switch
+`BUTTONMATCHER_ANCHOR_RECOVERY=0` (ebayscout: `EBAYSCOUT_ANCHOR_RECOVERY`).
+Telemetry `n_anchor_recovered` + a RECONCILE ANCHOR_RECOVERY print.  Rollback
+trigger: any anchor-recovered crop confirmed wrong or blank.
+
+## Still open
+- **Count-consistency is logged but unused**: both lots in the batch carried
+  `count_inconsistent: true` (Gemini declared 11, listed 12).  A miscount
+  gate (downgrade autos when Gemini's own list disagrees with its count) is a
+  candidate second signal, but on the sibling lot the 12-slogan list was
+  correct and the count wrong — gating on it would have cost 12 good autos.
+  Leave as telemetry until data says otherwise.
+
+## The DUAL incident — "1987 front" (job efb99c29): Gemini's frame stretched (2026-07-17)
+
+Problem two, same symptom, INVERTED root.  1979-front was detection wrong /
+Gemini right; 1987-front is detection (mostly) right / **Gemini's y-frame
+wrong**: it reported the 4×3 grid's rows at 19/48/76% of image height, but the
+real rows sit at ~21/38/55% — the photo's bottom half is empty table and
+Gemini stretched the layout over the full frame (x-columns matched exactly).
+Consequences in the live sidecar: rows 2-3's points landed 80-170px below
+their buttons, and deficit recovery synthesized crops at the STRETCHED points
+— two blank-table crops that arrived with dist-0, anchored-by-construction
+associations ("Irish Eyes Are Crying", "Lions' Pride") and auto-confirmed.
+Position-trust inverts every guard built for the 1979 class: the anchoring
+gate can't veto a crop synthesized AT the (wrong) Gemini point, and anchor
+recovery actively makes it worse (replayed: 5 crops synthesized at stretched
+points).  Precedent: §4.5's 0-100-vs-0-1000 coordinate-scale bug — same
+disease, continuous instead of discrete.
+
+## Frame fit — reconcile the coordinate FRAME before trusting positions (SHIPPED 2026-07-17)
+
+`gemini_geometry.fit_frame_map`: cluster each axis into row/column centers on
+both sides (the reading_order 1.3×median_r recipe), enumerate every
+order-preserving assignment of Gemini clusters to detected clusters, fit a
+per-axis line (slope sanity 0.4-2.5), and score every x×y candidate pair by
+ANCHORED one-to-one pairs produced.  Applied in `plan_reconciliation` before
+ANY position is consumed — coverage, deficit recovery, swap, association,
+anchoring gate, anchor recovery all heal from the one insertion — and only
+when the best fit beats identity by >= 2 anchored pairs (healthy lots keep the
+raw frame; replayed 1979-front: identity kept, unchanged output).  Rim-point
+radii are measured in the corrected frame (a mixed-frame distance would
+inflate the crop).  Replayed on the live 1987 geometry: fit y' = 0.598y+72.3,
+anchored 2→8, all 3 deficit recoveries land on REAL buttons, the white
+"Lions' Pride" button is recovered by the anchor-recovery pass at its true
+position, and the only leftover is the y=689 table phantom — unanchored,
+demoted to a manual card (or dropped by the fill swap when the mask
+cooperates).  Kill switch `BUTTONMATCHER_FRAME_FIT=0` (ebayscout:
+`EBAYSCOUT_FRAME_FIT`).  Telemetry: `frame_fit` in reconcile telemetry + a
+RECONCILE FRAME_FIT print.  Rollback trigger: a frame-fit lot whose
+confirmations show the map was wrong (watch any `applied=true` lot's confirms
+closely in the next Logger export).

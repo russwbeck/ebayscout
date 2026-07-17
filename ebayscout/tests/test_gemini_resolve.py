@@ -225,3 +225,63 @@ def test_scenario_a_carries_printed_year_through():
              "printed_year": 2019}},
         {}, set(), normalize_fn=_norm_py)
     assert res[0]["printed_year"] == 2019
+
+
+# --- anchoring gate (2026-07-16 shifted-lot incident) --------------------------
+
+def test_unanchored_association_never_autos():
+    """A wrong-neighbor pair (Gemini's point 2.6x radius off the crop) may still
+    surface as a suggestion but must NOT auto-resolve, even at conf 0.9 — this
+    is the exact failure that auto-confirmed blank-bag crops on 1979-front."""
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_cand("1979", "Wave Good-bye")]},
+        {0: {"slogan": "Wave Good-bye", "confidence": 0.9, "index": 12,
+             "anchored": False}},
+        {"wavegoodbye": {"1979"}}, set(), normalize_fn=_norm)
+    r = res[0]
+    assert r["source"] == "gemini_auto" and r["auto"] is False
+    assert res["telemetry"]["n_unanchored"] == 1
+
+
+def test_anchored_true_and_absent_both_auto():
+    """Fail-open: callers that predate the gate (no `anchored` key) behave
+    exactly as before; an explicit anchored=True is identical."""
+    for assoc in ({"slogan": "Stop Stanford", "confidence": 0.92},
+                  {"slogan": "Stop Stanford", "confidence": 0.92, "anchored": True}):
+        res = gr.resolve_with_gemini_slogans(
+            {0: [_cand("1984", "Stop Stanford")]}, {0: dict(assoc)},
+            {"stopstanford": {"1984"}}, set(), normalize_fn=_norm)
+        assert res[0]["auto"] is True
+        assert res["telemetry"]["n_unanchored"] == 0
+
+
+def test_unanchored_scenario_b_also_refused():
+    """The gate must hold through the deferred (repeated-slogan) pass too."""
+    cands = [_cand("1972", "Crush the Orange"), _cand("1973", "Crush the Orange")]
+    res = gr.resolve_with_gemini_slogans(
+        {0: cands},
+        {0: {"slogan": "Crush the Orange", "confidence": 0.95, "index": 1,
+             "anchored": False}},
+        {}, set(), normalize_fn=_norm)
+    assert res[0]["auto"] is False
+    assert res["telemetry"]["n_unanchored"] == 1
+
+
+def test_anchor_gate_flag_default_on_with_kill_switch():
+    """main.py's _anchor_gate_enabled: default ON; BUTTONMATCHER_ANCHOR_GATE=0
+    reverts to pre-incident behavior (every association stamped anchored)."""
+    import ast
+    main_py = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
+    src = open(main_py).read()
+    node = next(n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.FunctionDef)
+                and n.name == "_anchor_gate_enabled")
+    ns = {"os": os}
+    exec(compile(ast.get_source_segment(src, node), main_py, "exec"), ns)
+    fn = ns["_anchor_gate_enabled"]
+    os.environ.pop("BUTTONMATCHER_ANCHOR_GATE", None)
+    assert fn() is True
+    os.environ["BUTTONMATCHER_ANCHOR_GATE"] = "0"
+    assert fn() is False
+    os.environ.pop("BUTTONMATCHER_ANCHOR_GATE", None)

@@ -35,6 +35,7 @@ from . import notifier
 from . import etsy_client
 from . import match_logging as mlog
 from . import pipeline_ingest as ping
+from . import gemini_geometry as ggeo
 from . import gemini_resolve as gres
 from . import pipeline_classify
 from . import detect_gate as dgate
@@ -140,6 +141,21 @@ TWIN_REGISTRY: dict = {}
 
 def _twin_guard_enabled() -> bool:
     return os.environ.get("BUTTONMATCHER_TWIN_GUARD", "1").strip() not in (
+        "0", "false", "False",
+    )
+
+
+def _anchor_gate_enabled() -> bool:
+    """Physical anchoring gate on crop→slogan associations (2026-07-16
+    shifted-lot incident, buttonmatcher lot "1979 front").  associate_slogans
+    is unlimited nearest-neighbor, so when detection drops circles on blank
+    background and misses real buttons, the orphaned Gemini slogans still pair
+    with SOME crop (measured 2.6–6.6× radius vs ≤0.72× for correct pairs).
+    With this ON each association is stamped ``anchored`` (dist ≤ 0.75×radius,
+    fail-open); gemini_resolve refuses AUTO for unanchored pairs, so
+    classify_crops can't auto-confirm a wrong-neighbor read.  Kill switch
+    BUTTONMATCHER_ANCHOR_GATE=0 (shared convention with buttonmatcher)."""
+    return os.environ.get("BUTTONMATCHER_ANCHOR_GATE", "1").strip() not in (
         "0", "false", "False",
     )
 
@@ -825,6 +841,25 @@ def process_pipeline_lot(job_id: str) -> None:
         _delete_pipeline_output(response_name, image_name)
         pending_jobs.pop(job_id, None)
         return
+
+    # Physical anchoring gate: stamp every crop→slogan association with whether
+    # Gemini's point actually sits ON the crop (dist ≤ 0.75×radius; correct
+    # pairs measure ~0.07×r fleet-wide, wrong-neighbor pairs ≥2×r).
+    # gemini_resolve refuses AUTO for unanchored pairs. Fail-open on missing
+    # dist/radius. Kill switch BUTTONMATCHER_ANCHOR_GATE=0.
+    _n_unanchored = 0
+    if _anchor_gate_enabled():
+        for _aci, _assoc in crop_to_slogan.items():
+            _ar = (circle_info[_aci].get("r")
+                   if _aci < len(circle_info) and isinstance(circle_info[_aci], dict)
+                   else None)
+            _assoc["anchored"] = ggeo.assoc_anchored(_assoc.get("dist"), _ar)
+            if not _assoc["anchored"]:
+                _n_unanchored += 1
+        if _n_unanchored:
+            print(f">>> PIPELINE ANCHOR_GATE: {_n_unanchored}/{len(crop_to_slogan)} "
+                  f"crop→slogan associations unanchored (dist > 0.75×r) — AUTO "
+                  f"refused for those crops.", flush=True)
 
     # Training-label sidecar (AUTOMATION_VISION / Logger_10 §10): persist the
     # detection-space image + final circle set (with provenance) + Gemini's
