@@ -989,3 +989,82 @@ fixes verified by replaying the real shipped functions over the batch.*
   beats raw at scale on confirmed truths (including off-board ones), and
   only WITH a recalibration of every score threshold (0.85 auto, green,
   gap rules) — they are all calibrated to today's distribution.
+---
+
+# Part VII — the shifted-lot mass-wrong-auto incident: unanchored associations (2026-07-17)
+
+## The incident ("1979 front", job 822d38f1, /pipeline)
+
+The pipeline auto-confirmed nearly every button wrong on one photo AND
+auto-confirmed blank-bag crops — the operator's annotated render showed the
+circle grid displaced (circles on empty bag, three real buttons uncovered).
+The detect_labels record gives the full measured mechanism:
+
+1. **Detection degraded but count-plausible.** `hough+blob`, scale via
+   `sweep_fallback`, mask_coverage 0.55.  Gemini localized a clean 4×3 grid of
+   12 buttons; detection also produced 12 circles — but **three of them sit on
+   blank bag** (1.8–2.1×radius from ANY Gemini point) and **three real buttons
+   got no circle** (Turtle Soup, Can the Juice, Wave Good-bye).
+2. **The count matched, so nothing was recovered.** deficit = max(0, 12−12) = 0
+   — the three phantoms filled the count and suppressed recovery of the three
+   misses (the documented deficit-cap blind spot, §4.6: the fill-gated swap is
+   the intended counter, but fill can't act on a degraded/flooded mask).
+3. **Unlimited nearest-neighbor association papered over the hole.**
+   `associate_slogans(max_dist=None)` pairs every orphaned slogan with SOME
+   crop: the three uncovered slogans attached to the three blank-bag crops at
+   **2.6× / 4.2× / 6.6× radius**.  Every correct pair on the same lot measures
+   **≤0.72×radius** (median ~0.14; fleet-wide `det_gemini_anchored_json`
+   snap_frac_median ≈ 0.07).  The separation between right and wrong is a
+   factor of ~4 at the closest approach — a huge margin.
+4. **The DB-direct agreement tier then auto-confirmed them.** It trusts a
+   high-confidence Gemini read with NO CLIP corroboration (by design — it
+   exists for slogans CLIP never surfaces), so a blank crop + a wrong-neighbor
+   slogan sailed through as `gemini_auto`.
+5. **A separate telemetry bug hid the evidence.** `unmatched_crop_indices`
+   (reconcile's phantom list) was logged WITHOUT being remapped through the
+   reading-order permutation, so the label sidecar's per-circle
+   `gemini_backed` flags were shifted — a blank-bag phantom logged as backed,
+   a real button as unbacked.  Training labels from renumbered lots carried
+   scrambled backing flags.
+
+## CONFIRMED: physical anchoring separates right from wrong associations
+
+An association is *anchored* when Gemini's point sits ON the crop it would
+confirm: `dist ≤ 0.75×radius` (`gemini_geometry.assoc_anchored`, fail-open on
+missing dist/radius).  Margins measured on the incident batch:
+
+| population | dist/radius |
+|---|---|
+| correct pairs, incident lot (n=9) | 0.10–0.72 |
+| correct pairs, sibling lot "1977 front" (n=12, incl. 1 recovered) | 0.06–0.38 |
+| fleet-wide snap_frac_median (det_gemini_anchored_json) | ≈0.07 |
+| wrong-neighbor pairs, incident lot (n=3, all blank crops) | 2.6–6.6 |
+
+The sibling lot (same batch, healthy detection) shows the gate passes every
+correct association untouched — zero false positives on the data in hand.
+
+## Fixes shipped (2026-07-17, both repos)
+
+- **Anchoring gate** — each crop→slogan association is stamped `anchored` in
+  both pipelines; `gemini_resolve.gate_ok` now requires it, so an unanchored
+  pair can NEVER auto-resolve (it still surfaces as a boosted suggestion —
+  blocks demote, they don't hide).  Telemetry: `n_unanchored` + a per-lot
+  ANCHOR_GATE print.  Kill switch `BUTTONMATCHER_ANCHOR_GATE=0`.
+- **DB-direct tier hard-skips unanchored associations** — the one tier with no
+  CLIP corroboration gets no candidate rows at all for an unanchored crop.
+- **Label-sidecar fix** — `unmatched_crop_indices` now rides the reading-order
+  permutation, so `gemini_backed` flags land on the right circles again
+  (buttonmatcher only; ebayscout's pipeline never renumbers).
+
+## What the gate does NOT fix (open, needs the raw photo)
+
+- The three **missed buttons stay missed** — the gate stops wrong autos but
+  recovers nothing.  Detection put circles on blank bag under `sweep_fallback`
+  + a 0.55-coverage mask; root-causing THAT needs the raw photo run through
+  the real detector (§4.7 doctrine — no fixes from renders).
+- **Count-consistency is logged but unused**: both lots in the batch carried
+  `count_inconsistent: true` (Gemini declared 11, listed 12).  A miscount
+  gate (downgrade autos when Gemini's own list disagrees with its count) is a
+  candidate second signal, but on the sibling lot the 12-slogan list was
+  correct and the count wrong — gating on it would have cost 12 good autos.
+  Leave as telemetry until data says otherwise.

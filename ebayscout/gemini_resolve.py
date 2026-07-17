@@ -22,8 +22,14 @@ decides, per crop, one of three outcomes:
       manual Slack resolution.
 
 A confirmed crop only AUTO-resolves (no human click) when Gemini's confidence
-clears ``conf_min`` and the slogan is not flagged as a problem read; otherwise it
-is still surfaced/pre-highlighted but downgraded to require confirmation.
+clears ``conf_min``, the slogan is not flagged as a problem read, AND the
+association is physically anchored (``assoc["anchored"]``, stamped by the caller
+from gemini_geometry.assoc_anchored — Gemini's point actually sits on the crop);
+otherwise it is still surfaced/pre-highlighted but downgraded to require
+confirmation.  The 2026-07-16 shifted-lot incident: detection dropped circles on
+blank bag and missed real buttons, unlimited nearest-neighbor association then
+paired the orphaned slogans with the blank crops at 2.6–6.6× radius, and this
+gate (absent then) was the only thing between those pairs and a wrong AUTO.
 
 Pure python — unit-testable with synthetic candidate lists.  ``normalize_fn`` is
 injected (use ``buy_rules._normalize_key``) so this module owns no string policy.
@@ -84,7 +90,9 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         crop_idx → CLIP top-N candidates, best first.  Each candidate is at least
         ``{"year", "slogan", "type"}`` (``overall`` optional, used for logging).
     crop_to_slogan : dict[int, dict]
-        crop_idx → {slogan, confidence, index, gemini_idx, dist} (gemini_geometry).
+        crop_idx → {slogan, confidence, index, gemini_idx, dist, anchored}
+        (gemini_geometry; ``anchored`` is optional and defaults True — fail-open
+        for callers that predate the anchoring gate).
     slogan_years : dict[str, set]
         normalized slogan → set of DB years (the duplicate multimap).  Used only
         as a hint; the actual disambiguation uses the years present in the crop's
@@ -111,6 +119,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
     deferred = []  # Scenario B crops, resolved in pass 2
     per_crop = []
     n_low_confidence = 0
+    n_unanchored = 0
 
     # --- Pass 1: Scenario A (unique year) + collect anchors ------------------
     for crop_idx, assoc in crop_to_slogan.items():
@@ -128,8 +137,13 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
             continue  # Scenario C — Gemini saw a slogan we don't rank
 
         conf = assoc.get("confidence")
-        gate_ok = (conf is None or conf >= conf_min) and assoc.get("index") not in flagged_indices
-        if not gate_ok:
+        anchored = assoc.get("anchored", True)
+        gate_ok = ((conf is None or conf >= conf_min)
+                   and assoc.get("index") not in flagged_indices
+                   and anchored)
+        if not anchored:
+            n_unanchored += 1
+        elif not gate_ok:
             n_low_confidence += 1
 
         years = []
@@ -215,6 +229,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         "n_disambiguated_by_majority": n_disambiguated,
         "n_printed_year": n_printed_year,
         "n_low_confidence": n_low_confidence,
+        "n_unanchored": n_unanchored,
         "n_manual": len(crop_candidates) - len(resolutions),
         "majority_year": anchor_year,
         "majority_clear": clear,

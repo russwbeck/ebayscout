@@ -288,3 +288,42 @@ def test_swap_drops_lone_phantom_no_uncovered_button():
     assert out["dropped_crop_indices"] == [1]
     assert out["telemetry"]["n_swapped"] == 1
     assert out["telemetry"]["swaps"][0]["recovered"] is False
+
+
+# --- assoc_anchored (2026-07-16 shifted-lot incident) --------------------------
+
+def test_assoc_anchored_separates_correct_from_wrong_neighbor():
+    # Fleet-wide correct associations measure ~0.07x radius
+    # (det_gemini_anchored_json snap_frac_median); wrong-neighbor pairs ~2x.
+    assert gg.assoc_anchored(3.5, 50) is True        # 0.07x — typical correct
+    assert gg.assoc_anchored(100.0, 50) is False     # 2x — wrong neighbor
+    # gate boundary: dist <= 0.75 * r
+    assert gg.assoc_anchored(37.5, 50) is True
+    assert gg.assoc_anchored(37.6, 50) is False
+
+
+def test_assoc_anchored_1979_front_regression():
+    # Real incident lot (job 822d38f1, "1979 front.jpg", 449x800): detection
+    # dropped 3 circles on blank bag and missed 3 real buttons; the count
+    # matched (12=12) so nothing was recovered, and unlimited nearest-neighbor
+    # association paired the orphaned slogans onto the blank crops.  Distances
+    # below are computed from the lot's detect_labels record.
+    correct_pairs = [  # (dist, r) — all nine detected-on-button associations
+        (5.9, 46), (5.0, 47), (8.1, 51), (8.6, 42), (6.0, 62),
+        (8.4, 51), (31.6, 44), (4.7, 49), (10.1, 58),
+    ]
+    wrong_pairs = [    # blank-bag crops that got a real slogan and auto-confirmed
+        (142.0, 54),   # c11 <- "Wave Good-bye"   (2.6x r)
+        (177.0, 42),   # c0  <- "Turtle Soup"     (4.2x r)
+        (324.0, 49),   # c10 <- "Can the Juice"   (6.6x r)
+    ]
+    assert all(gg.assoc_anchored(d, r) for d, r in correct_pairs)
+    assert not any(gg.assoc_anchored(d, r) for d, r in wrong_pairs)
+
+
+def test_assoc_anchored_fails_open_on_missing_or_bad_data():
+    # Pre-telemetry lots (no dist) and rect crops (no radius) must not break.
+    assert gg.assoc_anchored(None, 50) is True
+    assert gg.assoc_anchored(10.0, None) is True
+    assert gg.assoc_anchored("bad", 50) is True
+    assert gg.assoc_anchored(10.0, "bad") is True

@@ -349,6 +349,26 @@ def plan_reconciliation(detected_centers, detected_radii, gemini_slogans, w, h,
     }
 
 
+def assoc_anchored(dist, r_px, max_frac=0.75):
+    """Is a crop→slogan association PHYSICALLY ANCHORED — Gemini's point on
+    the crop it would confirm?
+
+    The 2026-07-16 shifted-lot incident: a detection grid displaced by one
+    position still nearest-neighbor-pairs every slogan with SOME crop, and
+    agreement auto-confirm then commits neighbors' slogans (and blank
+    crops).  Correct associations measure ~0.07×radius (snap_frac_median,
+    det_gemini_anchored_json); wrong-neighbor pairs ~2×radius — so a
+    dist ≤ ``max_frac``×radius gate separates them with a wide margin.
+    Fail-open: an unknown dist or radius counts as anchored (the gate must
+    never break lots that predate the telemetry)."""
+    if dist is None or r_px is None:
+        return True
+    try:
+        return float(dist) <= float(max_frac) * float(r_px)
+    except (TypeError, ValueError):
+        return True
+
+
 def associate_slogans(final_centers, gemini_px, gemini_slogans, max_dist=None):
     """Link each final crop (detected + recovered) to its nearest Gemini slogan.
 
