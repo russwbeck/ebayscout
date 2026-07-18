@@ -690,6 +690,25 @@ def _stage_crop_fullres(src_img, det_crop, ci, det_w, det_h, roi_used):
         return det_crop
 
 
+def _match_fullres_shadow_enabled() -> bool:
+    """Full-res match SHADOW for the Gemini pipeline (tested_hypothesis Part IX,
+    ebayscout addendum).  When on, every pipeline crop is matched a SECOND time
+    on a copy re-cut from the ≤2200px working image (via ``_stage_crop_fullres``)
+    and that leaderboard is logged to the ``fullres_top_json`` column — so the
+    resolution effect on rank/score/would-auto is measured on IDENTICAL buttons
+    at scale.  Measurement only: it drives NO live decision (the ≤800px match
+    stays authoritative) and is fully fail-open.
+
+    DEFAULT OFF.  It doubles the CLIP match cost per lot, and the pipeline is the
+    automated crawl/daily path (up to 1000 lots), so — unlike buttonmatcher's
+    human-driven /sort shadow (default ON) — this is enabled only for a bounded
+    data-collection run: set ``EBAYSCOUT_MATCH_FULLRES_SHADOW=1`` for the run,
+    then unset.  Kill switch is simply the default (unset / =0)."""
+    return os.environ.get("EBAYSCOUT_MATCH_FULLRES_SHADOW", "0").strip() in (
+        "1", "true", "True",
+    )
+
+
 def process_pipeline_lot(job_id: str) -> None:
     """Consume one Gemini-pipeline result: download image+JSON, run independent
     Hough detection + Gemini reconciliation, CLIP match, then confirm slogans
@@ -916,6 +935,30 @@ def process_pipeline_lot(job_id: str) -> None:
     diagnostics = _cm.match_crops_with_diagnostics(pil_crops, restrict_years=restrict_years)
     crop_candidates = {i: d["candidates"] for i, d in enumerate(diagnostics)}
 
+    # 5b) Full-res match SHADOW (tested_hypothesis Part IX, ebayscout addendum).
+    #     Re-cut every crop from the ≤2200px working image and match it AGAIN,
+    #     logging the leaderboard to fullres_top_json for a paired 800px-vs-full
+    #     comparison on identical buttons.  Drives NO decision (the match above
+    #     stays live); flag-gated + DEFAULT OFF because it doubles CLIP cost on
+    #     the automated path (EBAYSCOUT_MATCH_FULLRES_SHADOW=1 for a bounded run).
+    #     Fully fail-open: any error leaves the live result + logging intact.
+    _fr_top_by_crop: dict[int, list] = {}
+    if _match_fullres_shadow_enabled() and crops and len(crops) == len(circle_info):
+        try:
+            _fr_roi = bool(_diag.get("roi_retry"))
+            _fr_bgr = [
+                _stage_crop_fullres(image_bgr, crops[i], circle_info[i], _pw, _ph, _fr_roi)
+                for i in range(len(crops))
+            ]
+            _fr_diags = _cm.match_crops_with_diagnostics(
+                _ip._bgr_to_pil(_fr_bgr), restrict_years=restrict_years)
+            _fr_top_by_crop = {i: d.get("restricted_top", [])
+                               for i, d in enumerate(_fr_diags)}
+            print(f">>> PIPELINE: full-res SHADOW matched {len(_fr_top_by_crop)} "
+                  f"crop(s) for {item_id} [EBAYSCOUT_MATCH_FULLRES_SHADOW].", flush=True)
+        except Exception as _frs_e:
+            print(f">>> PIPELINE: full-res shadow skipped ({_frs_e})", flush=True)
+
     # 6) confirm slogans against Gemini's reading (two-pass)
     resolution = gres.resolve_with_gemini_slogans(
         crop_candidates, crop_to_slogan, slogan_years, flagged_indices,
@@ -1090,6 +1133,7 @@ def process_pipeline_lot(job_id: str) -> None:
                     restricted_top=d.get("restricted_top", []),
                     shadow_top=d.get("shadow_top", []),
                     shadow_enabled=bool(d.get("shadow_enabled")),
+                    fullres_top=_fr_top_by_crop.get(i, []),
                 )
                 for i, d in enumerate(diagnostics)
             ]

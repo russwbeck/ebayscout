@@ -1376,3 +1376,69 @@ confirmed slogan's rank/score and its would-auto verdict — and crucially, **ho
 many WRONG #1s does full-res push over 0.85 that 800px did not**?  Decision:
 promote to live (with threshold recalibration) only if the correct-auto gain
 clearly beats any wrong-auto cost across the 100 lots.
+
+## ebayscout addendum — the SAME shadow on the Gemini pipeline (flag-gated, 100-lot data run, 2026-07-18)
+
+**Why extend it to ebayscout.**  buttonmatcher's shadow (above) accrues data
+only on the human-driven `/sort` path.  ebayscout's Gemini pipeline is a
+DIFFERENT crop provenance — Hough + `gemini_led_crops` + reconciled `rec_crops`
+on real crawl lots — so a parallel sample tells us whether the resolution effect
+behaves the same on pipeline crops.  This is a scale check, **not a fresh
+question**: the same-photo A/B above already **REFUTED** full-res for its goal
+(truth rank unchanged; only a uniform score lift that loosens the gates).  Early
+data says this will fail on the pipeline too; we run one bounded sample to
+confirm at pipeline provenance, then revert.  **Status: OPEN — come back to it.**
+
+**What shipped (ebayscout, measurement-only, DEFAULT OFF).**
+`_match_fullres_shadow_enabled()` (`main.py`) gates a parallel match inside
+`process_pipeline_lot` (step "5b", right after the live match): each pipeline
+crop is re-cut from the ≤2200px working image via the existing
+`_stage_crop_fullres` (the same recipe that stages reference crops — it PRESERVES
+the live crop's framing and is fail-open per crop), matched a SECOND time with
+`match_crops_with_diagnostics`, and its `restricted_top` logged to the shared
+`match_log.fullres_top_json` column.  The ≤800px match stays LIVE and
+authoritative; the shadow drives NO decision and never raises into the lot
+(guarded by `len(crops)==len(circle_info)` + a broad try/except).  It is **DEFAULT
+OFF** because the pipeline is the automated `/crawl`/daily path (up to 1000 lots)
+and the shadow doubles the CLIP match cost per lot — unlike buttonmatcher's
+`/sort` shadow (human-driven, low volume, default ON).
+
+**How to RUN the 100-lot data collection.**
+1. Deploy ebayscout from this branch (the shadow code must be live).  (buttonmatcher's
+   `/sort` shadow also only emits once its Cloud Run revision is redeployed past the
+   `fullres_top_json` column — a stale deploy writes the pre-column 84-col row.)
+2. Set the Cloud Run env `EBAYSCOUT_MATCH_FULLRES_SHADOW=1`.
+3. Run a plain **`/crawl 100`** (seen-aware ~100-lot pass).  Cost ≈ a normal
+   `/crawl 100` PLUS one extra CLIP match per crop.  Do NOT add `?ignore_seen` /
+   `?year_crawl` — a plain `/crawl 100` is the entire ask.
+4. When the lots finish, **unset `EBAYSCOUT_MATCH_FULLRES_SHADOW` (or set `=0`)**
+   so automation returns to single-cost.
+
+**Kill switches — how to turn the whole experiment OFF, in BOTH repos:**
+
+| repo | flag | default | to DISABLE | what it controls |
+|---|---|---|---|---|
+| ebayscout | `EBAYSCOUT_MATCH_FULLRES_SHADOW` | **OFF** | unset / `=0` | pipeline full-res shadow — ON only during the data run |
+| buttonmatcher | `BUTTONMATCHER_MATCH_FULLRES_SHADOW` | ON | `=0` | `/sort` full-res shadow (measurement-only) |
+| buttonmatcher | `BUTTONMATCHER_MATCH_FULLRES` | OFF | keep `0` | the LIVE full-res match — REFUTED; never enable without a full 0.85 / gap / slogan_gap recalibration |
+
+ebayscout has **no** live full-res flag — it never matches at full-res on the
+live path, only inside this shadow.
+
+**How to GRADE (join `fullres_top_json` ↔ `restricted_top_json` per row).**  Same
+bar as buttonmatcher: (1) does full-res change the confirmed slogan's rank?
+(expect NO — the refutation); (2) the score/gap lift — how many CORRECT #1s cross
+0.85, and crucially **how many WRONG #1s does it push over 0.85 that 800px did
+not**; (3) any distribution break in image/slogan/overall vs the prior 800px
+batches.  Promote to live only if the correct-auto gain clearly beats the
+wrong-auto cost AND every threshold is recalibrated first — otherwise REVERT.
+
+**Full REVERT (when the data confirms the refutation).**
+- **ebayscout:** delete `_match_fullres_shadow_enabled()`, the "5b" shadow block
+  in `process_pipeline_lot`, and the `fullres_top=` arg in that function's
+  `build_match_record` call (all in `main.py`).
+- **buttonmatcher:** set `BUTTONMATCHER_MATCH_FULLRES_SHADOW=0` (fast off), or
+  delete `_match_fullres_shadow_enabled` + the shadow block in `process_grid`.
+  Leave `_match_fullres_enabled` alone (already default OFF).
+- The `fullres_top` / `fullres_top_json` plumbing in the shared `match_logging.py`
+  is measurement-only and can STAY in both repos (harmless empty column).
