@@ -1202,3 +1202,177 @@ kills faint rims.  A mitigation — feed detection the FULL-res original (one bi
 INTER_AREA step) rather than a Slack-pre-shrunk copy — would help white-rescue
 directly, but it depends on the image-fetch path and is fragile; the grid-hole
 fill is the durable fix and covers the case regardless of resample path.
+
+---
+
+# Part IX — matching resolution: CLIP crops from full-res vs the 800px detection frame (EXPERIMENT, 2026-07-18)
+
+## Motivation
+
+Tracing the resize path (log_analysis / Part VIII) surfaced a second, higher-
+leverage lever than the white-on-white miss.  The image passes through three
+tiers: original → ≤2200px working image (INTER_AREA) → ≤800px detection image
+(INTER_LINEAR).  **Both detection AND CLIP matching run on the ≤800px tier** —
+the crops handed to `match_all_crops` are cut from the detection image
+(main.py: `image_bgr = prep["img"]`), so a button is only ~140px across and
+CLIP UPSCALES it to its 224px input (an upscaled blur).  The ≤2200px working
+image is otherwise used only to re-cut reference crops (`_staging_crop_jpeg`),
+never the live match.
+
+Hypothesis: matching on full-res crops (~360-400px, DOWNSCALED to 224 — real
+detail instead of an upscaled blur) sharpens the slogan/text embedding, which
+is exactly where the pun-family and edition-twin cases are weakest — the core
+of "make /sort autoconfirm as good as Gemini".
+
+## What shipped (flag ON by default for the experiment)
+
+`_match_fullres_enabled` (default ON; `BUTTONMATCHER_MATCH_FULLRES=0` reverts)
++ `_fullres_crop_bgr` / `_fullres_match_crops`.  Detection is UNCHANGED (still
+≤800px, cheap); only the per-button crops fed to CLIP in `process_grid` are
+re-sliced from the ≤2200px working image by scaling each crop's detection-space
+`circle_info` up by full/detection (the proven `_staging_crop_jpeg` recipe).
+Fail-open per button to the detection crop (an ROI-retry makes the x/y scales
+diverge → keep the 800px crop; a bad scale can never DROP a button, only forgo
+the resolution gain).  Measured on the Mildcats lot: median match crop
+**144px → 399px (×2.8)**.  CPU: one extra crop-slice per button plus larger
+CLIP preprocessing — the operator confirmed headroom for this.  Scope:
+buttonmatcher `process_grid` (guided /sort + /inventory) only; the /pipeline
+match and ebayscout are a follow-up if the experiment wins.
+
+## The risk this experiment is gated on (why it is a flag, not a silent change)
+
+Bigger, sharper crops almost certainly shift the CLIP cosine distribution UP.
+Every downstream gate is calibrated to the 800px distribution: the
+`normalize_slogan` [0.15, 0.35] window, the 0.85 AUTO floor, `GAP_ONLY` 0.15,
+`SLOGAN_GAP` 0.12.  A systematic upward shift can silently push borderline
+buttons over 0.85 → NEW WRONG AUTOS — the same failure class as the
+DECISIONS.md #12 quantization output-space shift that collapsed all scores.
+This is precisely the "tuned/calibrated on one distribution" trap §4.2 warns
+about, so it ships behind a switch and is graded before any threshold is
+trusted.
+
+## How to grade the 10-lot run (operator)
+
+Run ~10 lots through /sort or /inventory with the flag on, then on the next
+Logger export compare against the prior 800px batches (Logger_14-18):
+
+1. **Does it help the target class?** `confirm_log.rank_restricted` of confirmed
+   truths — do the pun-family / twin slogans rank #1 more often?  Do the deep
+   tiers (matched_rank > 3) shrink?
+2. **Did the distribution shift?** `match_log` image_score / slogan_score /
+   overall — histogram vs the prior batches.  A visible rightward shift, or a
+   spike of near-1.0 overalls, means the thresholds are now mis-calibrated.
+3. **The bright line: any NEW wrong auto** (auto_sort / gap_only / slogan_gap
+   confirmed to the wrong slogan/year).  Zero is the pass bar; ≥1 → either
+   recalibrate every threshold to the full-res distribution FIRST, or set
+   BUTTONMATCHER_MATCH_FULLRES=0.
+
+VERDICT: pending the 10-lot export.  If it improves ranks with no distribution
+break, promote (and extend to /pipeline + ebayscout).  If it shifts scores,
+the win requires a full threshold recalibration, not a free flip.
+
+## First read — Logger_19 (7 /sort lots, 77 confirms, 2026-07-18)
+
+First batch with the experiment deployed.  Cannot 100% confirm the flag was on
+(no per-lot marker logged — a gap to fix), but the component signature says it
+was, and it is behaving as hypothesised:
+
+- **text_score (the slogan component full-res should sharpen most) rose the
+  most: +0.040** (L19 mean 0.659 vs L18 0.619), across the whole distribution
+  (quartiles +0.04–0.05).  image_score rose only **+0.012**, overall +0.025,
+  ref_sim +0.022.  The text≫image differential is the mechanism fingerprint —
+  an easier batch would lift image and text alike; full-res lifts text
+  preferentially (small lettering benefits most from resolution).  The pun
+  family now surfaces at rank 1 ("SM WHO", "Indi-gestion", "Enough Nois
+  Already", "Not Thee...B.C.").
+- **Safety bar PASSED: 0 wrong autos on 36 auto-confirms**, and no saturation
+  (frac overall≥0.95 flat at 0.01; text_score p90 0.841, not blown to 1.0).
+- **BUT the shift is ~uniform, not separation-improving** (rank-1 picks' #1→#2
+  gap median 0.080 ≈ L18's 0.071).  So the +0.040 lift pushed more buttons over
+  the fixed 0.85 / gap gates — auto rate **33% → 47%** — rather than pulling
+  truths further from impostors.  Precision held at N=36, but a uniform up-shift
+  means the thresholds are now effectively LOOSER than their 800px calibration:
+  the wrong-auto risk grows with volume, and a wrong slogan that used to sit at
+  0.82 can now clear 0.85.  This is the DECISIONS.md #12 distribution-shift
+  concern materialising as predicted — benign so far, watch it.
+- Detection bonus (same batch): two saturated white-on-white lots recovered
+  their full count — cc6a0aac 12/12 at mask coverage 0.29, 17e1672a 14/14 at
+  **0.09** (white_rec 2 and 6, satfallback+whitepass).  No white-on-white miss.
+
+VERDICT (interim): promising + safe on 7 lots, but confounded (lot selection)
+and the up-shift is uniform.  To settle causation: a same-lot A/B
+(BUTTONMATCHER_MATCH_FULLRES=1 then =0 on 2-3 identical lots) proves the
+text_score delta on identical crops.  Decision pending more volume: if any
+wrong auto appears, recalibrate the 0.85 / gap / slogan_gap thresholds to the
+full-res distribution BEFORE trusting the higher auto rate — do not just ride
+the looser gates.
+
+## SUPERSEDES the first read — Logger_19 SAME-PHOTO A/B: full-res REFUTED (2026-07-18)
+
+The operator re-ran the EXACT SAME photos as a prior /sort batch — a true 1-to-1
+control (identical buttons; only the match resolution differs).  Matching 5 L19
+lots to their prior twins by confirmed-slogan set and comparing the SAME buttons
+(rank recomputed from restricted_top_json, NOT the buggy column below):
+
+- **Truth rank UNCHANGED.** 42 buttons on-list in both: mean rank 1.02 both,
+  truth@#1 0.98 both, 40/42 identical (1 better, 1 worse).  Full-res does not
+  move where the truth ranks — the thing that decides presentation/auto.
+- **Hard slogans NOT surfaced.** 2 slogans moved onto the list, 2 pushed off —
+  net zero.  The pun family stayed off-list (SM WHO was even rank-1 at 800px and
+  OFF-list at full-res).  The whole premise — full-res sharpens text so the hard
+  slogans chart — is false.
+- **Only effect: a small ~UNIFORM score lift** (+0.011 paired median overall).
+  The cross-batch "+0.040 text_score / +0.025 overall" first read was mostly
+  LOT CONFOUND; the true paired effect is ~+0.015 and it does not improve
+  SEPARATION (gaps unchanged).  It just loosens the fixed 0.85 / gap gates (auto
+  33→47%) — the DECISIONS.md #12 distribution-shift LIABILITY with none of the
+  discrimination benefit.
+
+VERDICT: **REFUTED for its goal; default flipped OFF** (kept behind
+BUTTONMATCHER_MATCH_FULLRES for future experiments).  The lesson: the first read
+trusted a cross-batch score shift AND a broken rank column; the same-photo A/B
+the operator set up is what exposed both.  Grade resolution/model changes on
+identical photos, never cross-batch score means.
+
+## BUG found while grading: `rank_restricted` is YEAR-based, misleads on typed entries
+
+`confirm_log.rank_restricted = mlog.rank_of(chosen_year, restricted_lb)` and
+`rank_of` matches by **year only** (match_logging.py).  So a TYPED slogan that
+is off-list but whose year collides with the #1 candidate's year is logged as
+rank_restricted=1 — e.g. SM WHO (2024) typed because it was off-list, while the
+crop's real #1 was "All Helmet, No Heart" (also 2024) → logged rank 1.  Every
+typed_search row in Loggers 16-19 with rank_restricted=1 is suspect; the
+headline "rank 1 = would've nailed it" metric and tools/calibrate_from_logs.py
+(`rank_restricted=="1"` ⇒ correct) are contaminated for typed rows.
+FIX (proposed, focused follow-up): rank by (year, phrase) against the
+phrase-carrying leaderboard (restricted_top_json), so an off-list typed slogan
+correctly logs rank None; update the calibration tool + tests.  Re-grading
+should always recompute rank from the JSON meanwhile.
+
+## The threshold question answered, and the SHADOW deployed for a 100-lot A/B (2026-07-18)
+
+Operator asked the precise question: did full-res push any slogan over the
+auto-confirm threshold?  Paired answer on the same buttons (Logger_19):
+
+- **3 crossed the 0.85 score line** (Clam Up Boston 0.848→0.890, Orange ya glad
+  0.834→0.854, Birdbusters 0.848→0.877) — all with the CORRECT slogan at #1.
+- **5 crossed the full auto decision** (score-or-gap; several via the GAP
+  widening — Lions Buck 0.050→0.113, Teddy Bearcats 0.041→0.103), 1 lost
+  (Minnesota, still correct #1).  **Net +4 correct autos on 47 buttons, 0 wrong.**
+
+So the earlier "pure liability" framing was too harsh: full-res does not improve
+RANK, but it does convert ~4 correct picks into autos via the score/gap lift.
+The unresolved risk is whether the same lift pushes a WRONG #1 over the line at
+scale — unanswerable on 7 lots.  Hence the shadow.
+
+**SHIPPED: full-res match SHADOW** (`_match_fullres_shadow_enabled`, default ON;
+`BUTTONMATCHER_MATCH_FULLRES_SHADOW=0` to disable; skipped when the live flag is
+on).  The ≤800px match stays LIVE and authoritative; the full-res crops are
+matched in PARALLEL and their top-10 logged to the new `match_log.fullres_top_json`
+column (measurement only, no decision touched; fail-open; doubles CLIP cost per
+lot, operator-approved).  Grade over ~100 lots by joining `fullres_top_json` to
+`restricted_top_json` on the same row: per crop, does full-res change the
+confirmed slogan's rank/score and its would-auto verdict — and crucially, **how
+many WRONG #1s does full-res push over 0.85 that 800px did not**?  Decision:
+promote to live (with threshold recalibration) only if the correct-auto gain
+clearly beats any wrong-auto cost across the 100 lots.
