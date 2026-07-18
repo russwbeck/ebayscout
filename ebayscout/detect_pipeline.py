@@ -102,6 +102,90 @@ def _anchor_recovery_enabled():
     return _flag_on("EBAYSCOUT_ANCHOR_RECOVERY", "BUTTONMATCHER_ANCHOR_RECOVERY")
 
 
+def _grid_hole_fill_enabled():
+    """Grid-hole force-fill (Mildcats/Minnesota white-on-white miss, 2026-07-18):
+    a button whose faint rim did not survive the image downscale leaves a HOLE
+    the lattice geometry still shows.  When the guided count says a button is
+    missing and the accepted circles form a regular grid with an empty INTERIOR
+    cell, force a crop at that cell — geometry, not rim visibility, so it is
+    immune to the resolution fragility that makes white-rescue recover 2 of 3
+    whites at one downscale and 3 at another.  Guided path only; a forced crop
+    is a review card, never an auto-confirm.  On by default;
+    EBAYSCOUT_GRID_HOLE_FILL=0 (or BUTTONMATCHER_GRID_HOLE_FILL=0) disables it."""
+    return _flag_on("EBAYSCOUT_GRID_HOLE_FILL", "BUTTONMATCHER_GRID_HOLE_FILL")
+
+
+def _grid_hole_cells(rows_xy, expected, r_est, max_fill):
+    """Empty INTERIOR cells of the regular lattice the accepted circles form.
+
+    ``rows_xy`` is the per-row circle grouping (each row a list of (x, y, r),
+    already clustered by y and sorted left-to-right).  Infers ``K`` column
+    centres (K = the fullest row's length) by splitting every circle's x at the
+    K-1 largest gaps, then returns up to ``max_fill`` ``(x, y)`` centres for
+    cells that are
+
+      (a) empty in their row,
+      (b) FLANKED — an occupied cell exists to the left AND to the right in the
+          same row (so a genuinely-absent button at the end of a short row is
+          never invented), and
+      (c) in a column that is occupied by some other row (a real column).
+
+    Pure (stdlib only).  Returns ``[]`` when the lattice is too irregular to
+    trust — fewer than two rows, K < 2, or any accepted circle sits more than
+    half a radius from every inferred column centre (a staggered / non-grid
+    arrangement, where "interior hole" is meaningless)."""
+    rows = [r for r in rows_xy if r]
+    n = sum(len(r) for r in rows)
+    if len(rows) < 2 or max_fill < 1 or n >= expected or not r_est or r_est <= 0:
+        return []
+    K = max(len(r) for r in rows)
+    if K < 2:
+        return []
+    xs = sorted(x for r in rows for (x, _y, _r) in r)
+    if len(xs) < K:
+        return []
+    # column centres: cut the sorted x's at the K-1 widest gaps
+    gaps = sorted(((xs[i + 1] - xs[i], i) for i in range(len(xs) - 1)), reverse=True)
+    cut_after = sorted(i for _g, i in gaps[:K - 1])
+    groups, start = [], 0
+    for ci in cut_after + [len(xs) - 1]:
+        groups.append(xs[start:ci + 1])
+        start = ci + 1
+    col_centers = [sum(g) / len(g) for g in groups if g]
+    if len(col_centers) != K:
+        return []
+    tol = 0.5 * r_est
+
+    def _col_of(x):
+        return min(range(K), key=lambda j: abs(x - col_centers[j]))
+
+    # regularity guard: every accepted circle must land on a column
+    for r in rows:
+        for (x, _y, _r) in r:
+            if abs(x - col_centers[_col_of(x)]) > tol:
+                return []
+
+    col_occupied_rows = {j: 0 for j in range(K)}
+    row_cols = []
+    for r in rows:
+        occ = set(_col_of(x) for (x, _y, _r) in r)
+        row_cols.append(occ)
+        for j in occ:
+            col_occupied_rows[j] += 1
+
+    holes = []
+    for ri, r in enumerate(rows):
+        occ = row_cols[ri]
+        row_y = sum(y for (_x, y, _r) in r) / len(r)
+        for j in range(K):
+            if j in occ:
+                continue
+            flanked = any(k < j for k in occ) and any(k > j for k in occ)
+            if flanked and col_occupied_rows[j] >= 1:
+                holes.append((col_centers[j], row_y))
+    return holes[:max_fill]
+
+
 def _frame_fit_enabled():
     """Gemini frame fit (1987-front dual incident): correct a stretched/offset
     Gemini coordinate frame against detection's row/column structure before any
@@ -2417,6 +2501,35 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
                 row.sort(key=lambda c: c[0])
 
             final_circles = [c for row in rows_est for c in row]
+
+            # Grid-hole force-fill (white-on-white miss): a button whose faint
+            # rim did not survive the downscale is invisible to Hough AND
+            # white-rescue, but the LATTICE still shows its empty cell.  When
+            # the guided count is still short and the accepted circles form a
+            # regular grid with an empty INTERIOR cell, force a crop there —
+            # geometry, not rim visibility (resolution-independent).  Placed at
+            # the lattice cell centre with the cohort median radius; drawn red
+            # in debug.  A forced crop is a review card, never an auto-confirm.
+            if (_grid_hole_fill_enabled() and len(final_circles) < expected
+                    and len(rows_est) >= 2):
+                _hr = int(np.median([c[2] for c in final_circles])) if final_circles \
+                    else int(expected_r or 0)
+                _rows_xy = [[(c[0], c[1], c[2]) for c in row] for row in rows_est]
+                _holes = _grid_hole_cells(
+                    _rows_xy, expected, float(_hr), expected - len(final_circles))
+                for (_hx, _hy) in _holes:
+                    final_circles.append((int(round(_hx)), int(round(_hy)), _hr))
+                    if debug:
+                        cv2.circle(debug_img, (int(round(_hx)), int(round(_hy))),
+                                   _hr, (0, 0, 255), 2)
+                if _holes:
+                    final_circles = sorted(final_circles, key=lambda c: (c[1], c[0]))
+                    print(f">>> DETECT: grid-hole force-fill +{len(_holes)} "
+                          f"interior lattice hole(s) → {len(final_circles)} "
+                          f"(white-on-white rescue).", flush=True)
+                    if diag_out is not None:
+                        diag_out["grid_hole_fill"] = len(_holes)
+
             if truncate_to_expected:
                 final_circles = final_circles[:expected]
             det_count_auto = len(final_circles)
