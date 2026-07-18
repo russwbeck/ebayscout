@@ -212,11 +212,47 @@ def rank_of(year, ordered_results):
     """1-based rank of ``year`` within an ordered list of result dicts (or list
     of year strings).  Returns None if absent.  This is the headline automation
     metric: rank 1 means the unrestricted pipeline would have nailed it alone.
+
+    NOTE: this matches by YEAR ONLY.  For a TYPED slogan that is off the board
+    but whose year collides with the #1 candidate's year, it reports a false
+    rank 1 (Logger_19: SM WHO 2024 typed off-list, #1 was "All Helmet No Heart"
+    also 2024 → rank 1).  Use ``rank_of_slogan`` against a phrase-carrying board
+    (restricted_top / shadow_top) for the confirmed slogan's true rank.
     """
     target = str(year)
     for i, r in enumerate(ordered_results, 1):
         ry = r["year"] if isinstance(r, dict) else r
         if str(ry) == target:
+            return i
+    return None
+
+
+def _year4(y):
+    """First 4-digit run of a year label (so '1984' and '1984 (Mellon)' match)."""
+    digits = "".join(c for c in str(y) if c.isdigit())
+    return digits[:4] if len(digits) >= 4 else str(y).strip()
+
+
+def _basic_norm(s):
+    return "".join(c for c in str(s).lower() if c.isalnum())
+
+
+def rank_of_slogan(year, phrase, ordered_results, normalize_fn=None):
+    """1-based rank of the (year, phrase) SLOGAN within a phrase-carrying board
+    (``restricted_top`` / ``shadow_top`` dicts), or None if absent.
+
+    Unlike ``rank_of`` (year only), this matches the slogan IDENTITY — normalized
+    phrase AND year — so a typed off-board slogan correctly logs None instead of
+    a false rank 1 (the Logger_19 rank_restricted bug).  ``ordered_results`` rows
+    must carry ``phrase`` and ``year``; ``normalize_fn`` defaults to lowercase-
+    alphanumeric.  Fail-open: a malformed row is skipped, not fatal.
+    """
+    nf = normalize_fn or _basic_norm
+    tp, ty = nf(phrase), _year4(year)
+    for i, r in enumerate(ordered_results, 1):
+        if not isinstance(r, dict):
+            continue
+        if nf(r.get("phrase", "")) == tp and _year4(r.get("year")) == ty:
             return i
     return None
 
@@ -474,12 +510,17 @@ def build_match_record(
     shadow_top,
     shadow_enabled,
     rerank_top=None,
+    fullres_top=None,
 ):
     """One record per crop, written at detection/match time.
 
     ``rerank_top`` (optional) holds the two-level reference re-rank scores
     (year_score / sid_score / rerank_delta per offered candidate) when the
     BUTTONMATCHER_RERANK path ran for this crop.
+
+    ``fullres_top`` (optional) holds the crop's top-10 leaderboard matched at
+    full resolution (≤2200px) — the Logger_19 A/B shadow.  Measurement only;
+    the live match/auto-confirm stays on the ≤800px ``restricted_top``.
     """
     return {
         "schema": SCHEMA_MATCH,
@@ -499,6 +540,7 @@ def build_match_record(
         "shadow_enabled": bool(shadow_enabled),
         "shadow_top": shadow_top,
         "rerank_top": rerank_top or [],
+        "fullres_top": fullres_top or [],
     }
 
 
@@ -652,6 +694,12 @@ MATCH_HEADER = [
     # --- appended: Gemini-anchored A/B shadow (anchor crops on Gemini x/y vs Hough)
     # — agreement + snap distance + gemini-only/hough-only counts, one JSON blob ---
     "det_gemini_anchored_json",
+    # --- appended: full-res match SHADOW (Logger_19 A/B) — the crop's top-10
+    # leaderboard when matched at ≤2200px instead of the ≤800px detection frame.
+    # 800px stays LIVE; this column is measurement-only.  Empty when the shadow
+    # didn't run (flag off / no full-res crop).  Join to restricted_top_json (same
+    # row) for the paired rank/score/would-auto comparison on identical buttons. ---
+    "fullres_top_json",
 ]
 
 CONFIRM_HEADER = [
@@ -766,6 +814,8 @@ def flatten_match_record(rec):
         json.dumps(d.get("reconcile_swaps") or [], default=str),
         # --- appended: Gemini-anchored A/B shadow summary ---
         json.dumps(d.get("gemini_anchored") or {}, default=str),
+        # --- appended: full-res match shadow leaderboard (Logger_19 A/B) ---
+        json.dumps(rec.get("fullres_top") or [], default=str),
     ]
 
 
