@@ -1137,3 +1137,68 @@ cooperates).  Kill switch `BUTTONMATCHER_FRAME_FIT=0` (ebayscout:
 RECONCILE FRAME_FIT print.  Rollback trigger: a frame-fit lot whose
 confirmations show the map was wrong (watch any `applied=true` lot's confirms
 closely in the next Logger export).
+
+---
+
+# Part VIII — the white-on-white miss: detection is resolution-fragile, grid geometry is not (2026-07-18)
+
+## The Mildcats/Minnesota lot (/inventory, user typed 12)
+
+Operator typed **12** into `/inventory`; the annotated result numbered **11**
+and dropped the 12th circle into empty paper below the buttons.  The missed one
+was the single PURE-WHITE button ("Minnesota Go-Pher Cover") on white paper.
+Not a count bug — traced end-to-end with the real detector on the raw photo:
+
+1. `expected = count` for a typed count (main.py:4295) — no decrement.  (The
+   only "count − 1" in the code is the /pipeline `min(gem_total, localized)`
+   cap, which does not apply to a typed /inventory count.)
+2. The white-on-white **saturates the colour mask** (coverage 0.77) → blue-only
+   hole-filled fallback (0.29), which is BLIND to white buttons.
+3. `white-rescue` (Hough on the image gradient + rim support) recovers white
+   buttons — but it is **RESOLUTION-FRAGILE**.  Same code, same photo, only the
+   input size changed:
+
+   | input size | found | Minnesota |
+   |---|---|---|
+   | raw 4032px / jpeg re-encode | 12 | ✅ |
+   | 1600 / 1200 / 800px | **11** | ❌ |
+   | 1000px | 12 | ✅ |
+
+   The pure-white rim survives a single big INTER_AREA downscale but is lost in
+   a two-step resample (Slack pre-downscale → the 800px working frame), so
+   white-rescue recovers 2 of 3 whites and the faint Minnesota loses the
+   deficit-capped race.  The leftover 12th slot then lands by grid math in
+   empty paper.
+
+## CONFIRMED: the grid gap is a resolution-independent signal
+
+The accepted 11 circles still form a clean 4-column lattice with one empty
+INTERIOR cell exactly where Minnesota sits.  The grid geometry shows the hole
+even when no rim survives — the operator's own diagnosis ("if it had forced
+right in the gap it would have found it").
+
+## Grid-hole force-fill — SHIPPED (2026-07-18, both repos)
+
+`detect._grid_hole_cells` (pure, byte-shared with ebayscout
+detect_pipeline.py): from the per-row circle groups, infer K column centres
+(K = fullest row) and return empty cells that are (a) empty, (b) FLANKED left
+AND right in their row, (c) in a column occupied by another row.
+`detect_buttons` force-fills those cells up to the deficit when the guided
+count is still short — geometry, not rim visibility.  Guards against the
+1979/1987 "synthesise in empty space" lesson: **interior cells only** (a
+genuinely-absent trailing/leading button in a short row is never invented),
+regularity guard (any off-grid circle → fail closed), guided path only, capped
+at the deficit.  A forced crop is a **review card, never an auto-confirm**, so
+worst case is one extra card.  Kill switch `BUTTONMATCHER_GRID_HOLE_FILL=0`
+(ebayscout `EBAYSCOUT_GRID_HOLE_FILL`); `grid_hole_fill` diag telemetry + a
+per-lot print.  Fixture `white_on_white_minnesota_12.png` (800px) reproduces
+the 11-miss with the switch off and the 12-recovery with it on; 7 pure unit
+tests cover the interior/trailing/irregular guards.
+
+## Complementary (not shipped): the resampling path itself
+
+The root fragility is that detection runs at ≤800px and a two-step downscale
+kills faint rims.  A mitigation — feed detection the FULL-res original (one big
+INTER_AREA step) rather than a Slack-pre-shrunk copy — would help white-rescue
+directly, but it depends on the image-fetch path and is fragile; the grid-hole
+fill is the durable fix and covers the case regardless of resample path.
