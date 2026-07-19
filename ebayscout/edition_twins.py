@@ -60,26 +60,85 @@ def twin_family(registry, slogan, normalize_fn):
     return registry.get(key)
 
 
+def printed_year_marker_matches(season_year, game_year, printed_year):
+    """True if a button whose catalog SEASON year is ``season_year`` — and whose
+    game/printed CALENDAR year is ``game_year`` when that is known — would carry
+    ``printed_year`` as its on-button marker.
+
+    A regular edition's marker is its season year; a BOWL edition's marker is the
+    game's calendar year, which is season+1 (a 1 Jan 1979 Sugar Bowl button
+    belongs to the 1978 set but reads "1979").  A candidate matches when
+    ``printed_year`` equals EITHER value, which means:
+
+      * behaviour is unchanged when ``game_year`` is None — season-year match
+        only, exactly the pre-game_date rule — so the ~99% of buttons whose
+        marker already equals the season year are unaffected; and
+      * a bowl button resolves once its game_date is loaded (game_year season+1),
+        without a special case for "is this a bowl".
+
+    Bad/None ``printed_year`` never matches, so a misread resolves nothing.
+    Pure; general — the canonical printed-year test for any consumer, not just
+    twins."""
+    try:
+        py = int(printed_year)
+    except (TypeError, ValueError):
+        return False
+    for candidate in (season_year, game_year):
+        if candidate is None:
+            continue
+        try:
+            if int(str(candidate).strip()) == py:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def resolve_printed_year(candidates, printed_year, game_year_of=None):
+    """The single candidate whose on-button marker equals ``printed_year``, or
+    None.  The general form behind :func:`resolve_by_printed_year`, usable by
+    any printed-year consumer (twin sequence today; single-candidate validation
+    or the year-bias audit in future).
+
+    ``candidates``   — dicts each carrying a ``year`` (catalog SEASON year).
+    ``printed_year`` — the int Gemini read off the button (None ⇒ no marker).
+    ``game_year_of`` — optional callable(candidate) → that candidate's game/
+        printed CALENDAR year (from its game_date), or None when unknown.  Omit
+        for season-year-only matching (identical to the pre-game_date rule).
+
+    Returns the unique match, or None when zero or 2+ candidates match — so a
+    misread or a genuinely ambiguous pair never resolves a year.  Pure."""
+    if printed_year is None or not candidates:
+        return None
+    hits = [
+        c for c in candidates
+        if printed_year_marker_matches(
+            (c or {}).get("year"),
+            (game_year_of(c) if game_year_of else None),
+            printed_year,
+        )
+    ]
+    return hits[0] if len(hits) == 1 else None
+
+
 def resolve_by_printed_year(family, printed_year):
-    """The single family edition whose year equals the button's PRINTED year
-    marker, or None.
+    """The single family edition whose PRINTED year marker equals
+    ``printed_year``, or None.
 
     ``family`` is a twin_family() list (entries with a ``year``);
     ``printed_year`` is the int Gemini read off the button (1983/84 and
-    1997-2025 buttons carry a small year marker).  Returns the matching entry
-    ONLY when exactly one edition matches — no match, an unparseable year, or
-    (pathologically) two same-year editions all return None, so a misread can
-    never resolve a twin.  Pure; callers keep their fail-open wrappers."""
-    if printed_year is None or not family:
-        return None
-    hits = []
-    for entry in family:
-        try:
-            if int(str((entry or {}).get("year")).strip()) == int(printed_year):
-                hits.append(entry)
-        except (TypeError, ValueError):
-            continue
-    return hits[0] if len(hits) == 1 else None
+    1997-2025 buttons carry a small year marker).  Offset-aware: an edition
+    matches when ``printed_year`` equals its season ``year`` OR its game_date
+    calendar year (``entry['game_year']``, stamped at hydration when the entry
+    has a game_date) — so a bowl edition resolves on its game year while every
+    dateless edition keeps the pure season-year rule.  Returns the entry ONLY
+    when exactly one edition matches — no match, an unparseable year, or two
+    matching editions all return None, so a misread can never resolve a twin.
+    Pure; callers keep their fail-open wrappers."""
+    return resolve_printed_year(
+        family, printed_year,
+        game_year_of=lambda e: (e or {}).get("game_year"),
+    )
 
 
 def should_demote(registry, slogan, normalize_fn):

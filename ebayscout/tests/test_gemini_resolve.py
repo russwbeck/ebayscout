@@ -227,6 +227,40 @@ def test_scenario_a_carries_printed_year_through():
     assert res[0]["printed_year"] == 2019
 
 
+def test_scenario_b_bowl_offset_resolves_to_season_year():
+    """Bowl-year normalization (2026-07-19): Gemini reads the printed GAME year
+    (1979) but the edition belongs to the 1978 season.  game_year_by_key lets the
+    printed-year rung match 1979 to the season-1978 candidate and emit 1978."""
+    from gemini_resolve import resolve_with_gemini_slogans
+    cands = [{"year": 1978, "slogan": "Lion Power", "type": "Football"},
+             {"year": 1981, "slogan": "Lion Power", "type": "Football"}]
+    gyk = {(_norm_py("Lion Power"), 1978): 1979}
+    res = resolve_with_gemini_slogans(
+        {0: cands},
+        {0: {"slogan": "Lion Power", "confidence": 0.95, "index": 1,
+             "printed_year": 1979}},
+        {}, set(), normalize_fn=_norm_py, game_year_by_key=gyk)
+    assert res[0]["source"] == "gemini_printed_year"
+    assert res[0]["year"] == 1978
+    assert res["telemetry"]["n_printed_year_gamematch"] == 1
+
+
+def test_scenario_b_bowl_offset_noop_without_map():
+    """Without game_year_by_key, printed 1979 matches neither 1978 nor 1981, so
+    the printed-year rung does NOT fire — behaviour is unchanged when no game
+    dates are loaded."""
+    from gemini_resolve import resolve_with_gemini_slogans
+    cands = [{"year": 1978, "slogan": "Lion Power", "type": "Football"},
+             {"year": 1981, "slogan": "Lion Power", "type": "Football"}]
+    res = resolve_with_gemini_slogans(
+        {0: cands},
+        {0: {"slogan": "Lion Power", "confidence": 0.95, "index": 1,
+             "printed_year": 1979}},
+        {}, set(), normalize_fn=_norm_py)
+    assert res[0]["source"] != "gemini_printed_year"
+    assert res["telemetry"]["n_printed_year_gamematch"] == 0
+
+
 # --- anchoring gate (2026-07-16 shifted-lot incident) --------------------------
 
 def test_unanchored_association_never_autos():
