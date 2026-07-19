@@ -39,7 +39,10 @@ from __future__ import annotations
 
 from collections import Counter
 
-import edition_twins as edt
+try:                                    # buttonmatcher imports modules flat
+    import edition_twins as edt
+except ImportError:                     # ebayscout imports them as a package
+    from . import edition_twins as edt
 
 
 def _year_int(y):
