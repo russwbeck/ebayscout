@@ -511,6 +511,7 @@ def build_match_record(
     shadow_enabled,
     rerank_top=None,
     fullres_top=None,
+    variant_top=None,
 ):
     """One record per crop, written at detection/match time.
 
@@ -521,6 +522,11 @@ def build_match_record(
     ``fullres_top`` (optional) holds the crop's top-10 leaderboard matched at
     full resolution (≤2200px) — the Logger_19 A/B shadow.  Measurement only;
     the live match/auto-confirm stays on the ≤800px ``restricted_top``.
+
+    ``variant_top`` (optional) holds the crop's top-10 leaderboard when the
+    punctuation-normalized text VARIANTS are unioned into the bank — the
+    variant-augmentation A/B shadow.  Measurement only; the live match uses the
+    un-augmented ``restricted_top`` unless BUTTONMATCHER_TEXT_VARIANTS is on.
     """
     return {
         "schema": SCHEMA_MATCH,
@@ -541,6 +547,7 @@ def build_match_record(
         "shadow_top": shadow_top,
         "rerank_top": rerank_top or [],
         "fullres_top": fullres_top or [],
+        "variant_top": variant_top or [],
     }
 
 
@@ -700,6 +707,14 @@ MATCH_HEADER = [
     # didn't run (flag off / no full-res crop).  Join to restricted_top_json (same
     # row) for the paired rank/score/would-auto comparison on identical buttons. ---
     "fullres_top_json",
+    # --- appended: text-VARIANT match SHADOW — the crop's top-10 leaderboard
+    # with punctuation-normalized variants unioned into the bank (helps the
+    # hyphen/apostrophe pun family, e.g. "I-O-Wasn't", embed better). Live match
+    # uses restricted_top_json unless BUTTONMATCHER_TEXT_VARIANTS is on; this
+    # column is measurement-only. Empty when the shadow didn't run (variants
+    # already live, no variant bank, or kill switch). Join to restricted_top_json
+    # (same row): does a truth off the restricted board come ON with variants? ---
+    "variant_top_json",
 ]
 
 CONFIRM_HEADER = [
@@ -816,6 +831,8 @@ def flatten_match_record(rec):
         json.dumps(d.get("gemini_anchored") or {}, default=str),
         # --- appended: full-res match shadow leaderboard (Logger_19 A/B) ---
         json.dumps(rec.get("fullres_top") or [], default=str),
+        # --- appended: text-variant match shadow leaderboard ---
+        json.dumps(rec.get("variant_top") or [], default=str),
     ]
 
 
