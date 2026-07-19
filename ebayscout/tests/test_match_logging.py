@@ -589,10 +589,12 @@ def test_dt_peak_columns_default_blank():
 
 
 def test_gem_unmatched_columns_are_the_header_tail():
-    # gem_unmatched → reconcile swap → Gemini-anchored A/B shadow are the tail.
-    assert ml.MATCH_HEADER[-6:] == ["det_gem_unmatched", "det_gem_unmatched_json",
+    # gem_unmatched → reconcile swap → Gemini-anchored A/B shadow → full-res
+    # match shadow → text-variant match shadow (the final appended column).
+    assert ml.MATCH_HEADER[-7:] == ["det_gem_unmatched", "det_gem_unmatched_json",
                                     "det_n_swapped", "det_reconcile_swaps_json",
-                                    "det_gemini_anchored_json", "fullres_top_json"]
+                                    "det_gemini_anchored_json", "fullres_top_json",
+                                    "variant_top_json"]
 
 
 def test_gemini_anchored_shadow_column_flattens():
