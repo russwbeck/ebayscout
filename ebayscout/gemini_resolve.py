@@ -39,6 +39,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+import edition_twins as edt
+
 
 def _year_int(y):
     """Best-effort int from a year label; None if not numeric."""
@@ -81,7 +83,8 @@ def _majority_year(era_votes):
 
 
 def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
-                                flagged_indices, *, normalize_fn, conf_min=0.70):
+                                flagged_indices, *, normalize_fn, conf_min=0.70,
+                                game_year_by_key=None):
     """Resolve crops where CLIP and Gemini agree.
 
     Parameters
@@ -105,6 +108,11 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         slogan → normalized key (buy_rules._normalize_key).
     conf_min : float
         minimum Gemini confidence for an AUTO resolve.
+    game_year_by_key : dict | None
+        ``(normalize_fn(slogan), season_year) -> game_date calendar year`` for
+        entries whose game year differs from their season year (bowl editions).
+        Lets the printed-year rung match a bowl button's marker (season+1) to its
+        season-year candidate.  None ⇒ season-year-only matching (unchanged).
 
     Returns ``{crop_idx: resolution, "telemetry": {...}}`` where ``resolution`` is::
 
@@ -184,15 +192,32 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
     anchor_year, clear = _majority_year(era_votes)
     n_disambiguated = 0
     n_printed_year = 0
+    n_printed_year_gamematch = 0   # printed-year hits resolved via game_date, not season year
+
+    def _game_year_of(c):
+        """Candidate's game/printed CALENDAR year from game_year_by_key
+        ((normkey(slogan), season_year) -> calendar year), or None."""
+        if not game_year_by_key:
+            return None
+        return game_year_by_key.get(
+            (normalize_fn(c.get("slogan") or ""), _year_int(c.get("year"))))
+
     for crop_idx, norm_g, matches, conf, gate_ok, g_slogan, printed_year in deferred:
         rank = cand = None
         if printed_year is not None:
+            # Offset-aware: a bowl edition's marker is its game_date calendar year
+            # (season+1), so match printed_year against EITHER the candidate's
+            # season year or its game year.  Dateless candidates fall back to
+            # season-only, so pre-game_date behaviour is unchanged.
             _py = [(rk, c) for rk, c in matches
-                   if _year_int(c.get("year")) == printed_year]
+                   if edt.printed_year_marker_matches(
+                       _year_int(c.get("year")), _game_year_of(c), printed_year)]
             if len(_py) == 1:
                 rank, cand = _py[0]
                 source = "gemini_printed_year"
                 n_printed_year += 1
+                if _year_int(cand.get("year")) != printed_year:
+                    n_printed_year_gamematch += 1
         if cand is None and clear and anchor_year is not None:
             # candidate (rank, cand) whose year is closest to the majority era
             def _dist(item):
@@ -228,6 +253,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         "n_resolved": len(resolutions),
         "n_disambiguated_by_majority": n_disambiguated,
         "n_printed_year": n_printed_year,
+        "n_printed_year_gamematch": n_printed_year_gamematch,
         "n_low_confidence": n_low_confidence,
         "n_unanchored": n_unanchored,
         "n_manual": len(crop_candidates) - len(resolutions),
