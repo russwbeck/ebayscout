@@ -21,6 +21,49 @@ GATE_SUGGEST = "suggest"
 GATE_MANUAL = "manual"
 
 
+#: Trust order, least to most.  A detector variant may not trade a gate down
+#: for a better score — Logger_4's finding is that a fallback-path AUTO is
+#: wrong 24% of the time, so a marginally higher confidence reached off
+#: scale_first is worth less than the gate it costs.
+_GATE_RANK = {GATE_MANUAL: 0, GATE_SUGGEST: 1, GATE_AUTO: 2}
+
+
+def gate_rank(gate):
+    """Rank a gate for comparison; unknown values sort lowest."""
+    return _GATE_RANK.get(gate, 0)
+
+
+def variant_is_improvement(old_gate, old_confidence, new_gate, new_confidence,
+                           old_scale_path=None, new_scale_path=None):
+    """Whether a re-run's result should replace the original.
+
+    A better gate always wins.  At the same gate, a better score wins.  Trust is
+    never traded away for score, on either axis Logger_4 identified:
+
+      * a worse GATE never wins, however much better it scores — the fixture
+        battery caught the colour-cast retry trading pure_blue_23's scale_first
+        AUTO (0.942) for a sweep_fallback SUGGEST (0.950) at an identical count;
+      * losing SCALE_FIRST never wins at an equal gate — case5_frame_display_13
+        swapped scale_first for sweep_fallback at the same count of 13, giving
+        up the estimator that graded 40/40 exact for nothing.
+
+    Scale paths are optional; callers that omit them keep the gate-only rule.
+    """
+    old_rank, new_rank = gate_rank(old_gate), gate_rank(new_gate)
+    if new_rank != old_rank:
+        return new_rank > old_rank
+
+    if (old_scale_path is not None and new_scale_path is not None
+            and old_scale_path == "scale_first"
+            and new_scale_path != "scale_first"):
+        return False
+
+    try:
+        return float(new_confidence) > float(old_confidence)
+    except (TypeError, ValueError):
+        return False
+
+
 def grid_is_consistent(selected, est_rows, est_cols):
     """Mirror of get_valid_counts: a rows×cols grid may be missing at most the
     tail of its last row, so a plausible count n satisfies
@@ -55,6 +98,27 @@ def demote_auto_on_detector_bailout(gate, detector_used):
     if gate == GATE_AUTO and not str(detector_used or "").startswith("hough"):
         print(f">>> GATE: auto demoted to suggest — guided detector bailed "
               f"(detector_used={detector_used!r}).", flush=True)
+        return GATE_SUGGEST
+    return gate
+
+
+def cap_auto_on_corrected_frame(gate):
+    """A count read off a synthetically corrected frame may not reach AUTO.
+
+    AUTO's evidence base (Logger_4: scale_first autos 40/40 exact) was built on
+    unmodified photos, and the colour-cast fixtures show why it does not carry
+    over: of the four cast lots the retry rescues, one (cast_mellon98_12) lands
+    on 11 of 12 because the white button on white paper never enters the blue
+    mask, and 11 in a 3x4 grid is indistinguishable from a legitimately short
+    last row — so grid_is_consistent passes it and the count self-certifies.
+    Auto-proceeding there crops 11 buttons and drops the twelfth silently,
+    which is worse than the manual gate the photo used to get.
+
+    Capping at SUGGEST keeps the whole benefit — the operator gets the count
+    prefilled instead of typing it — without betting a silent drop on it.
+    Mirrors the existing rule that fallback-path radii cap at SUGGEST.
+    """
+    if gate == GATE_AUTO:
         return GATE_SUGGEST
     return gate
 

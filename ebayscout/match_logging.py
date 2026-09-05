@@ -512,6 +512,7 @@ def build_match_record(
     rerank_top=None,
     fullres_top=None,
     variant_top=None,
+    within_year=None,
 ):
     """One record per crop, written at detection/match time.
 
@@ -527,6 +528,13 @@ def build_match_record(
     punctuation-normalized text VARIANTS are unioned into the bank — the
     variant-augmentation A/B shadow.  Measurement only; the live match uses the
     un-augmented ``restricted_top`` unless BUTTONMATCHER_TEXT_VARIANTS is on.
+
+    ``within_year`` (optional) holds the competition INSIDE #1's own year — the
+    slogans the per-year fold discarded, with their text sims and the winner's
+    margin over the runner-up.  Measurement only, and the only column that sees
+    that stratum at all: every leaderboard column here is one-row-per-year, so a
+    same-year rival is absent from all of them by construction.  ``{}`` when the
+    crop produced no results.
     """
     return {
         "schema": SCHEMA_MATCH,
@@ -548,6 +556,7 @@ def build_match_record(
         "rerank_top": rerank_top or [],
         "fullres_top": fullres_top or [],
         "variant_top": variant_top or [],
+        "within_year": within_year or {},
     }
 
 
@@ -715,6 +724,16 @@ MATCH_HEADER = [
     # already live, no variant bank, or kill switch). Join to restricted_top_json
     # (same row): does a truth off the restricted board come ON with variants? ---
     "variant_top_json",
+    # --- appended: WITHIN-YEAR scoring for #1's year (measurement only).
+    # Every other leaderboard column is folded to one row per year, so the
+    # slogans that lost their own year appear nowhere — and the gap rules and
+    # visual veto only compare ACROSS years, so none of them can see a wrong
+    # within-year slogan pick (the 2026-09-03 "'Eers to Penn State" wrong auto;
+    # see confusable_slogans.py). This column carries that hidden competition:
+    # {year, image_score, n_slogans, runner_up_margin, winner_is_top1, top[5]}.
+    # Grade runner_up_margin against confirmed truth to calibrate a general
+    # within-year demotion margin; until then the guard is a curated list. ---
+    "within_year_json",
 ]
 
 CONFIRM_HEADER = [
@@ -833,6 +852,8 @@ def flatten_match_record(rec):
         json.dumps(rec.get("fullres_top") or [], default=str),
         # --- appended: text-variant match shadow leaderboard ---
         json.dumps(rec.get("variant_top") or [], default=str),
+        # --- appended: within-year competition for #1's year ---
+        json.dumps(rec.get("within_year") or {}, default=str),
     ]
 
 

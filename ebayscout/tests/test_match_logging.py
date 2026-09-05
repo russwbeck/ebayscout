@@ -590,11 +590,69 @@ def test_dt_peak_columns_default_blank():
 
 def test_gem_unmatched_columns_are_the_header_tail():
     # gem_unmatched → reconcile swap → Gemini-anchored A/B shadow → full-res
-    # match shadow → text-variant match shadow (the final appended column).
-    assert ml.MATCH_HEADER[-7:] == ["det_gem_unmatched", "det_gem_unmatched_json",
+    # match shadow (Logger_19 A/B) → text-variant match shadow → within-year
+    # scoring, the final appended column.
+    assert ml.MATCH_HEADER[-8:] == ["det_gem_unmatched", "det_gem_unmatched_json",
                                     "det_n_swapped", "det_reconcile_swaps_json",
                                     "det_gemini_anchored_json", "fullres_top_json",
-                                    "variant_top_json"]
+                                    "variant_top_json", "within_year_json"]
+
+
+def test_variant_top_column_flattens():
+    import json
+    rec = ml.build_match_record(
+        service="buttonmatcher", command="/sort", mode="sort", job_id="j",
+        thread_ts="t", channel_id="c", user_id="u", crop_num=1, check_id="",
+        detection={}, bank="all",
+        restricted_top=[{"year": "1980", "phrase": "Happy 125th"}],
+        shadow_top=[], shadow_enabled=True,
+        variant_top=[{"year": "1984", "phrase": "I-O-Was", "overall": 0.91}],
+    )
+    flat = ml.flatten_match_record(rec)
+    _vt = ml.MATCH_HEADER.index("variant_top_json")
+    assert len(flat) == len(ml.MATCH_HEADER)
+    assert json.loads(flat[_vt])[0]["phrase"] == "I-O-Was"
+    # defaults to empty JSON list when the shadow didn't run
+    rec2 = ml.build_match_record(
+        service="s", command="/sort", mode="sort", job_id="j", thread_ts="t",
+        channel_id="c", user_id="u", crop_num=1, check_id="", detection={},
+        bank="all", restricted_top=[], shadow_top=[], shadow_enabled=False,
+    )
+    assert ml.flatten_match_record(rec2)[_vt] == "[]"
+
+
+def test_within_year_column_is_final_and_flattens():
+    import json
+    wy = {"year": 1992, "image_score": 0.961, "n_slogans": 12,
+          "runner_up_margin": 0.0088, "winner_is_top1": True,
+          "top": [{"phrase": "Penn State and Proud of it", "type": "Football",
+                   "text_sim": 0.2814, "text_norm": 0.657},
+                  {"phrase": "Eers to Penn State", "type": "Football",
+                   "text_sim": 0.2812, "text_norm": 0.648}]}
+    rec = ml.build_match_record(
+        service="buttonmatcher", command="/sort", mode="sort", job_id="j",
+        thread_ts="t", channel_id="c", user_id="u", crop_num=2, check_id="",
+        detection={}, bank="mellon", restricted_top=[], shadow_top=[],
+        shadow_enabled=True, within_year=wy,
+    )
+    flat = ml.flatten_match_record(rec)
+    assert len(flat) == len(ml.MATCH_HEADER)
+    assert ml.MATCH_HEADER[-1] == "within_year_json"
+    got = json.loads(flat[-1])
+    # The losing same-year sibling is recorded even though no leaderboard
+    # column can hold it — that is the point of this column.
+    assert [r["phrase"] for r in got["top"]] == [
+        "Penn State and Proud of it", "Eers to Penn State"]
+    assert got["runner_up_margin"] == 0.0088
+
+
+def test_within_year_defaults_to_empty_object():
+    rec = ml.build_match_record(
+        service="s", command="/sort", mode="sort", job_id="j", thread_ts="t",
+        channel_id="c", user_id="u", crop_num=1, check_id="", detection={},
+        bank="all", restricted_top=[], shadow_top=[], shadow_enabled=False,
+    )
+    assert ml.flatten_match_record(rec)[-1] == "{}"
 
 
 def test_gemini_anchored_shadow_column_flattens():
@@ -787,3 +845,26 @@ def test_build_centered_leaderboard_requires_aligned_baselines():
     assert ml.build_centered_leaderboard(
         [0.3, 0.2], {"1995": 0.5}, ["1995", "1996"], ["p", "q"],
         ["Football", "Football"], [0.25], **kw) == []
+
+
+def test_rank_of_slogan_fixes_year_collision_bug():
+    """Logger_19 rank_restricted bug: a typed off-board slogan whose YEAR
+    collides with the #1 candidate's year was logged rank 1 by the year-only
+    rank_of.  rank_of_slogan matches the slogan identity (phrase+year), so it
+    returns None for the off-board slogan and the true rank for on-board ones."""
+    import match_logging as m
+    board = [{"phrase": "All Helmet, No Heart", "year": "2024", "overall": 0.70},
+             {"phrase": "Deflategate II", "year": "2021", "overall": 0.62},
+             {"phrase": "We Owe One", "year": "2024", "overall": 0.56}]
+    # the bug: rank_of (year only) falsely reports 1 for the off-board slogan
+    assert m.rank_of("2024", board) == 1
+    # the fix: slogan-aware → None (off board)
+    assert m.rank_of_slogan("2024", "SM WHO", board) is None
+    # on-board slogans get their true rank
+    assert m.rank_of_slogan("2024", "All Helmet, No Heart", board) == 1
+    assert m.rank_of_slogan("2024", "We Owe One", board) == 3       # year shared, slogan distinct
+    # year-label variants ('1984' vs '1984 (Mellon)') still match by 4-digit run
+    b2 = [{"phrase": "Turtle", "year": "1984 (Mellon)"}]
+    assert m.rank_of_slogan("1984", "Turtle", b2) == 1
+    # custom normalize_fn (punctuation/case folding) honored
+    assert m.rank_of_slogan("2024", "sm-who!", [{"phrase": "SM WHO", "year": "2024"}]) == 1

@@ -156,3 +156,37 @@ def registry_summary(registry):
     n_families = len(registry)
     n_entries = sum(len(fam) for fam in registry.values())
     return f"{n_families} slogan families with multiple editions ({n_entries} entries)"
+
+
+def picker_labels(shown, max_len=70):
+    """Button labels for a picker over ``shown``, one per entry, in order.
+
+    The graphic's rows and the Slack buttons must never disagree about which
+    number is which entry, so both build their labels here from the same
+    already-sorted-and-capped list.
+
+    An EDITION family varies only by year/sport, so "1. 1972 Football" names it
+    unambiguously.  A CONFUSABLE group (confusable_slogans.py) can share both —
+    two 1992 Football slogans would render two identical buttons — so the
+    SLOGAN is used instead whenever year+type fails to separate every option.
+    Labels are truncated to ``max_len`` to stay inside Slack's 75-char
+    plain_text button limit.
+    """
+    shown = list(shown or [])
+    pairs = [
+        (str((e or {}).get("year") or ""), str((e or {}).get("type") or "Football"))
+        for e in shown
+    ]
+    year_type_separates = len(set(pairs)) == len(pairs)
+
+    labels = []
+    for idx, (entry, (year, etype)) in enumerate(zip(shown, pairs), 1):
+        slogan = str((entry or {}).get("slogan") or "").strip()
+        if year_type_separates or not slogan:
+            label = f"{idx}. {year} {etype}"
+        else:
+            label = f"{idx}. {year} {slogan}"
+        if len(label) > max_len:
+            label = label[:max_len - 1].rstrip() + "…"
+        labels.append(label)
+    return labels

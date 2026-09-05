@@ -20,6 +20,7 @@ import statistics
 import cv2
 import numpy as np
 
+from . import detect_color as dcolor
 from . import detect_mask as dmask
 from . import detect_scale as dscale
 from . import detect_gate as dgate
@@ -1918,6 +1919,60 @@ def detect_unguided(image_bgr, roi_retry=True):
     Returned circle coordinates are in the frame the adopted pass ran in
     (callers consume the count/grid, not the geometry)."""
     circles, est_rows, est_cols, diag = _detect_unguided_once(image_bgr)
+
+    # --- Colour-cast retry -------------------------------------------------
+    # A blue-ish light records the white backing paper as lavender, which puts
+    # the paper inside the blue hue range the mask keys on: the mask floods,
+    # white_bg goes False, and Hough returns a couple of huge blobs.  The photo
+    # is not dark — measured paper brightness matches a good photo — so no
+    # exposure fix helps; the cast itself is the problem, and only a cast in
+    # the buttons' own hue family does this (warm and green casts detect fine).
+    # Correcting it and re-running gets the sample from 2 buttons at confidence
+    # 0.40 to 13 at 0.95.  Adopted only when it does not cost a gate (see
+    # dgate.variant_is_improvement), so a frame whose background is genuinely
+    # coloured keeps its original result.  Geometry is unchanged by the
+    # correction, so the circles need no remapping.
+    try:
+        # Only worth rescuing a pass that did not already succeed.  Bright-region
+        # saturation cannot tell white paper under a blue light from a genuinely
+        # coloured background — the cast sample measures 82.5 and sits between
+        # founding lots at 50.6 and 91.0 — so the trigger stays broad and the
+        # adoption rule below does the guarding.  Skipping lots that already
+        # gate auto keeps the cost off the photos that are already fine and,
+        # not incidentally, off three founding lots this retry first broke.
+        if (diag is not None
+                and diag.get("gate") != dgate.GATE_AUTO
+                and dcolor.has_color_cast(image_bgr)):
+            _wb_img = dcolor.neutralize_color_cast(image_bgr)
+            _wb_circles, _wb_rows, _wb_cols, _wb_diag = _detect_unguided_once(_wb_img)
+            if _wb_diag is not None:
+                # Cap before comparing, so the gate we weigh is the gate we
+                # would actually act on.
+                _wb_diag["gate"] = dgate.cap_auto_on_corrected_frame(
+                    _wb_diag.get("gate"))
+            if _wb_diag is not None and dgate.variant_is_improvement(
+                    diag.get("gate"), diag.get("confidence", 0.0),
+                    _wb_diag.get("gate"), _wb_diag.get("confidence", 0.0),
+                    old_scale_path=diag.get("scale_path"),
+                    new_scale_path=_wb_diag.get("scale_path")):
+                print(f">>> DETECT_UNGUIDED: colour-cast retry adopted — "
+                      f"paper_sat={dcolor.bright_region_saturation(image_bgr):.1f} "
+                      f"found {len(_wb_circles)} at "
+                      f"conf={_wb_diag.get('confidence'):.3f} "
+                      f"(original {len(circles)} at "
+                      f"conf={diag.get('confidence', 0.0):.3f})", flush=True)
+                _wb_diag["cast_retry"] = True
+                circles, est_rows, est_cols, diag = (
+                    _wb_circles, _wb_rows, _wb_cols, _wb_diag)
+            else:
+                print(f">>> DETECT_UNGUIDED: colour-cast retry rejected — "
+                      f"kept original conf={diag.get('confidence', 0.0):.3f}",
+                      flush=True)
+    except Exception as _cast_err:
+        print(f">>> DETECT_UNGUIDED: colour-cast retry failed ({_cast_err}), "
+              f"keeping original result", flush=True)
+
+
     if not roi_retry or diag is None or len(circles) >= 6:
         return circles, est_rows, est_cols, diag
     roi = _button_region(image_bgr)
