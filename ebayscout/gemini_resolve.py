@@ -119,7 +119,16 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
 
     Returns ``{crop_idx: resolution, "telemetry": {...}}`` where ``resolution`` is::
 
-        {year, slogan, type, source, auto, confidence, gemini_slogan, matched_rank}
+        {year, slogan, type, source, auto, confidence, gemini_slogan, matched_rank,
+         db_direct}
+
+    ``db_direct`` is True when the winning candidate came from a caller's
+    DB-direct tier (a row appended straight from the slogan DB because CLIP's
+    year-folded candidate list never surfaced it) rather than from CLIP's own
+    ranking — i.e. the year carries no CLIP corroboration.  Callers that write
+    to the shared reference library use it to refuse the one unevidenced
+    combination: db_direct + ``gemini_clip_fallback`` (a repeated slogan with no
+    printed-year marker and no clear majority era, so the year is a guess).
 
     ``source`` ∈ {"gemini_auto", "gemini_majority", "gemini_clip_fallback"}.
     Crops not present in the result are Scenario C (manual).
@@ -175,6 +184,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
                 "gemini_slogan": g_slogan,
                 "printed_year": assoc.get("printed_year"),
                 "matched_rank": rank,
+                "db_direct": bool(cand.get("db_direct")),
             }
             era_votes[cand.get("year")] += 1
             per_crop.append({
@@ -243,6 +253,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
             "gemini_slogan": g_slogan,
             "printed_year": printed_year,
             "matched_rank": rank,
+            "db_direct": bool(cand.get("db_direct")),
         }
         per_crop.append({
             "crop_idx": crop_idx, "gemini_slogan": g_slogan, "gemini_agree": True,

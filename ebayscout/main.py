@@ -160,6 +160,24 @@ def _anchor_gate_enabled() -> bool:
     )
 
 
+def _gemini_db_direct_enabled() -> bool:
+    """DB-direct agreement tier for the Gemini pipeline (buttonmatcher parity).
+
+    A crop's CLIP candidate list is YEAR-FOLDED — clip_matcher._score_slogans
+    emits one row per candidate year (that year's text-argmax slogan) over at
+    most 8 dual-signal years — so a slogan shadowed by a sibling of its OWN year
+    is absent from the pool at every depth.  gemini_resolve can only agree with
+    a slogan it can SEE, so those crops stay "manual", never auto-confirm, and
+    never reach reference/_staging.  With this ON, a high-confidence Gemini read
+    of a known DB slogan on an anchored association appends that slogan's DB rows
+    to the crop's pool so Scenario A/B can match it; every downstream gate
+    (conf ≥ 0.70, unflagged, anchored, STAGE_CONF, human /reference review) is
+    unchanged.  Kill switch BUTTONMATCHER_GEMINI_DB_DIRECT=0."""
+    return os.environ.get("BUTTONMATCHER_GEMINI_DB_DIRECT", "1").strip() not in (
+        "0", "false", "False",
+    )
+
+
 @contextlib.contextmanager
 def _keep_cpu_hot():
     """
@@ -916,11 +934,78 @@ def process_pipeline_lot(job_id: str) -> None:
     diagnostics = _cm.match_crops_with_diagnostics(pil_crops, restrict_years=restrict_years)
     crop_candidates = {i: d["candidates"] for i, d in enumerate(diagnostics)}
 
+    # 5b) DB-DIRECT agreement tier (buttonmatcher parity — main._gemini_db_candidates).
+    #     The candidate lists above are YEAR-FOLDED: _score_slogans emits ONE row
+    #     per candidate year (that year's text-argmax slogan) across at most 8
+    #     dual-signal years, so a slogan shadowed by a sibling of its OWN year is
+    #     absent at every depth and gemini_resolve can never agree with it — the
+    #     crop stays manual, is never auto-confirmed, and never reaches
+    #     reference/_staging.  When Gemini's read is a known DB slogan at high
+    #     confidence on an ANCHORED association, append that slogan's DB rows so
+    #     Scenario A/B can match it.  Appended at the END, so cands[0] (and every
+    #     CLIP score/gap logged elsewhere) is untouched.  Fail-open.
+    _n_dbdirect = 0
+    if _gemini_db_direct_enabled():
+        try:
+            _db_phrases, _db_years, _db_types = _cm.text_db_arrays()
+            _db_rows = list(zip(_db_years, _db_phrases, _db_types))
+            for _ci, _assoc in crop_to_slogan.items():
+                # No CLIP-rank corroboration in this tier, so never act on an
+                # unanchored association (the shifted-lot failure class).
+                if not _assoc.get("anchored", True):
+                    continue
+                _pool = crop_candidates.get(_ci) or []
+                _dbc = pipeline_classify.gemini_db_candidates(
+                    _assoc.get("slogan"), _assoc.get("confidence"),
+                    _db_rows, normalize.normalize_key, _pool)
+                if _dbc:
+                    crop_candidates[_ci] = list(_pool) + _dbc
+                    _n_dbdirect += 1
+            if _n_dbdirect:
+                print(f">>> PIPELINE DB_DIRECT: appended DB rows for {_n_dbdirect}/"
+                      f"{len(crop_to_slogan)} crop(s) whose Gemini slogan CLIP's "
+                      f"year-folded candidate list never surfaced.", flush=True)
+        except Exception as _dd_err:
+            print(f"!!! PIPELINE: DB-direct tier failed (falling back to the "
+                  f"CLIP-only pool): {_dd_err}", flush=True)
+
     # 6) confirm slogans against Gemini's reading (two-pass)
     resolution = gres.resolve_with_gemini_slogans(
         crop_candidates, crop_to_slogan, slogan_years, flagged_indices,
         normalize_fn=normalize.normalize_key,
     )
+
+    # 6b) Heavy resolve logging.  /crawl is fire-and-forget at scale, so without
+    #     this a run that yields a handful of reference crops out of hundreds of
+    #     buttons is undiagnosable: DB-coverage gap vs CLIP not surfacing the
+    #     slogan vs association/normalization all look identical from outside.
+    _res_telem = resolution.get("telemetry", {}) or {}
+    try:
+        print(f">>> PIPELINE RESOLVE: gemini={len(gem_slogans)} "
+              f"assoc={len(crop_to_slogan)} "
+              f"confirmed={_res_telem.get('n_gemini_confirmed')} "
+              f"resolved={_res_telem.get('n_resolved')} "
+              f"manual={_res_telem.get('n_manual')} "
+              f"low_conf={_res_telem.get('n_low_confidence')} "
+              f"unanchored={_res_telem.get('n_unanchored')} "
+              f"db_direct={_n_dbdirect} "
+              f"majority_year={_res_telem.get('majority_year')}", flush=True)
+        for _ci in range(len(diagnostics)):
+            _assoc = crop_to_slogan.get(_ci) or {}
+            _gs = _assoc.get("slogan")
+            if not _gs:
+                continue
+            _ng = normalize.normalize_key(_gs)
+            _in_db = _ng in slogan_years
+            _res = resolution.get(_ci)
+            print(f">>> PIPELINE RESOLVE crop{_ci + 1}: gemini={_gs!r} "
+                  f"conf={_assoc.get('confidence')} anchored={_assoc.get('anchored', True)} "
+                  f"in_db={_in_db} db_years={sorted(slogan_years.get(_ng, []))} "
+                  f"resolved={'yes:' + str(_res.get('source')) if _res else 'no(manual)'} "
+                  f"clip_pool={[c.get('slogan') for c in (crop_candidates.get(_ci) or [])]}",
+                  flush=True)
+    except Exception as _rl_err:
+        print(f">>> PIPELINE RESOLVE log failed: {_rl_err}", flush=True)
 
     # 7) classify crops per the autoconfirmation decision tree (pure module).
     #    Gemini works:  green/auto → confirm; else Gemini slogan in top-10 AND
@@ -971,11 +1056,32 @@ def process_pipeline_lot(job_id: str) -> None:
             })
         except Exception as exc:
             print(f"!!! PIPELINE: crop stage failed (crop {b['n']}): {exc}", flush=True)
+    staged = 0
     if manifest_crops:
         staged = seen_items.promote_crops_to_reference_staging(
             job_id, {"job_id": job_id, "item_id": item_id, "crops": manifest_crops})
         print(f">>> PIPELINE: auto-staged {staged}/{len(manifest_crops)} crop(s) for "
               f"{item_id} -> reference/_staging (job={job_id}).", flush=True)
+
+    # Per-gate drop counts for the crops → reference/_staging path, on EVERY lot
+    # (including the zero-staged ones, which are the interesting case). Summing
+    # this line over a /crawl run says exactly which gate ate the difference
+    # between "N buttons detected" and "M crops in the reference queue".
+    try:
+        _funnel = pipeline_classify.staging_funnel(
+            len(crops), auto_confirmed, circle_info, resolution, config.STAGE_CONF)
+        print(f">>> PIPELINE STAGE_FUNNEL {item_id}: crops={_funnel['crops']} "
+              f"resolved={_funnel['resolved']} gemini_auto={_funnel['gemini_auto']} "
+              f"auto_confirmed={_funnel['auto_confirmed']} "
+              f"stageable={_funnel['stageable']} staged={staged} | drops: "
+              f"no_resolution={_funnel['drop_no_resolution']} "
+              f"not_auto={_funnel['drop_not_auto']} "
+              f"synthetic={_funnel['drop_synthetic']} "
+              f"below_conf={_funnel['drop_below_conf']} "
+              f"ambiguous_year={_funnel['drop_ambiguous_year']} "
+              f"no_geometry={_funnel['drop_no_geometry']}", flush=True)
+    except Exception as _sf_err:
+        print(f">>> PIPELINE STAGE_FUNNEL log failed: {_sf_err}", flush=True)
 
     # 9) post to Slack ONLY when this lot is a deal — a needed button, or matched
     #    lot value over the asking price. No generic per-lot card; no Yes/No;

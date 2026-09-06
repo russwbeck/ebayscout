@@ -865,3 +865,63 @@ serve different purposes and their search features are built as such. Daily =
 `/crawl` = its own `CRAWL500_QUERIES` (with the shared seller/keyword/category
 safeguards from config, folded in via merged PR #36). Do not re-unify the term
 sets. See `SEARCH_TERMS_AUTO_VS_CRAWL.md`.
+
+## 31. Why `/crawl` staged ~11 reference crops out of ~300 buttons: the year-folded candidate pool
+
+**The bottleneck was never the staging gates — it was that `gemini_resolve` could
+not SEE the right slogan.** A crop's CLIP candidate list is **year-folded**:
+`clip_matcher._score_slogans` loops over candidate *years* and emits exactly ONE
+row per year (that year's text-argmax slogan), for at most 8 dual-signal years;
+`match_logging.build_leaderboard` folds the same way (`best_by_year`). So the
+"top-10 candidates" the resolver matches Gemini's read against is really ≤8
+(year, slogan) pairs, one per year. A slogan shadowed by a **sibling of its own
+year** (buttonmatcher's measured case: "Michigan Impossible" outscoring "I-owa
+Doubt It" within 1995) is absent from the pool at *every* depth.
+
+That is fatal for reference staging specifically, because the whole chain is
+gated on Gemini agreement:
+
+    crop → resolver sees Gemini's slogan in the pool? → resolution → res.auto
+         → classify_crops auto-confirm → staging_candidates → reference/_staging
+
+No pool row ⇒ Scenario C ("manual") ⇒ no resolution ⇒ not auto-confirmed ⇒ never
+staged. And the crops most likely to be shadowed are exactly the ones whose
+slogan CLIP ranks weakly — i.e. the ones the reference DB most needs.
+
+**Fix: the DB-direct agreement tier, ported from buttonmatcher** (which hit this
+first — `main._gemini_db_candidates`, Logger_14). When Gemini's read is a known
+DB slogan at ≥ `GEMINI_DB_DIRECT_CONF` (0.85, stricter than the resolver's 0.70
+because this tier has no CLIP-rank corroboration) on an **anchored** association,
+that slogan's DB rows are appended to the crop's pool so Scenario A/B can match
+it. Appended at the END, so `cands[0]` — and every CLIP score, gap and logged
+leaderboard — is untouched. Kill switch `BUTTONMATCHER_GEMINI_DB_DIRECT=0`.
+Pure helper: `pipeline_classify.gemini_db_candidates`.
+
+**New guard, because ebayscout auto-stages with no operator prompt.** A DB-direct
+row has no CLIP corroboration for its YEAR. That is fine when the year is
+evidenced — unique year (`gemini_auto`), printed-year marker
+(`gemini_printed_year`), or a clear majority era (`gemini_majority`) — and not
+fine on the `gemini_clip_fallback` rung, where a repeated slogan with no marker
+and no era anchor resolves to "CLIP's top-ranked match", which for a DB-direct-only
+match is just the first DB row. `gemini_resolve` now propagates `db_direct` on
+each resolution and `staging_candidates` refuses that one combination, so a
+guessed year can never enter the shared reference library. Deal detection is
+unaffected (buttonmatcher parity).
+
+**Telemetry, so this is never guesswork again.** `/crawl` is fire-and-forget, and
+the only observable was "N buttons in, M reference crops out". Every lot now logs
+`PIPELINE RESOLVE` (per-crop: Gemini's read, confidence, anchored, whether the
+slogan is in the DB at all, its DB years, whether it resolved, and the full CLIP
+pool) and `PIPELINE STAGE_FUNNEL` (per-gate drop counts:
+`no_resolution` / `not_auto` / `synthetic` / `below_conf` / `ambiguous_year` /
+`no_geometry`). Summing STAGE_FUNNEL over a run names the gate that ate the
+difference. Pure helper: `pipeline_classify.staging_funnel`.
+
+**The other structural drops are by design — measure them before changing them.**
+`staging_candidates` still refuses Gemini-synthesised boxes (`gemini_led`,
+`gemini_recovered`): those crops are framed from Gemini's x/y, not a real Hough
+circle, so they make poor reference photos — but on a lot where detection bailed
+to the projection grid, `gemini_led` replaces *every* crop and that lot stages
+zero. Likewise a CLIP-green-only crop (no Gemini resolution) auto-confirms for
+deal purposes but never stages, by design. `drop_synthetic` and
+`drop_no_resolution` in the funnel line quantify both.

@@ -176,3 +176,136 @@ def test_staging_handles_missing_overall_and_bad_index():
             {"crop_idx": 9, "year": "1990", "slogan": "Y", "overall": 0.99}]
     out = pc.staging_candidates(auto, [_hough()], {0: {"auto": True}, 9: {"auto": True}}, 0.85)
     assert out == []   # first: no overall; second: crop_idx out of range
+
+
+# --- DB-direct agreement tier ----------------------------------------------
+# The candidate pool is YEAR-FOLDED (one slogan per candidate year), so a slogan
+# shadowed by a sibling of its OWN year is absent at every depth. These tests
+# pin the un-shadowing behaviour and its guards.
+
+def _nk(s):
+    """normalize.normalize_key, inlined so this file stays dependency-free."""
+    import re
+    return re.sub(r"[^\w]", "", str(s).lower())
+
+
+_DB_ROWS = [
+    (1995, "Michigan Impossible", "Football"),
+    (1995, "I-owa Doubt It", "Football"),
+    (2005, "I-owa Doubt It", "Football"),
+    (1984, "Stop Stanford", "Football"),
+]
+
+
+def test_db_direct_appends_shadowed_slogan():
+    # CLIP's 1995 row is the sibling that outscored the pun; the pun itself is
+    # nowhere in the pool, so the resolver could never agree with it.
+    pool = [{"year": 1995, "slogan": "Michigan Impossible", "overall": 0.72}]
+    out = pc.gemini_db_candidates("I-owa Doubt It", 0.93, _DB_ROWS, _nk, pool)
+    assert [(r["year"], r["slogan"]) for r in out] == [
+        (1995, "I-owa Doubt It"), (2005, "I-owa Doubt It")]
+    assert all(r["db_direct"] and r["overall"] is None for r in out)
+
+
+def test_db_direct_dedups_against_existing_pool():
+    pool = [{"year": 1995, "slogan": "I-Owa  Doubt-It!", "overall": 0.61}]
+    out = pc.gemini_db_candidates("I-owa Doubt It", 0.93, _DB_ROWS, _nk, pool)
+    assert [(r["year"], r["slogan"]) for r in out] == [(2005, "I-owa Doubt It")]
+
+
+def test_db_direct_refuses_low_confidence():
+    # Stricter than the resolver's 0.70 gate — this tier has no CLIP rank behind it.
+    assert pc.gemini_db_candidates("I-owa Doubt It", 0.80, _DB_ROWS, _nk, []) == []
+    assert pc.gemini_db_candidates("I-owa Doubt It", 0.85, _DB_ROWS, _nk, []) != []
+
+
+def test_db_direct_missing_confidence_fails_open():
+    assert pc.gemini_db_candidates("Stop Stanford", None, _DB_ROWS, _nk, []) != []
+
+
+def test_db_direct_ignores_unknown_and_empty_slogans():
+    assert pc.gemini_db_candidates("Beat Nobody", 0.99, _DB_ROWS, _nk, []) == []
+    assert pc.gemini_db_candidates("", 0.99, _DB_ROWS, _nk, []) == []
+    assert pc.gemini_db_candidates("!!!", 0.99, _DB_ROWS, _nk, []) == []
+
+
+def test_db_direct_survives_malformed_rows():
+    rows = [None, (1995, None, "Football"), (1995, "I-owa Doubt It", "Football")]
+    out = pc.gemini_db_candidates("I-owa Doubt It", 0.93, rows, _nk, [])
+    assert [(r["year"], r["slogan"]) for r in out] == [(1995, "I-owa Doubt It")]
+
+
+# --- staging funnel telemetry ----------------------------------------------
+
+def test_staging_funnel_counts_each_drop_reason():
+    auto = [
+        {"crop_idx": 0, "overall": 0.90},   # stageable
+        {"crop_idx": 1, "overall": 0.90},   # synthetic box
+        {"crop_idx": 2, "overall": 0.90},   # CLIP-green only, no resolution
+        {"crop_idx": 3, "overall": 0.90},   # resolved but not auto
+        {"crop_idx": 4, "overall": 0.20},   # below the junk floor
+        {"crop_idx": 99, "overall": 0.90},  # no circle_info entry
+    ]
+    circle_info = [_hough(), _synthetic(), _hough(), _hough(), _hough()]
+    resolution = {0: {"auto": True}, 1: {"auto": True}, 3: {"auto": False},
+                  4: {"auto": True}, "telemetry": {"n_resolved": 4}}
+    f = pc.staging_funnel(6, auto, circle_info, resolution, stage_conf=0.50)
+    assert f["crops"] == 6
+    assert f["resolved"] == 4          # the "telemetry" string key is not a crop
+    assert f["gemini_auto"] == 3
+    assert f["auto_confirmed"] == 6
+    assert f["stageable"] == 1
+    assert f["drop_synthetic"] == 1
+    assert f["drop_no_resolution"] == 1
+    assert f["drop_not_auto"] == 1
+    assert f["drop_below_conf"] == 1
+    assert f["drop_no_geometry"] == 1
+
+
+def test_staging_funnel_stageable_matches_staging_candidates():
+    auto = [{"crop_idx": 0, "year": "1984", "slogan": "X", "overall": 0.70},
+            {"crop_idx": 1, "year": "1995", "slogan": "Y", "overall": 0.70}]
+    circle_info = [_hough(), _synthetic()]
+    resolution  = {0: {"auto": True}, 1: {"auto": True}}
+    f = pc.staging_funnel(2, auto, circle_info, resolution, stage_conf=0.50)
+    assert f["stageable"] == len(
+        pc.staging_candidates(auto, circle_info, resolution, 0.50))
+
+
+def test_staging_funnel_empty_lot():
+    f = pc.staging_funnel(0, [], [], {}, stage_conf=0.50)
+    assert f["crops"] == 0 and f["stageable"] == 0 and f["resolved"] == 0
+
+
+# --- DB-direct staging guard ------------------------------------------------
+# A DB-direct candidate has no CLIP corroboration for its YEAR. That is fine when
+# the year is evidenced (unique year / printed-year marker / clear majority era)
+# and NOT fine on the clip_fallback rung, where the year is a guess.
+
+def _auto1(overall=0.90):
+    return [{"crop_idx": 0, "year": "1995", "slogan": "I-owa Doubt It",
+             "overall": overall}]
+
+
+def test_staging_refuses_db_direct_clip_fallback():
+    res = {0: {"auto": True, "db_direct": True, "source": "gemini_clip_fallback"}}
+    assert pc.staging_candidates(_auto1(), [_hough()], res, 0.50) == []
+    f = pc.staging_funnel(1, _auto1(), [_hough()], res, 0.50)
+    assert f["drop_ambiguous_year"] == 1 and f["stageable"] == 0
+
+
+def test_staging_allows_evidenced_db_direct_years():
+    for src in ("gemini_auto", "gemini_printed_year", "gemini_majority"):
+        res = {0: {"auto": True, "db_direct": True, "source": src}}
+        assert len(pc.staging_candidates(_auto1(), [_hough()], res, 0.50)) == 1, src
+
+
+def test_staging_allows_clip_fallback_when_not_db_direct():
+    # CLIP itself ranked the winning candidate — the pre-existing behaviour.
+    res = {0: {"auto": True, "db_direct": False, "source": "gemini_clip_fallback"}}
+    assert len(pc.staging_candidates(_auto1(), [_hough()], res, 0.50)) == 1
+
+
+def test_staging_unaffected_for_resolutions_without_db_direct_key():
+    res = {0: {"auto": True, "source": "gemini_clip_fallback"}}
+    assert len(pc.staging_candidates(_auto1(), [_hough()], res, 0.50)) == 1
