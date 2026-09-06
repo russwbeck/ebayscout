@@ -929,3 +929,39 @@ to the projection grid, `gemini_led` replaces *every* crop and that lot stages
 zero. Likewise a CLIP-green-only crop (no Gemini resolution) auto-confirms for
 deal purposes but never stages, by design. `drop_synthetic` and
 `drop_no_resolution` in the funnel line quantify both.
+
+## 32. STOP is the ONLY per-slogan gate on staging — in BOTH services
+
+The operator's rule, stated plainly: *the only slogans that stop receiving
+reference crops are the ones declared `stop` in the `/reference` sequence;
+everything else keeps staging until he says stop.* Two things violated it, in
+opposite directions.
+
+**buttonmatcher was inventing a second gate.** `_stage_confirmed_crop` refused to
+stage any crop whose slogan already held `REF_CAP` (4) references. That froze a
+library entry the moment it filled: no later crop could ever challenge a weak
+reference — even though `/reference` has an entire at-cap pass
+(`plan_at_cap_decisions` / `_ref_auto_replace_pass`, the 10-point rule) built to
+judge exactly those crops without a click. Removed; `BUTTONMATCHER_STAGE_AT_CAP=0`
+restores it. (buttonmatcher commit; see `REFERENCE_CURATION.md`.)
+
+**ebayscout was ignoring the real gate.** `promote_crops_to_reference_staging`
+never read `reference/_staging_policy.json` at all — the shared blob buttonmatcher
+writes when the operator types `stop`. So ebayscout kept writing crops into
+slogans that had been declared finished, unattended, which is the hardest place
+for an unwanted write to be noticed. It now reads the policy per lot (one blob GET
+against a lot that already costs a Gemini call and a CLIP pass) and refuses those
+entry_ids. The id namespace is shared — `clip_matcher.entry_id_for` produces the
+same ids buttonmatcher stores — so the two services agree on slogan identity, and
+`parse_staging_policy` mirrors `reference_review.policy_from_json` exactly.
+
+**ebayscout fails CLOSED on an unreadable policy** (buttonmatcher fails open).
+The asymmetry is deliberate and follows the same reasoning as #31: buttonmatcher
+stages what an operator has just validated on screen, so guessing "no stops" costs
+one reviewable crop. ebayscout stages unattended at `/crawl` scale, so guessing
+"no stops" writes into curated slogans and costs manual cleanup, while failing
+closed costs a few crops that recur on the next lot. Cheaper mistake wins.
+
+Net: ebayscout's staging now has exactly two gates — the two-independent-signal
+bar (#31) and the operator's STOP list. Nothing else in either service decides on
+its own that a slogan has had enough.

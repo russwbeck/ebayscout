@@ -305,3 +305,39 @@ def staging_funnel(n_crops, auto_confirmed, circle_info, resolution, stage_conf)
             continue
         out["stageable"] += 1
     return out
+
+
+# ---------------------------------------------------------------------------
+# Stop-staging policy (buttonmatcher's /reference STOP list)
+# ---------------------------------------------------------------------------
+# `stop` in buttonmatcher's /reference review writes the slogan's entry_id into
+# reference/_staging_policy.json in the SHARED bucket — the operator's statement
+# that this slogan is finished and should stop generating review work.
+# buttonmatcher honours it in _stage_confirmed_crop; ebayscout did not honour it
+# at all, so it kept writing crops into slogans that had been declared done —
+# unattended, which is exactly where an unwanted write is hardest to notice.
+# These are the pure halves; seen_items does the GCS read.
+
+def parse_staging_policy(data) -> set:
+    """JSON dict -> the set of stopped entry_ids.  Mirrors buttonmatcher's
+    reference_review.policy_from_json exactly (the two services read the same
+    blob).  Tolerates junk by returning an empty set — the caller distinguishes
+    "no stops declared" from "could not read the policy", which are not the same
+    thing for an unattended writer."""
+    try:
+        return set(str(e) for e in (data or {}).get("stopped", []))
+    except Exception:
+        return set()
+
+
+def filter_stopped_crops(manifest_crops, stopped):
+    """Split staged-crop manifest entries into (kept, dropped) by the STOP list.
+
+    Matches on ``entry_id`` — the same id buttonmatcher stores in the policy and
+    the same one clip_matcher.entry_id_for produces, so the two services agree on
+    slogan identity.  Pure."""
+    stopped = stopped or set()
+    kept, dropped = [], []
+    for crop in manifest_crops or []:
+        (dropped if crop.get("entry_id") in stopped else kept).append(crop)
+    return kept, dropped

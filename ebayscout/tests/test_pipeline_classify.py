@@ -318,3 +318,54 @@ def test_db_direct_still_auto_confirms_for_deal_detection():
     auto, _ = pc.classify_crops(diags, res, gemini_ok=True, job_id="j")
     assert len(auto) == 1 and auto[0]["slogan"] == "I-owa Doubt It"
     assert pc.staging_candidates(auto, [_hough()], res, 0.50) == []
+
+
+# --- STOP list: the one per-slogan gate on ebayscout staging ----------------
+
+def test_parse_staging_policy_reads_buttonmatcher_format():
+    assert pc.parse_staging_policy({"stopped": ["sl_1", "sl_2"]}) == {"sl_1", "sl_2"}
+    assert pc.parse_staging_policy({"stopped": [7, "_year_1984"]}) == {"7", "_year_1984"}
+
+
+def test_parse_staging_policy_empty_and_junk():
+    # No stops declared yet — every shape of "nothing" means stage everything.
+    assert pc.parse_staging_policy({}) == set()
+    assert pc.parse_staging_policy(None) == set()
+    assert pc.parse_staging_policy({"stopped": []}) == set()
+    # Junk must not raise; the CALLER distinguishes unreadable from empty.
+    assert pc.parse_staging_policy({"stopped": 5}) == set()
+    assert pc.parse_staging_policy("not a dict") == set()
+
+
+def _crop(entry_id, slogan="X"):
+    return {"gcs_name": f"tmp/{slogan}.jpg", "year": "1984",
+            "slogan": slogan, "entry_id": entry_id}
+
+
+def test_filter_stopped_crops_drops_only_stopped_entries():
+    crops = [_crop("sl_1"), _crop("sl_2"), _crop("_year_1984")]
+    kept, dropped = pc.filter_stopped_crops(crops, {"sl_2"})
+    assert [c["entry_id"] for c in kept] == ["sl_1", "_year_1984"]
+    assert [c["entry_id"] for c in dropped] == ["sl_2"]
+
+
+def test_filter_stopped_crops_no_stops_keeps_everything():
+    crops = [_crop("sl_1"), _crop("sl_2")]
+    assert pc.filter_stopped_crops(crops, set())[0] == crops
+    assert pc.filter_stopped_crops(crops, None)[0] == crops
+    assert pc.filter_stopped_crops(crops, None)[1] == []
+
+
+def test_filter_stopped_crops_handles_empty_and_missing_entry_id():
+    assert pc.filter_stopped_crops([], {"sl_1"}) == ([], [])
+    assert pc.filter_stopped_crops(None, {"sl_1"}) == ([], [])
+    # A crop with no entry_id is not stopped; promote drops it separately.
+    kept, dropped = pc.filter_stopped_crops([{"gcs_name": "t.jpg"}], {"sl_1"})
+    assert len(kept) == 1 and dropped == []
+
+
+def test_filter_stopped_crops_stops_every_crop_of_one_slogan():
+    # Several crops of the same finished slogan in one lot — all refused.
+    crops = [_crop("sl_9"), _crop("sl_9"), _crop("sl_3")]
+    kept, dropped = pc.filter_stopped_crops(crops, {"sl_9"})
+    assert len(kept) == 1 and len(dropped) == 2
