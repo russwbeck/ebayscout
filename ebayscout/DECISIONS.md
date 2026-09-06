@@ -897,16 +897,20 @@ it. Appended at the END, so `cands[0]` — and every CLIP score, gap and logged
 leaderboard — is untouched. Kill switch `BUTTONMATCHER_GEMINI_DB_DIRECT=0`.
 Pure helper: `pipeline_classify.gemini_db_candidates`.
 
-**New guard, because ebayscout auto-stages with no operator prompt.** A DB-direct
-row has no CLIP corroboration for its YEAR. That is fine when the year is
-evidenced — unique year (`gemini_auto`), printed-year marker
-(`gemini_printed_year`), or a clear majority era (`gemini_majority`) — and not
-fine on the `gemini_clip_fallback` rung, where a repeated slogan with no marker
-and no era anchor resolves to "CLIP's top-ranked match", which for a DB-direct-only
-match is just the first DB row. `gemini_resolve` now propagates `db_direct` on
-each resolution and `staging_candidates` refuses that one combination, so a
-guessed year can never enter the shared reference library. Deal detection is
-unaffected (buttonmatcher parity).
+**A DB-direct match NEVER auto-stages — the reference bar is unchanged.** This
+matters because the two services are not comparable here: buttonmatcher's
+`/inventory` operator watches every auto-confirm on screen and stages what he has
+already validated with his own eyes, whereas ebayscout stages unattended, at
+`/crawl` scale, into the same shared library. A DB-direct row is Gemini's read
+with **no independent CLIP corroboration** — good enough to identify and price a
+lot, not good enough to write a reference photo on. So `gemini_resolve` now
+propagates `db_direct` on each resolution and `staging_candidates` drops those
+crops on *every* rung, not just the weak ones. Net effect: ebayscout's staging bar
+is exactly what it was before this tier existed — **two independent signals (CLIP
+ranked it AND Gemini read it), or nothing**. What the tier buys ebayscout is
+matching and deal detection on buttons it used to miss entirely; the reference
+library gains nothing from it, deliberately. `drop_db_direct` in the funnel line
+counts what the bar refuses.
 
 **Telemetry, so this is never guesswork again.** `/crawl` is fire-and-forget, and
 the only observable was "N buttons in, M reference crops out". Every lot now logs

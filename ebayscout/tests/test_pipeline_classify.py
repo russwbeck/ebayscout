@@ -277,35 +277,44 @@ def test_staging_funnel_empty_lot():
     assert f["crops"] == 0 and f["stageable"] == 0 and f["resolved"] == 0
 
 
-# --- DB-direct staging guard ------------------------------------------------
-# A DB-direct candidate has no CLIP corroboration for its YEAR. That is fine when
-# the year is evidenced (unique year / printed-year marker / clear majority era)
-# and NOT fine on the clip_fallback rung, where the year is a guess.
+# --- DB-direct never auto-stages -------------------------------------------
+# ebayscout stages with no human in the loop, so a match that rests on Gemini's
+# read alone (a DB-direct row CLIP never ranked) may price a lot but must never
+# write into the shared reference library.
 
 def _auto1(overall=0.90):
     return [{"crop_idx": 0, "year": "1995", "slogan": "I-owa Doubt It",
              "overall": overall}]
 
 
-def test_staging_refuses_db_direct_clip_fallback():
-    res = {0: {"auto": True, "db_direct": True, "source": "gemini_clip_fallback"}}
-    assert pc.staging_candidates(_auto1(), [_hough()], res, 0.50) == []
-    f = pc.staging_funnel(1, _auto1(), [_hough()], res, 0.50)
-    assert f["drop_ambiguous_year"] == 1 and f["stageable"] == 0
-
-
-def test_staging_allows_evidenced_db_direct_years():
-    for src in ("gemini_auto", "gemini_printed_year", "gemini_majority"):
+def test_staging_refuses_db_direct_on_every_rung():
+    for src in ("gemini_auto", "gemini_printed_year", "gemini_majority",
+                "gemini_clip_fallback"):
         res = {0: {"auto": True, "db_direct": True, "source": src}}
+        assert pc.staging_candidates(_auto1(), [_hough()], res, 0.50) == [], src
+        f = pc.staging_funnel(1, _auto1(), [_hough()], res, 0.50)
+        assert f["drop_db_direct"] == 1 and f["stageable"] == 0, src
+
+
+def test_staging_unchanged_when_clip_ranked_the_match():
+    # The pre-existing bar: CLIP ranked it AND Gemini agreed. Untouched.
+    for src in ("gemini_auto", "gemini_majority", "gemini_clip_fallback"):
+        res = {0: {"auto": True, "db_direct": False, "source": src}}
         assert len(pc.staging_candidates(_auto1(), [_hough()], res, 0.50)) == 1, src
-
-
-def test_staging_allows_clip_fallback_when_not_db_direct():
-    # CLIP itself ranked the winning candidate — the pre-existing behaviour.
-    res = {0: {"auto": True, "db_direct": False, "source": "gemini_clip_fallback"}}
-    assert len(pc.staging_candidates(_auto1(), [_hough()], res, 0.50)) == 1
 
 
 def test_staging_unaffected_for_resolutions_without_db_direct_key():
     res = {0: {"auto": True, "source": "gemini_clip_fallback"}}
     assert len(pc.staging_candidates(_auto1(), [_hough()], res, 0.50)) == 1
+
+
+def test_db_direct_still_auto_confirms_for_deal_detection():
+    # The resolver improvement stands — the crop is matched and priced, it is
+    # only barred from the reference library.
+    diags = [{"candidates": [{"year": "1995", "slogan": "Michigan Impossible",
+                              "overall": 0.72}], "gap": 0.11}]
+    res = {0: {"auto": True, "db_direct": True, "source": "gemini_auto",
+               "year": 1995, "slogan": "I-owa Doubt It"}}
+    auto, _ = pc.classify_crops(diags, res, gemini_ok=True, job_id="j")
+    assert len(auto) == 1 and auto[0]["slogan"] == "I-owa Doubt It"
+    assert pc.staging_candidates(auto, [_hough()], res, 0.50) == []

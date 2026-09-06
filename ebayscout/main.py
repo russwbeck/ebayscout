@@ -1078,7 +1078,7 @@ def process_pipeline_lot(job_id: str) -> None:
               f"not_auto={_funnel['drop_not_auto']} "
               f"synthetic={_funnel['drop_synthetic']} "
               f"below_conf={_funnel['drop_below_conf']} "
-              f"ambiguous_year={_funnel['drop_ambiguous_year']} "
+              f"db_direct={_funnel['drop_db_direct']} "
               f"no_geometry={_funnel['drop_no_geometry']}", flush=True)
     except Exception as _sf_err:
         print(f">>> PIPELINE STAGE_FUNNEL log failed: {_sf_err}", flush=True)

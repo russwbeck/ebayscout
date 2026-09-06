@@ -145,8 +145,8 @@ def staging_candidates(auto_confirmed, circle_info, resolution, stage_conf):
         res = resolution.get(idx)
         if not (res and res.get("auto")):
             continue                                   # Gemini did not confirm
-        if _ambiguous_db_direct(res):
-            continue                                   # year is a guess — see below
+        if res.get("db_direct"):
+            continue                                   # Gemini's word alone — see below
         overall = b.get("overall")
         if overall is None or overall < stage_conf:
             continue                                   # junk floor only (sub-~0.5 noise)
@@ -154,21 +154,15 @@ def staging_candidates(auto_confirmed, circle_info, resolution, stage_conf):
     return out
 
 
-def _ambiguous_db_direct(res) -> bool:
-    """True for the one DB-direct resolution whose YEAR carries no evidence.
-
-    A DB-direct candidate (``gemini_db_candidates``) is a row appended straight
-    from the slogan DB, so CLIP never ranked it and the year has no visual
-    corroboration.  That is fine when the slogan resolves to a single year
-    (``gemini_auto``), when the button's printed-year marker picks the edition
-    (``gemini_printed_year``), or when the photo has a clear majority era
-    (``gemini_majority``).  It is NOT fine for ``gemini_clip_fallback``: a slogan
-    reused across years, no marker, no era anchor — the resolver falls back to
-    "CLIP's own top-ranked match", which for a DB-direct-only match is just the
-    first DB row.  A crop staged under a guessed year poisons the shared
-    reference library, so it never auto-stages (deal detection is unaffected).
-    """
-    return bool(res.get("db_direct")) and res.get("source") == "gemini_clip_fallback"
+# A DB-direct resolution (``gemini_db_candidates``) is a row appended straight
+# from the slogan DB because CLIP's year-folded candidate list never surfaced it.
+# It is Gemini's read with NO independent CLIP corroboration — good enough to
+# match and price a lot, but NOT good enough to write into the shared reference
+# library unattended.  ebayscout stages with no human in the loop (unlike
+# buttonmatcher's /inventory, where the operator watches every auto-confirm), so
+# a db_direct crop NEVER auto-stages, on any resolution rung.  Net effect:
+# ebayscout's staging bar is exactly what it was before the DB-direct tier
+# existed — two independent signals (CLIP ranked it, Gemini read it) or nothing.
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +261,9 @@ def staging_funnel(n_crops, auto_confirmed, circle_info, resolution, stage_conf)
       drop_synthetic     dropped because the crop is a Gemini-synthesised box
       drop_below_conf    dropped by the STAGE_CONF junk floor
       drop_no_geometry   dropped because the crop has no circle_info entry
-      drop_ambiguous_year dropped because a DB-direct match landed on
-                         gemini_clip_fallback — the year is a guess
+      drop_db_direct     dropped because the match came from the DB-direct
+                         tier — Gemini's read with no CLIP corroboration, which
+                         never auto-stages
     """
     resolution  = resolution or {}
     circle_info = circle_info or []
@@ -284,7 +279,7 @@ def staging_funnel(n_crops, auto_confirmed, circle_info, resolution, stage_conf)
         "drop_synthetic": 0,
         "drop_below_conf": 0,
         "drop_no_geometry": 0,
-        "drop_ambiguous_year": 0,
+        "drop_db_direct": 0,
     }
     for b in auto_confirmed or []:
         idx = b.get("crop_idx")
@@ -301,8 +296,8 @@ def staging_funnel(n_crops, auto_confirmed, circle_info, resolution, stage_conf)
         if not res.get("auto"):
             out["drop_not_auto"] += 1
             continue
-        if _ambiguous_db_direct(res):
-            out["drop_ambiguous_year"] += 1
+        if res.get("db_direct"):
+            out["drop_db_direct"] += 1
             continue
         overall = b.get("overall")
         if overall is None or overall < stage_conf:
