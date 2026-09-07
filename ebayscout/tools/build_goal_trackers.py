@@ -26,6 +26,7 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 
 from openpyxl import Workbook
@@ -367,9 +368,32 @@ def write_readme(wb, fronts, register):
         r += 1
 
 
+CSV_COLS = ["Front", "Title", "Track", "Stage", "Progress", "Toward",
+            "Status", "Volume needed", "Question", "Instrument", "Gate",
+            "Standing", "Source", "Owner", "Next action"]
+
+
+def emit_csv(fronts, path):
+    """Flat one-row-per-front dump, for building the landing tab in Sheets by
+    hand (File > Import, or just paste).  Same fields the workbook uses."""
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(CSV_COLS)
+        for f in fronts:
+            st = f["Stage"]
+            w.writerow([
+                f["id"], f["title"], f["Track"], st,
+                "\u2588" * st + "\u2591" * (6 - st), LADDER[st], f["Status"],
+                (f'{f["VolumeN"]} {f["VolumeOf"]}' if f["VolumeN"] else ""),
+                f["Question"], f["Instrument"], f["Gate"], f["Standing"],
+                f["Source"], "", "",
+            ])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--register", default="LOGGER_FRONTS.md")
+    ap.add_argument("--csv", help="also write a flat one-row-per-front CSV")
     ap.add_argument("-o", "--out", default="Logger - Progress Trackers.xlsx")
     args = ap.parse_args()
 
@@ -380,6 +404,10 @@ def main():
         if n in seen:
             raise SystemExit(f"tab name collision: {f['id']} and {seen[n]} → {n}")
         seen[n] = f["id"]
+
+    if args.csv:
+        emit_csv(fronts, args.csv)
+        print(f"{len(fronts)} fronts → {args.csv}")
 
     wb = Workbook()
     wb.remove(wb.active)
