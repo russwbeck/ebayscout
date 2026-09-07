@@ -69,28 +69,37 @@ DERIVED_ROWS = 25000
 
 # derived columns, in order.  ARRAYFORMULA down each so pasting more rows into
 # confirm_log extends them with no further action.
-DERIVED = [
-    ("ts", f'{RAW_C}!{C["ts"]}2:{C["ts"]}'),
-    ("source", f'{RAW_C}!{C["source"]}2:{C["source"]}'),
-    ("top1_overall", f'VALUE(REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
-                     f'{C["restricted_top_json"]},"""overall"": ([0-9.]+)"))'),
-    ("top2_overall", f'VALUE(REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
-                     f'{C["restricted_top_json"]},'
-                     f'"""overall"":.*?""overall"": ([0-9.]+)"))'),
-    ("gap", "C2:C-D2:D"),
-    ("top1_phrase", f'REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
-                    f'{C["restricted_top_json"]},"""phrase"": ""([^""]*)""")'),
-    ("top1_year", f'REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
-                  f'{C["restricted_top_json"]},"""year"": ""(\\d{{4}})""")'),
-    # Slogan-aware key: lowercase, strip everything but letters and digits —
-    # the sheet-side equivalent of _normalize_key, so "I-O-Wasn't" and
-    # "i o wasnt" compare equal.
-    ("key_top1", 'REGEXREPLACE(LOWER(F2:F),"[^a-z0-9]","")'),
-    ("key_chosen", f'REGEXREPLACE(LOWER({RAW_C}!{C["chosen_phrase"]}2:'
-                   f'{C["chosen_phrase"]}),"[^a-z0-9]","")'),
-    ("correct", f'(H2:H=I2:I)*(G2:G=TEXT({RAW_C}!{C["chosen_year"]}2:'
-                f'{C["chosen_year"]},"0"))=1'),
-]
+# derived columns, in order.  Each one is computed straight from confirm_log —
+# never from another derived column.  Two reasons: derived's data starts one
+# row lower than confirm_log's (header offset), and its grid is far taller, so
+# an internal reference would be both off by one and a length mismatch inside
+# the ARRAYFORMULA.  Verbose, but every column is the same length as its input.
+def _derived():
+    j = f'{RAW_C}!{C["restricted_top_json"]}2:{C["restricted_top_json"]}'
+    top1 = f'VALUE(REGEXEXTRACT({j},"""overall"": ([0-9.]+)"))'
+    top2 = f'VALUE(REGEXEXTRACT({j},"""overall"":.*?""overall"": ([0-9.]+)"))'
+    phrase = f'REGEXEXTRACT({j},"""phrase"": ""([^""]*)""")'
+    year = f'REGEXEXTRACT({j},"""year"": ""(\\d{{4}})""")'
+    # The sheet-side _normalize_key: lowercase, drop everything but a-z0-9.
+    key1 = f'REGEXREPLACE(LOWER({phrase}),"[^a-z0-9]","")'
+    keyc = (f'REGEXREPLACE(LOWER({RAW_C}!{C["chosen_phrase"]}2:'
+            f'{C["chosen_phrase"]}),"[^a-z0-9]","")')
+    chosen_year = f'TEXT({RAW_C}!{C["chosen_year"]}2:{C["chosen_year"]},"0")'
+    return [
+        ("ts", f'{RAW_C}!{C["ts"]}2:{C["ts"]}'),
+        ("source", f'{RAW_C}!{C["source"]}2:{C["source"]}'),
+        ("top1_overall", top1),
+        ("top2_overall", top2),
+        ("gap", f'{top1}-{top2}'),
+        ("top1_phrase", phrase),
+        ("top1_year", year),
+        ("key_top1", key1),
+        ("key_chosen", keyc),
+        ("correct", f'({key1}={keyc})*({year}={chosen_year})=1'),
+    ]
+
+
+DERIVED = _derived()
 
 # Every field an entry must carry.  A front missing one fails the build rather
 # than producing a tab with a blank target.
@@ -720,6 +729,51 @@ def write_data_tabs(wb):
     ws.freeze_panes = "A3"
 
 
+GOOGLE_ONLY = ("ARRAYFORMULA", "REGEXEXTRACT", "REGEXREPLACE", "QUERY",
+               "FILTER", "UNIQUE")
+
+
+def write_repair(wb):
+    """Google Sheets converts an uploaded .xlsx by parsing formulas as EXCEL
+    formulas, and these functions have no Excel equivalent — they arrive as
+    #NAME?.  Every affected cell is listed here as plain text so it can be
+    copied back in without leaving the sheet."""
+    ws = wb.create_sheet("REPAIR")
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 8
+    ws.column_dimensions["C"].width = 130
+    _band(ws, 1, "REPAIR — formulas the .xlsx import cannot carry", 3,
+          font=H1, fill=NAVY)
+    for i, line in enumerate((
+        "Sheets parses an uploaded .xlsx as Excel. ARRAYFORMULA, REGEXEXTRACT, "
+        "REGEXREPLACE, QUERY, FILTER and UNIQUE are Google-only, so those "
+        "cells land as #NAME?. Everything else converts fine.",
+        "To fix: copy the formula text from column C, go to the cell named in "
+        "columns A/B, and paste it in. Do the derived row first — most of the "
+        "workbook depends on it.",
+        "Only needed once, on a fresh import.",
+    )):
+        ws.cell(row=2 + i, column=1, value=line).font = DIM
+
+    r = 6
+    for name in ("derived", *[w.title for w in wb.worksheets
+                              if w.title not in ("derived", "REPAIR")]):
+        if name not in wb.sheetnames:
+            continue
+        for row in wb[name].iter_rows():
+            for c in row:
+                v = c.value
+                if (isinstance(v, str) and v.startswith("=")
+                        and any(g in v for g in GOOGLE_ONLY)):
+                    ws.cell(row=r, column=1, value=name)
+                    ws.cell(row=r, column=2, value=c.coordinate)
+                    # Leading apostrophe keeps it text, not a formula.
+                    ws.cell(row=r, column=3, value="'" + v)
+                    r += 1
+    ws.cell(row=4, column=3, value=f"{r - 6} cells").font = BOLD
+    ws.freeze_panes = "A6"
+
+
 def write_readme(wb, fronts, register):
     ws = wb.create_sheet("README", 0)
     ws.column_dimensions["A"].width = 24
@@ -755,6 +809,11 @@ def write_readme(wb, fronts, register):
          "On the front's own tab, cell B7. INDEX pulls it, draws the bar, and "
          "looks up the label — never type a stage on INDEX."),
         ("Statuses", " · ".join(STATUS_ORDER)),
+        ("FIRST — check the REPAIR tab",
+         "Sheets parses an uploaded .xlsx as Excel, so Google-only functions "
+         "(ARRAYFORMULA, REGEXEXTRACT, QUERY...) arrive as #NAME?. REPAIR "
+         "lists every affected cell with its formula as text; paste them back "
+         "in, derived first. One-time, on a fresh import."),
         ("Getting the data in",
          "Copy the Logger's two tabs into this file: in the Logger, "
          "right-click match_log → Copy to → Existing spreadsheet → this one, "
@@ -835,6 +894,7 @@ def main():
     write_data_tabs(wb)
     for f in fronts:
         write_front_tab(wb, f)
+    write_repair(wb)   # after the front tabs, so it can scan them
     # INDEX last: it needs each front's log row, which write_front_tab sets.
     write_index(wb, fronts)
     wb.move_sheet("INDEX", offset=-(len(wb.sheetnames) - 1))
