@@ -55,13 +55,17 @@ RAW_M, RAW_C, DER = "match_log", "confirm_log", "derived"
 # The Logger workbook these two tabs mirror.
 LOGGER_KEY = "11BJAJv4tkPKtkrlPVyZqaMpKkpwfuv9t_tnk5WdjPzI"
 
-# Sheets sizes an imported .xlsx tab to its used range, so a tab written with
-# two rows arrives two rows tall and IMPORTRANGE fails with "Results too
-# large" — it has nowhere to spill.  Writing one empty cell at the far corner
-# forces the converted grid to this many rows at no real file cost.  Formulas
-# are bounded to the same number: open-ended column refs (BI2:BI) make every
-# SUMPRODUCT scan the whole grid, which at ~86 formulas is needlessly slow.
-GRID_ROWS = 25000
+# The raw tabs are PASTE targets: their grid ends up exactly as tall as the
+# data, so every formula uses open-ended column refs (BI2:BI) and is correct at
+# any size — and, because the grid is the data, no faster if bounded.  Only
+# `derived` needs a tall grid of its own, since its ARRAYFORMULAs must have
+# somewhere to spill.
+#
+# IMPORTRANGE was tried here and does not work: pulling match_log whole (4,020
+# rows x 87 columns) returns "Results too large" regardless of destination
+# size.  Paste also pools across exports, which a live link cannot do once a
+# schema change forces the Logger tab to be recreated.
+DERIVED_ROWS = 25000
 
 # derived columns, in order.  ARRAYFORMULA down each so pasting more rows into
 # confirm_log extends them with no further action.
@@ -383,15 +387,7 @@ def _live():
     }
 
 
-def _bound(formula):
-    """BI2:BI -> BI2:BI25000.  Only same-letter pairs match, so the
-    IMPORTRANGE ranges (A2:CI) are left alone."""
-    return re.sub(r"([A-Z]{1,2})2:\1(?![0-9A-Z])",
-                  lambda m: f"{m.group(1)}2:{m.group(1)}{GRID_ROWS}", formula)
-
-
-LIVE = {k: [(label, _bound(f)) for label, f in v] for k, v in _live().items()}
-DERIVED = [(name, _bound(expr)) for name, expr in DERIVED]
+LIVE = _live()
 
 # front id -> index into LIVE[id] whose value IS the gate's accrual count.
 VOLUME_LIVE = {"A10": 0, "E4": 0, "B3": 0, "B4": 0, "A13": 0}
@@ -685,24 +681,17 @@ def write_data_tabs(wb):
             c.font = WHITE_F
             c.fill = PatternFill("solid", fgColor=NAVY)
         ws.freeze_panes = "A2"
-        # Live by default: pulls the Logger from row 2 down, under our header.
-        # Needs one "Allow access" click the first time.
-        ws.cell(row=2, column=1, value=(
-            f'=IMPORTRANGE("{LOGGER_KEY}","{tab}!A2:{last}")'))
         note = ws.cell(row=1, column=len(header) + 2, value=(
-            "A2 pulls this tab live from the Logger — click Allow access on "
-            "the #REF! the first time. To pool across exports instead (needed "
-            "once a schema change forces the Logger tab to be recreated), "
-            "delete the A2 formula and paste export rows here, appending each "
-            "new one below the last."))
+            f"PASTE the Logger's {tab} rows here, starting at A2, under this "
+            "header. Easiest route: in the Logger, right-click the tab → Copy "
+            "to → Existing spreadsheet → this file, then delete THIS tab and "
+            f"rename the copy to '{tab}'. To pool across exports instead, "
+            "paste values and append each new export below the last. Every "
+            "formula reads whole columns, so either works at any size."))
+        note.alignment = WRAP
         note.font = DIM
-        ws.cell(row=2, column=len(header) + 2, value=(
-            f'=IF(COUNTA(A2:A{GRID_ROWS})>{GRID_ROWS - 1000},'
-            f'"⚠ within 1000 rows of the {GRID_ROWS}-row grid — add rows at '
-            f'the bottom of this tab AND raise GRID_ROWS in the generator",'
-            f'COUNTA(A2:A{GRID_ROWS})&" rows imported")'))
-        # Force the converted grid tall enough for IMPORTRANGE to spill into.
-        ws.cell(row=GRID_ROWS, column=len(header), value="")
+        ws.cell(row=2, column=len(header) + 2,
+                value='=COUNTA(A2:A)&" rows"')
 
     ws = wb.create_sheet(DER)
     ws.cell(row=1, column=1, value=(
@@ -717,9 +706,10 @@ def write_data_tabs(wb):
         c.fill = PatternFill("solid", fgColor=NAVY)
         # Column A anchors the block; the rest key off confirm_log being filled.
         ws.cell(row=3, column=i, value=(
-            f'=ARRAYFORMULA(IF({RAW_C}!{C["ts"]}2:{C["ts"]}{GRID_ROWS}="","",'
+            f'=ARRAYFORMULA(IF({RAW_C}!{C["ts"]}2:{C["ts"]}="","",'
             f'IFERROR({expr},"")))'))
-    ws.cell(row=GRID_ROWS, column=len(DERIVED), value="")
+    # derived is the one tab that needs headroom: its ARRAYFORMULAs spill.
+    ws.cell(row=DERIVED_ROWS, column=len(DERIVED), value="")
     ws.freeze_panes = "A3"
 
 
@@ -758,18 +748,18 @@ def write_readme(wb, fronts, register):
          "On the front's own tab, cell B7. INDEX pulls it, draws the bar, and "
          "looks up the label — never type a stage on INDEX."),
         ("Statuses", " · ".join(STATUS_ORDER)),
-        ("If A2 says 'Results too large'",
-         f"The tab is not tall enough for the import to spill into. Scroll to "
-         f"the bottom, add rows until the tab is ~{GRID_ROWS} deep, then click "
-         f"back into A2. This build ships pre-sized, so it should not happen."),
         ("Getting the data in",
-         "The match_log and confirm_log tabs pull straight from the Logger "
-         "via IMPORTRANGE in A2 — click Allow access once on each and they "
-         "stay current with no further work. If you would rather pool across "
-         "exports (needed once a schema change forces the Logger tab to be "
-         "recreated and history would otherwise be lost), delete the A2 "
-         "formula and paste export rows in instead, appending each new one "
-         "below the last. Formulas read whole columns either way."),
+         "Copy the Logger's two tabs into this file: in the Logger, "
+         "right-click match_log → Copy to → Existing spreadsheet → this one, "
+         "then delete the empty match_log tab here and rename the copy to "
+         "match_log. Repeat for confirm_log. To pool across exports instead, "
+         "paste values under the header and append each new export below the "
+         "last. Formulas read whole columns, so both work at any size."),
+        ("Why not IMPORTRANGE",
+         "Tried and rejected: pulling match_log whole (4,020 rows x 87 "
+         "columns) returns 'Results too large' whatever the destination size. "
+         "A live link also cannot pool across exports, which is needed once a "
+         "schema change forces the Logger tab to be recreated."),
         ("derived",
          "Unpacks confirm_log's restricted_top_json once — #1's overall, the "
          "#1-to-#2 gap, #1's phrase and year, and a slogan-aware correctness "
