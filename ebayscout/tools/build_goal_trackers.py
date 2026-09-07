@@ -101,6 +101,17 @@ def _derived():
 
 DERIVED = _derived()
 
+
+def derived_formula():
+    """All ten columns as ONE array formula in A3.
+
+    Ten separate ARRAYFORMULAs meant ten chances for a paste to go wrong, and
+    the .xlsx import mangles every one of them.  {a,b,c} joins them
+    horizontally, so the whole block is a single cell to paste and a single
+    cell to check."""
+    cols = ",".join(f'IFERROR({expr},"")' for _, expr in DERIVED)
+    return "=ARRAYFORMULA({" + cols + "})"
+
 # Every field an entry must carry.  A front missing one fails the build rather
 # than producing a tab with a blank target.
 FIELDS = ("Track", "Status", "Stage", "Question", "Instrument", "Gate",
@@ -714,16 +725,12 @@ def write_data_tabs(wb):
         "Derived from confirm_log — the leaderboard JSON unpacked once so "
         "every front can read it. ARRAYFORMULA, so it extends itself as rows "
         "are pasted. Do not type here.")).font = DIM
-    for i, (name, expr) in enumerate(DERIVED, start=1):
-        L = get_column_letter(i)
-        ws.column_dimensions[L].width = 22
+    for i, (name, _expr) in enumerate(DERIVED, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = 22
         c = ws.cell(row=2, column=i, value=name)
         c.font = WHITE_F
         c.fill = PatternFill("solid", fgColor=NAVY)
-        # Column A anchors the block; the rest key off confirm_log being filled.
-        ws.cell(row=3, column=i, value=(
-            f'=ARRAYFORMULA(IF({RAW_C}!{C["ts"]}2:{C["ts"]}="","",'
-            f'IFERROR({expr},"")))'))
+    ws.cell(row=3, column=1, value=derived_formula())
     # derived is the one tab that needs headroom: its ARRAYFORMULAs spill.
     ws.cell(row=DERIVED_ROWS, column=len(DERIVED), value="")
     ws.freeze_panes = "A3"
