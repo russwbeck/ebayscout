@@ -17,6 +17,9 @@ shared byte-identical with buttonmatcher:
   doctrine, the Stage A→D rollout staircase).
 - **`tested_hypothesis.md`** — consolidated confirmed/refuted hypotheses;
   check it before re-proposing anything.
+- **`LOGGER_FRONTS.md`** — the register of every front we measure with the
+  Logger (instrument, gate, standing), spanning the four docs above. The
+  Progress Trackers workbook is generated from it.
 - `HOUGH_AND_LOGGING_UPDATES.md` is historical (frozen); `match_logging.py`
   is the canonical log schema.
 
