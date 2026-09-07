@@ -681,17 +681,24 @@ def write_data_tabs(wb):
             c.font = WHITE_F
             c.fill = PatternFill("solid", fgColor=NAVY)
         ws.freeze_panes = "A2"
-        note = ws.cell(row=1, column=len(header) + 2, value=(
-            f"PASTE the Logger's {tab} rows here, starting at A2, under this "
-            "header. Easiest route: in the Logger, right-click the tab → Copy "
-            "to → Existing spreadsheet → this file, then delete THIS tab and "
-            f"rename the copy to '{tab}'. To pool across exports instead, "
-            "paste values and append each new export below the last. Every "
-            "formula reads whole columns, so either works at any size."))
-        note.alignment = WRAP
-        note.font = DIM
-        ws.cell(row=2, column=len(header) + 2,
-                value='=COUNTA(A2:A)&" rows"')
+        # NO wrap on these: a wrapped 400-character cell makes Sheets stretch
+        # row 1 to fit it, which swamps the header.  Unwrapped, it simply
+        # overflows across the empty columns to its right.
+        far = len(header) + 2
+        for k, line in enumerate((
+            f"PASTE the Logger's {tab} rows here, starting at A2, under the "
+            "header to the left.",
+            "Easiest route: in the Logger, right-click the tab → Copy to → "
+            f"Existing spreadsheet → this file. Then delete THIS tab and "
+            f"rename the copy to exactly '{tab}'.",
+            "To pool across exports instead, paste values and append each new "
+            "export below the last. Formulas read whole columns, so either "
+            "works at any size.",
+        )):
+            c = ws.cell(row=1 + k, column=far, value=line)
+            c.font = DIM
+            c.alignment = TOP
+        ws.cell(row=5, column=far, value='=COUNTA(A2:A)&" rows"').font = BOLD
 
     ws = wb.create_sheet(DER)
     ws.cell(row=1, column=1, value=(
