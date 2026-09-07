@@ -35,7 +35,20 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 
 # Every field an entry must carry.  A front missing one fails the build rather
 # than producing a tab with a blank target.
-FIELDS = ("Track", "Status", "Question", "Instrument", "Gate", "Standing", "Source")
+FIELDS = ("Track", "Status", "Stage", "Question", "Instrument", "Gate",
+          "Standing", "Source")
+
+# The evidence ladder — the one axis that is comparable across every front.
+# Stage is about how far the EVIDENCE has got, not how much work is left.
+LADDER = [
+    "0 · No instrument — nothing logs it yet",
+    "1 · Instrumented, zero data",
+    "2 · Accruing — below the volume the gate needs",
+    "3 · Graded once at volume",
+    "4 · Held on a batch it was NOT tuned on (§4.2)",
+    "5 · Gate met — shipped, held, or refuted",
+    "6 · Closed into tested_hypothesis.md; watching only",
+]
 
 # Statuses, in the order they should sort on the INDEX: live work first,
 # settled history last.
@@ -87,6 +100,14 @@ def parse_register(path):
             raise SystemExit(f"{fid}: missing {', '.join(missing)}")
         if fields["Status"] not in STATUS_ORDER:
             raise SystemExit(f"{fid}: unknown status {fields['Status']!r}")
+        if fields["Stage"] not in list("0123456"):
+            raise SystemExit(f"{fid}: Stage must be 0-6, got {fields['Stage']!r}")
+        fields["Stage"] = int(fields["Stage"])
+        # "Volume: 100 — auto-confirms with corrections logged"
+        vol = fields.get("Volume", "")
+        m2 = re.match(r"(\d+)\s*—\s*(.*)", vol)
+        fields["VolumeN"] = int(m2.group(1)) if m2 else None
+        fields["VolumeOf"] = m2.group(2) if m2 else ""
         fronts.append(dict(id=fid, title=title, section=track, **fields))
     if not fronts:
         raise SystemExit(f"no fronts parsed from {path}")
@@ -120,7 +141,7 @@ def _kv(ws, row, key, value, height=None):
 
 LOG_COLS = ["Date", "Logger export", "n", "Reading", "Meets gate?",
             "Status after", "Note"]
-LOG_HEADER_ROW = 16
+LOG_HEADER_ROW = 18
 LOG_ROWS = 14
 
 
@@ -139,14 +160,26 @@ def write_front_tab(wb, front):
     _band(ws, 4, "THE FRONT", 7)
     _kv(ws, 5, "Track", front["Track"])
     _kv(ws, 6, "Status", front["Status"])
-    _kv(ws, 7, "Instrument", front["Instrument"], height=46)
-    _kv(ws, 8, "Gate", front["Gate"], height=60)
-    _kv(ws, 9, "Standing", front["Standing"], height=74)
-    _kv(ws, 10, "Source", front["Source"], height=30)
-    _kv(ws, 11, "Owner", "")
-    _kv(ws, 12, "Next action", "")
-    ws.cell(row=13, column=2,
-            value="Standing is as of the register; log new readings below.").font = DIM
+    _kv(ws, 7, "Stage", front["Stage"])
+    ws.cell(row=7, column=3, value=f'=REPT("\u2588",B7)&REPT("\u2591",6-B7)')
+    ws.cell(row=7, column=4, value=LADDER[front["Stage"]]).font = DIM
+    if front["VolumeN"]:
+        _kv(ws, 8, "Volume needed", f'{front["VolumeN"]} {front["VolumeOf"]}')
+        ws.cell(row=8, column=3, value=(
+            f'=IFERROR(LOOKUP(2,1/(C{LOG_HEADER_ROW+1}:C{LOG_HEADER_ROW+LOG_ROWS}'
+            f'<>""),C{LOG_HEADER_ROW+1}:C{LOG_HEADER_ROW+LOG_ROWS})'
+            f'/{front["VolumeN"]},"")')).number_format = "0%"
+    else:
+        _kv(ws, 8, "Volume needed", "— the gate names no n")
+    _kv(ws, 9, "Instrument", front["Instrument"], height=46)
+    _kv(ws, 10, "Gate", front["Gate"], height=60)
+    _kv(ws, 11, "Standing", front["Standing"], height=74)
+    _kv(ws, 12, "Source", front["Source"], height=30)
+    _kv(ws, 13, "Owner", "")
+    _kv(ws, 14, "Next action", "")
+    ws.cell(row=15, column=2, value=(
+        "Bump Stage when the evidence moves; log the reading that moved it "
+        "below.")).font = DIM
 
     _band(ws, LOG_HEADER_ROW - 1,
           "PROGRESS LOG — one line per Logger export graded against the gate", 7)
@@ -161,24 +194,37 @@ def write_front_tab(wb, front):
     ws.freeze_panes = "A4"
 
 
-IDX_COLS = ["Front", "Title", "Track", "Status", "Latest reading", "As of",
-            "Owner", "Next action", "Gate", "Standing"]
+IDX_COLS = ["Front", "Title", "Track", "Stage", "Progress", "Toward",
+            "Evidence", "Status", "Latest reading", "As of", "Owner",
+            "Next action", "Gate"]
 
 
 def write_index(wb, fronts):
     ws = wb.create_sheet("INDEX", 1)
     _band(ws, 1, f"INDEX — {len(fronts)} fronts", len(IDX_COLS), font=H1, fill=NAVY)
     ws.cell(row=2, column=1, value=(
-        "Latest reading is the newest filled line of each front's progress log. "
-        "Filter by Track or Status; click a front to jump to its tab.")).font = DIM
+        "Stage is the evidence ladder (0-6) — the one axis comparable across "
+        "all fronts. Bump it on the front's own tab; this pulls it. Evidence "
+        "is the latest logged n against the volume the gate names.")).font = DIM
 
-    hr = 4
+    hr = 6
+    # Distribution strip: how many fronts sit on each rung, right at the top.
+    ws.cell(row=4, column=1, value="Fronts per stage").font = BOLD
+    for st in range(7):
+        c = ws.cell(row=4, column=2 + st,
+                    value=f'{st}: {sum(1 for f in fronts if f["Stage"] == st)}')
+        c.fill = PatternFill("solid", fgColor=LIGHT)
+        c.font = BOLD
+    ws.cell(row=4, column=10, value=(
+        f'{sum(1 for f in fronts if f["Stage"] <= 2)} fronts are below stage 3 '
+        f'— not yet graded at volume.')).font = DIM
     for i, h in enumerate(IDX_COLS, start=1):
         c = ws.cell(row=hr, column=i, value=h)
         c.font = WHITE_F
         c.fill = PatternFill("solid", fgColor=NAVY)
         c.border = BOX
-    for i, w in enumerate([8, 34, 26, 18, 22, 12, 12, 28, 70, 70], start=1):
+    for i, w in enumerate([8, 34, 26, 7, 10, 40, 10, 18, 22, 12, 12, 28, 70],
+                          start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     first, last = LOG_HEADER_ROW + 1, LOG_HEADER_ROW + LOG_ROWS
@@ -190,17 +236,28 @@ def write_index(wb, fronts):
         c.font = LINK
         ws.cell(row=r, column=2, value=f["title"])
         ws.cell(row=r, column=3, value=f["Track"])
-        ws.cell(row=r, column=4, value=f["Status"])
+        # Stage lives on the front tab so bumping it there moves the landing
+        # tab; the bar and the ladder text are derived, never typed.
+        ws.cell(row=r, column=4, value=f"={q}!B7")
+        ws.cell(row=r, column=5,
+                value=f'=REPT("\u2588",D{r})&REPT("\u2591",6-D{r})')
+        ws.cell(row=r, column=6,
+                value=f'=IFERROR(VLOOKUP(D{r},ROLLUP!$E$3:$F$9,2,FALSE),"")'
+                ).alignment = TOP
+        # Evidence: latest logged n against the volume the gate names.
+        ws.cell(row=r, column=7,
+                value=(f"={q}!C8" if f["VolumeN"] else "—")
+                ).number_format = "0%" if f["VolumeN"] else "General"
+        ws.cell(row=r, column=8, value=f["Status"])
         # LOOKUP(2, 1/(range<>""), range) returns the LAST non-empty cell.
-        for col, letter in ((5, "D"), (6, "A")):
+        for col, letter in ((9, "D"), (10, "A")):
             rng = f"{q}!{letter}{first}:{letter}{last}"
             ws.cell(row=r, column=col,
                     value=f'=IFERROR(LOOKUP(2,1/({rng}<>""),{rng}),"—")')
-        ws.cell(row=r, column=6).number_format = "yyyy-mm-dd"
-        ws.cell(row=r, column=7, value=f"={q}!B11")
-        ws.cell(row=r, column=8, value=f"={q}!B12")
-        ws.cell(row=r, column=9, value=f["Gate"]).alignment = WRAP
-        ws.cell(row=r, column=10, value=f["Standing"]).alignment = WRAP
+        ws.cell(row=r, column=10).number_format = "yyyy-mm-dd"
+        ws.cell(row=r, column=11, value=f"={q}!B13")
+        ws.cell(row=r, column=12, value=f"={q}!B14")
+        ws.cell(row=r, column=13, value=f["Gate"]).alignment = WRAP
     ws.freeze_panes = f"C{hr + 1}"
     ws.auto_filter.ref = (f"A{hr}:{get_column_letter(len(IDX_COLS))}"
                           f"{hr + len(fronts)}")
@@ -212,7 +269,15 @@ def write_rollup(wb, fronts):
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 10
     ws.column_dimensions["C"].width = 76
-    _band(ws, 1, "ROLLUP", 3, font=H1, fill=NAVY)
+    _band(ws, 1, "ROLLUP", 6, font=H1, fill=NAVY)
+    ws.column_dimensions["E"].width = 8
+    ws.column_dimensions["F"].width = 52
+    # E3:F9 is the ladder legend INDEX looks up — keep it where it is.
+    ws.cell(row=2, column=5, value="Stage").font = BOLD
+    ws.cell(row=2, column=6, value="Means").font = BOLD
+    for i, text in enumerate(LADDER):
+        ws.cell(row=3 + i, column=5, value=i)
+        ws.cell(row=3 + i, column=6, value=text).alignment = WRAP
 
     r = 3
     _band(ws, r, "By status", 3); r += 1
@@ -227,6 +292,16 @@ def write_rollup(wb, fronts):
     ws.cell(row=r, column=1, value="TOTAL").font = BOLD
     ws.cell(row=r, column=2, value=len(fronts)).font = BOLD
     r += 2
+
+    _band(ws, r, "By stage", 3); r += 1
+    for st in range(7):
+        ws.cell(row=r, column=1, value=LADDER[st])
+        ws.cell(row=r, column=2, value=sum(1 for f in fronts if f["Stage"] == st))
+        ws.cell(row=r, column=3,
+                value=", ".join(f["id"] for f in fronts
+                                if f["Stage"] == st)).alignment = WRAP
+        r += 1
+    r += 1
 
     _band(ws, r, "By track", 3); r += 1
     for t in dict.fromkeys(f["Track"] for f in fronts):
@@ -264,12 +339,22 @@ def write_readme(wb, fronts, register):
         ("How to use it",
          "After each Logger export, open the fronts you graded and add one "
          "line to the PROGRESS LOG: date, which export, n, the reading, "
-         "whether it meets the gate, and the status it moves to. INDEX pulls "
-         "the newest line of every log back up."),
+         "whether it meets the gate, and the status it moves to. Then bump "
+         "Stage (B7) if the evidence moved. INDEX pulls the newest line of "
+         "every log back up, alongside the stage bar and — where the gate "
+         "names a required n — the latest n as a percentage of it."),
         ("When a front settles",
          "Record the closing reading here, then move the verdict into "
          "tested_hypothesis.md and update the register's Status and Standing. "
          "The workbook is the trail; the docs are the record."),
+        ("Stage — the progress axis",
+         "0-6 on the evidence ladder, the same scale for every front so they "
+         "compare: " + " | ".join(LADDER) + ". Stage 3 to 4 is the §4.2 rule "
+         "(a result tuned on its own pool has not been tested) and is where "
+         "most fronts stall."),
+        ("Where to bump it",
+         "On the front's own tab, cell B7. INDEX pulls it, draws the bar, and "
+         "looks up the label — never type a stage on INDEX."),
         ("Statuses", " · ".join(STATUS_ORDER)),
         ("Not live-linked",
          "These fronts are graded by joining and pooling Logger exports, not "

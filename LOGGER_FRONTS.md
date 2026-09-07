@@ -30,6 +30,11 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
   settled by an operator decision or a code change instead.
 - **Gate** — what would confirm or refute it. This is the target the tracker
   tab measures against.
+- **Stage** — position on the evidence ladder below, 0–6. This is the
+  progress axis: it is the same scale for every front, so they compare.
+- **Volume** — where the gate names a required n, that n and what it counts.
+  Progress against it is `latest n / required n`. Absent where the docs set no
+  number.
 - **Standing** — the most recent measured reading, with its n and its batch.
 - **Source** — the doc + section carrying the full write-up.
 
@@ -44,6 +49,23 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 | `SETTLED-CONFIRMED` | proven and adopted — do not re-litigate |
 | `SETTLED-REFUTED` | proven wrong — do not re-propose |
 | `DECIDED-HOLD` | deliberately not changing on today's data |
+
+**The evidence ladder.** Every front walks the same steps, so Stage is
+comparable across all of them. It is not a guess at effort remaining — it is
+how far the *evidence* has got.
+
+| Stage | Means |
+|---|---|
+| 0 | **No instrument** — nothing logs it yet |
+| 1 | **Instrumented, zero data** — the column or shadow exists, no rows |
+| 2 | **Accruing** — data coming in, below the volume the gate needs |
+| 3 | **Graded once** — read at volume on one batch |
+| 4 | **Held on fresh data** — reproduced on a batch it was NOT tuned on (§4.2) |
+| 5 | **Gate met** — verdict reached; shipped, held, or refuted |
+| 6 | **Closed** — written into `tested_hypothesis.md`; watching only |
+
+Stage 3 → 4 is the §4.2 rule and is where most fronts stall: a result tuned on
+its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 
 **Two standing directives** (from `HYPOTHESES_IN_PROGRESS.md`, do not skip):
 
@@ -63,6 +85,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
+- **Stage:** 4
 - **Question:** does matching the crop at ≤2200px instead of the ≤800px detection frame produce better #1s or more correct auto-confirms?
 - **Instrument:** `fullres_top_json` paired against `restricted_top_json` on the same row; lever `MATCH_FULLRES_SHADOW`; live path stays off via `MATCH_FULLRES=0`
 - **Gate:** paired A/B across ALL Loggers after the logging-header fix. Promote only if truth@#1 and net-new correct autos beat ≤800px at scale with zero new wrong autos. Standing expectation: no win.
@@ -73,6 +96,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
+- **Stage:** 1
 - **Question:** do punctuation-normalized variants of hyphen/apostrophe puns (`I-O-Wasn't` → `i o wasnt`) get the off-board `I-O-…` family onto the board or to #1?
 - **Instrument:** `variant_top_json` joined to `restricted_top_json` per crop; lever `VARIANT_SHADOW`; `TEXT_VARIANTS=1` would make it live
 - **Gate:** across a batch — (a) does a confirmed truth that is OFF the restricted board come ON or to #1 with variants, and (b) does it demote ANY correct #1? Promote only if net-positive with zero correct-#1 demotions.
@@ -83,6 +107,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** DECIDED-HOLD
+- **Stage:** 5
 - **Question:** can the auto-confirm score floor (`AUTO_RESOLVE_THRESHOLD` 0.85) be lowered toward `GREEN_THRESHOLD` (0.82) for more autos?
 - **Instrument:** every `confirm_log` row's `restricted_top_json` — #1's `overall`, graded slogan-aware against `chosen_year`/`chosen_phrase` (NOT via `rank_restricted`, which carries the year-only bug pre-L20)
 - **Gate:** a band is loosenable only when it is clean at pooled scale. This front never closes — it is the standing reference that must be refreshed before ANY threshold move.
@@ -93,6 +118,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** DECIDED-HOLD
+- **Stage:** 5
 - **Question:** can the gap floor (`GAP_ONLY` 0.15) be lowered for more autos?
 - **Instrument:** #1→#2 `overall` gap from `restricted_top_json`, graded slogan-aware against the confirmed answer
 - **Gate:** same as A3 — refresh pooled across every export before moving. Loosen only on a band that is clean at scale.
@@ -103,6 +129,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
+- **Stage:** 3
 - **Question:** when the visual-final flip does NOT fire (reference agrees with #1), can we auto-confirm at a lower bar than 0.85?
 - **Instrument:** shadow line `NOFLIP_UNLOCK_SHADOW: would auto-approve …`; levers `NOFLIP_GAP` (0.05) + `NOFLIP_OVERALL` (0.70). Nothing live.
 - **Gate:** grade the would-auto rows across a batch it was NOT tuned on — every would-auto correct, no wrong fire.
@@ -113,6 +140,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** OPEN
+- **Stage:** 2
 - **Question:** the wrong high-confidence #1s split into Mode 2 (truth on-board, image flips it — no safe auto-fix) and Mode 1 (truth OFF-board because the pun is cold-embedding and a strong generic image wins by default). Can Mode 1 be closed?
 - **Instrument:** no single switch — resolves through A2 (variants, for punctuated puns) and C1 (reference curation, for the sticky attractors). Tracked via the FLAGGED wrong-#1 lists.
 - **Gate:** do the off-board truths reach the board (A2), and do the attractors stop winning after their references are pruned (C1)?
@@ -123,6 +151,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
+- **Stage:** 1
 - **Question:** every leaderboard is folded to one row per YEAR, so a slogan that loses its own year has no row at all — ~92% of the 498-slogan catalog is off every board on every crop. Score, both gap rules and the visual veto all compare ACROSS years, so all four are structurally blind to a wrong within-year slogan. Can a within-year margin catch that stratum?
 - **Instrument:** `within_year_json` — `{year, image_score, n_slogans, runner_up_margin, winner_is_top1, top[5]}`. `runner_up_margin` is the winner's lead over the runner-up inside its OWN year, the number no other column can show.
 - **Gate:** join `runner_up_margin` to confirmed truth across a batch. Promote "demote when `runner_up_margin` < M" only if some M catches the wrong within-year picks at an acceptable coverage cost — EVERY button has same-year siblings, so measure autos lost per wrong auto prevented before shipping.
@@ -133,6 +162,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** OPEN
+- **Stage:** 5
 - **Question:** a 104×104 thumbnail that Gemini counted as 11 buttons was auto-confirmed into inventory AND into the reference flywheel. Should a rendered-diameter floor downgrade those to manual review?
 - **Instrument:** `det_radius_mean` (×2 for diameter), `det_h`/`det_w`, grid dimensions
 - **Gate:** none needed — the defect is fully characterised and the same 9 images recur across Logger_3/4/5. Rule: when rendered button diameter is below ~64px, downgrade `gemini_auto` → manual review and block reference staging. Any sane floor beats none; refine from the radius columns later.
@@ -143,6 +173,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** BLOCKED
+- **Stage:** 0
 - **Question:** which slogans score 0.00 because they have no reference photos at all?
 - **Instrument:** `tools/audit_reference_coverage.py` against GCS — needs GCP access, so it runs locally, never from a web session
 - **Gate:** one audit run produces the gap list; fill from `reference/_staging/` or manual uploads, then re-run and confirm the 0.00 set shrinks.
@@ -153,6 +184,8 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** BLOCKED
+- **Stage:** 1
+- **Volume:** 100 — auto-confirms with corrections logged
 - **Question:** what is the actual precision of the auto-confirm path?
 - **Instrument:** `correction` / `skip_correction` rows in `confirm_log` — the only source. Nothing else can produce this number.
 - **Gate:** ~100 auto-confirms with corrections logged → measure precision directly. ≥95% supports widening auto-confirm, e.g. lowering `auto_sort` toward 0.82 (Logger_5 says 0.82 keeps precision ~0.979 at ~3.5× volume — but verify on measured corrections first). Stage D needs ≥98% over ≥300 confirmations.
@@ -163,6 +196,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** should the football restriction be dropped, kept, or split into unfiltered suggestions plus a gated auto-confirm?
 - **Instrument:** `shadow_top_json` vs `restricted_top_json`; `chosen_type`; the shadow #1's sport
 - **Gate:** the auto-confirm half is shipped — score-only AUTO is blocked whenever the shadow #1 is a different, non-Football candidate. If misses persist because the shadow #1 stays football, widen to "any non-football candidate in shadow top-3 outscoring the football top".
@@ -173,6 +207,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SETTLED-REFUTED
+- **Stage:** 6
 - **Question:** slogans carry a de-facto CLIP text advantage independent of the crop (per-phrase background text_score spans 0.34–0.80 across 515 phrases). Does centering each slogan's cosine on its own reference-bank baseline place truths at #1 more often?
 - **Instrument:** `rank_centered` vs `rank_restricted` in `confirm_log`
 - **Gate:** centered must place confirmed truths at #1 at least as often as raw AT SCALE, including truths raw ranking leaves off-board — and only together with a recalibration of every score threshold.
@@ -183,6 +218,8 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** OPEN
+- **Stage:** 2
+- **Volume:** 50 — slogans whose shelves are filled to the 4-cap
 - **Question:** which slogans' reference shelves, if filled, would widen the most gaps? A gap is (crop vs the right entry's evidence) − (crop vs the runner-up's); references raise only the first term.
 - **Instrument:** from each export, every slogan that won with gap < 0.15 or lost at ranks 2–5, read off `restricted_top_json`
 - **Gate:** fill those shelves to the 4-cap first, then confirm the low-gap offender list shrinks on the next export. Likely 30–50 slogans do most of the damage.
@@ -193,6 +230,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** OPEN
+- **Stage:** 2
 - **Question:** is the centered ref-photo check weighted right at 0.15? It is the score's one explicitly contrastive term, so it widens exactly the correct-vs-wrong gap where references exist.
 - **Instrument:** `ref_sim` telemetry on confirmed outcomes — only flowing since the 2026-07-09 fix, so the first post-fix export is the first calibration opportunity
 - **Gate:** calibrate on real outcomes from one export; compounds with A13.
@@ -203,6 +241,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** PROPOSED
+- **Stage:** 0
 - **Question:** compressed scores often mean degraded crops (blur, small, glare flatten every sim). Does test-time augmentation widen gaps when targeted at low-GAP crops rather than low-SCORE crops?
 - **Instrument:** existing TTA machinery (`BUTTONMATCHER_TTA`, tight re-crop + rotations), currently aimed at sub-0.65 crops; measure gap change on confirmed rows
 - **Gate:** one export answers it — does it widen gaps on confirmed rows?
@@ -213,6 +252,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** PROPOSED
+- **Stage:** 0
 - **Question:** some pairs never widen (the 0.968 wrestling pin; Slash/Trash the Flash; Mellon-era templates). Can they be enumerated from logs and quarantined, so everyone else's small gaps become safe to trust?
 - **Instrument:** any two entries that ever swapped ranks on a confirmed row, mined from `restricted_top_json` across exports
 - **Gate:** quarantine score-only autos within known pairs (as twin families already route to the picker), then show the remaining population's small gaps are clean — the eventual justification for lowering `GAP_ONLY` below 0.15 for everyone else.
@@ -223,6 +263,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** OPEN
+- **Stage:** 4
 - **Question:** can `BUTTONMATCHER_GAP_ONLY_LIVE=1` be flipped? It is built, with zero new engineering, for ~3× score-based auto coverage.
 - **Instrument:** the `gap ≥ 0.15` rule graded against confirmed truth
 - **Gate:** one clean shadow batch.
@@ -233,6 +274,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** how much of `gemini_auto`'s coverage can score-side rules take over without a wrong slogan?
 - **Instrument:** cumulative union of the rules graded on 731 rows — `overall ≥ 0.85` → `gap ≥ 0.15` → `slogan_gap ≥ 0.12` → `slogan_gap ≥ 0.05 AND ref_sim ≥ 0.90`
 - **Gate:** each rung must hold 0 wrong slogans on the batch that adopts it, and clear a fresh batch before the next step-down.
@@ -243,6 +285,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** OPEN
+- **Stage:** 3
 - **Question:** does entry-level visual similarity separate right from wrong matches at some absolute threshold, so it can veto a mismatch outright?
 - **Instrument:** `ref_sim` per offered option, on confirmed outcomes
 - **Gate:** separation at some threshold with ≤2% miss. This is the Stage C entry condition.
@@ -253,6 +296,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SETTLED-REFUTED
+- **Stage:** 6
 - **Question:** when the best-reference candidate differs from #1, should the flip be *acted on* — i.e. commit the reference's pick?
 - **Instrument:** the visual-final shadow on 473 reviewed rows (Logger_18)
 - **Gate:** the flip had to fix more than it broke.
@@ -263,6 +307,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SETTLED-REFUTED
+- **Stage:** 6
 - **Question:** is `slogan_gap ≥ 0.05 AND ref_sim ≥ 0.90` safe as a live auto-confirm rule?
 - **Instrument:** the combo graded on Logger_15's 256 reviewed rows
 - **Gate:** zero wrong on the batch that would adopt it.
@@ -273,6 +318,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** PROPOSED
+- **Stage:** 0
 - **Question:** distinct-slogan mispicks inside a shared look/word family (`Attack The Pack` vs `Sack The Pack`, `Hoot On Temple` vs `Temple Whoo?`) produce NO visual flip, because best-ref equals #1 for both siblings — so the veto never fires. Can top-2 phrase similarity suppress the auto instead?
 - **Instrument:** proposed shadow line `NEAR_TWIN_SUPPRESS_SHADOW`; kill switch `BUTTONMATCHER_NEAR_TWIN_SUPPRESS`; reuses the CLIP text embeddings already in hand
 - **Gate:** shadow first; calibrate `NEAR_TWIN_SIM` so it withholds the near-twin autos without touching the validated `gap_only` (537/537) and `slogan_gap` (448/448) populations.
@@ -283,6 +329,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
+- **Stage:** 4
 - **Question:** for the typed-pun crops, does image similarity alone rank the truth better than the live blend?
 - **Instrument:** `rank_image_only` vs `rank_restricted` in `confirm_log`
 - **Gate:** grade slogan-aware (the rank columns carry a year-only bug pre-L20) and decide whether an image-weighted rescue is worth shipping.
@@ -293,6 +340,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** OPEN
+- **Stage:** 3
 - **Question:** is the era/bank picker costing more clicks than it saves?
 - **Instrument:** `bank`, `source` and pick rates across `/sort` + `/inventory` confirmations
 - **Gate:** operator decision once the click economics are measured across a full export.
@@ -303,6 +351,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** DECIDED-HOLD
+- **Stage:** 6
 - **Question:** 17 `edition_pick` rank>1 rows are same-slogan wrong-year twins. Should the picker be changed?
 - **Instrument:** `source='edition_pick'` rows with `rank_restricted` > 1; `edition_shadow_json`
 - **Gate:** none — operator decision 2026-07-18: the edition-picker interaction is working as intended; the picker exists precisely for these and the click is acceptable.
@@ -313,6 +362,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHIPPED-WATCH
+- **Stage:** 1
 - **Question:** a bowl button prints the game year (season+1). Can its printed marker be resolved to the SEASON year via `game_date`?
 - **Instrument:** telemetry `n_printed_year_gamematch`; `TWIN GUARD … via game_date (bowl offset)`; lever `GAME_DATE_YEAR` (default on)
 - **Gate:** `>>> GAME_YEAR: N bowl-offset entries indexed` on boot, with N ≈ the count of Jan-dated football buttons; then bowl twins resolve to the season year with non-zero `n_printed_year_gamematch` and no new wrong twins.
@@ -327,6 +377,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** are the three logging holes that block every other detection front closed — true unguided count on the pipeline, Hough-param telemetry on ebayscout's detector, and a count-free over-merge signal?
 - **Instrument:** `det_count_noinput` + the `ni_*` block; `det_hough_*` + `det_rej_radius_*`; `det_mask_blobs_raw` / `det_dt_peaks_total` / `det_mask_coverage`
 - **Gate:** every new column populated on every row of a real batch.
@@ -337,6 +388,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** on lots where the mask floods (coverage > 0.75), buttons and background fuse into one sheet and Hough finds nothing. Can a blue-only plus bright two-variant chooser recover them?
 - **Instrument:** `det_mask_coverage`, `det_mask_path`, `det_detector_used`
 - **Gate:** guided detection engages instead of falling to the grid, on the real failed lots.
@@ -347,6 +399,8 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** OPEN
+- **Stage:** 2
+- **Volume:** 100 — pipeline fused lots, incl. ~20 with 7+ buttons
 - **Question:** on lots where buttons touch and fuse into one mask blob, can Hough be re-run at a DT-corrected radius to split them?
 - **Instrument:** `det_mask_components` < `gemini_button_count` (the fusion signature); `det_dt_peaks_total` as the radius source
 - **Gate:** adopt when `det_dt_peaks_total` is within ±1 (or ±10% on 13+ button lots) of Gemini's count on ≥80% of fused lots. Needs ~100 pipeline lots including ~20 with 7+ buttons; dense `/sort` lots are the fastest gold-standard source. If it passes, the blob-split half can ship shadow-first for one more batch before switching live.
@@ -357,6 +411,8 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 3
+- **Volume:** 50 — overcounted small lots (~330 single-button lots at the ~15% rate)
 - **Question:** 68% of singles overcount unguided, and the largest cluster is exactly +1 — the concentric glare rim. Does a radius-consistency band plus concentric collapse fix it?
 - **Instrument:** `det_overlap_removed`, `det_radius_*`, `ni_selected` vs truth
 - **Gate:** a dedup rule that removes ≥80% of the spurious extras on the collected overcount set while removing **zero** circles on exact-match lots. Needs ~50 overcounted small lots ≈ ~330 single-button pipeline lots at the ~15% rate — 2–4 weeks of normal feed, no action or cost required.
@@ -367,6 +423,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** `ni_gate=auto` could survive even when the guided detector bailed to grid or Gemini-led, so the unguided shadow numbers described a detector that was never used. Does requiring `scale_path=scale_first` AND a non-bailed detector close the loophole?
 - **Instrument:** `ni_gate`, `ni_scale_path`, `det_detector_used`; `demote_auto_on_detector_bailout`
 - **Gate:** gated shadow-vs-truth disagreement on the organic feed.
@@ -377,6 +434,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** OPEN
+- **Stage:** 4
 - **Question:** should crops be anchored on Gemini's x/y instead of Hough's centres, fixing the grid-fallback mis-centring?
 - **Instrument:** `det_gemini_anchored_json` — `{n_agree, snap_frac_median, n_gemini_only, n_hough_only}`
 - **Gate:** revisit only gated on low `snap_frac` AND `n_agree ≈ n_gemini` — and there, by definition, there is little left to fix. Otherwise formally drop it.
@@ -387,6 +445,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** PROPOSED
+- **Stage:** 2
 - **Question:** the two-signal reconcile swap is dormant — it fired on ~1 of 78 lots — because on-mask phantoms sit on bluish pixels and score fill ≥ 0.50, so the off-mask gate keeps them. Can a third signal identify them without endangering a solo real button?
 - **Instrument:** proposed `RECONCILE_DUP_SHADOW would-drop` line + `det_n_dup_dropped`; kill switch `BUTTONMATCHER_RECONCILE_DUP_DROP`. Corroborating signals already logged: `n_hough_only` from the anchor shadow and `det_gem_unmatched_json`.
 - **Gate:** shadow-log would-drop circles for one cycle and grade against `not_a_button` confirmations on `(job_id, crop_num)` before dropping anything. Precision target: ≥ the 9/21 (~43%) `n_hough_only` ↔ `not_a_button` coincidence, ideally higher once off-mask/overlap gated. Hard-gate on `gemini_count>0` + over-count + overlap-with-kept so a real button Gemini merely missed is never dropped.
@@ -397,6 +456,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** PROPOSED
+- **Stage:** 1
 - **Question:** on no-Gemini slash lots, when `det_count_user − det_count_noinput` is large, the padding manufactures non-buttons at the tail. Should those crops be tagged uncertain instead of presented as confident?
 - **Instrument:** proposed `det_n_uncertain_pad`; kill switch `BUTTONMATCHER_UNCERTAIN_PAD`. Signature is `det_n_crops == det_count_user` while unguided Hough saw far fewer.
 - **Gate:** the tagged crops should coincide with `not_a_button` confirmations, and must never hide a real faint button. Fire only on large gap (start `gap ≥ 3` or `≥ 0.25×expected`) plus low fill.
@@ -407,6 +467,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** OPEN
+- **Stage:** 2
 - **Question:** the bright/white mask arm floods on light backgrounds (white mailer, gray felt), collapsing Hough into grid fallback or radius collapse. What fixes it?
 - **Instrument:** `det_mask_path`, `det_detector_used`, `det_count_noinput`; existing `white_rescue` / grid-hole force-fill / `+bgdiff`; a proposed saturation gate on the white mask arm
 - **Gate:** targeted re-run of the known light-bg photos with `+bgdiff` on/off and, once built, the saturation gate. Pair with Gemini runs for the anchoring angle.
@@ -417,6 +478,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** white-on-white detection is resolution-fragile, but is the grid geometry itself resolution-independent — i.e. can a hole in the grid be force-filled even when the button is invisible to the mask?
 - **Instrument:** `ni_est_rows` / `ni_est_cols` / `ni_layout_conf`; the Mildcats/Minnesota lot
 - **Gate:** the grid gap must be a stable signal across resolutions.
@@ -427,6 +489,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** the flood gate was tuned on a calibration set that did not contain dense lots — and a dense lot IS a flooded mask. Does it reject good masks?
 - **Instrument:** `det_mask_coverage`, `det_mask_path`
 - **Gate:** an independent on-target check, same §4.2 shape — gate the new path, verify it is on-target, fall back.
@@ -437,6 +500,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** slogan-text blocks inside a button read as "button holes" to the hole-inversion step, destroying the mask. Can a coverage floor stop it?
 - **Instrument:** `det_mask_coverage`; `HOLE_INVERT_MIN_COVERAGE = 0.08`
 - **Gate:** the kept mask must clear the floor before inversion is trusted.
@@ -447,6 +511,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** what actually caused the "navy-8 complete fail"?
 - **Instrument:** `parse_gemini_response` (byte-shared); the reconcile geometry
 - **Gate:** root cause reproduced on the real photo.
@@ -457,6 +522,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** a Hough phantom was SUPPRESSING a real Gemini button. Can the phantom be dropped without ever dropping a real button Gemini merely missed?
 - **Instrument:** `det_n_swapped`, `det_reconcile_swaps_json`; the two signals are unbacked AND off-mask (`detected_fills < SWAP_OFF_MASK_MAX` 0.50)
 - **Gate:** the risky action is DROPPING, so it needs two independent signals; generalised so the drop does not require a button to recover in its place.
@@ -467,6 +533,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** the turf-cross regression — deficit fill trusted a bad path and manufactured detections. Gate it?
 - **Instrument:** the gate + on-target check; `det_detector_used`
 - **Gate:** gate the new path, verify it is on-target, fall back — the reusable lesson from this front, now applied to every subsequent detection fix.
@@ -477,6 +544,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** DECIDED-HOLD
+- **Stage:** 6
 - **Question:** should the flood gates be extended to cover textured-carpet backgrounds?
 - **Instrument:** `det_bg_*`, `det_mask_coverage`, `det_edge_density`
 - **Gate:** operator decision 2026-07-12 — carpets are too niche to over-code. DASH the gates.
@@ -487,6 +555,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** the 1979-front incident mass-auto-confirmed blank-bag crops. Does physical anchoring separate right from wrong associations?
 - **Instrument:** the anchor gate; `det_gemini_anchored_json`; per-crop provenance
 - **Gate:** the association must be backed by a physical anchor before it can auto-confirm.
@@ -497,6 +566,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** in the DUAL incident ("1987 front", job `efb99c29`) Gemini's frame stretched. Should the coordinate FRAME be reconciled before any position is trusted?
 - **Instrument:** the frame-fit step ahead of position reconciliation
 - **Gate:** frame agreement before position agreement.
@@ -507,6 +577,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** OPEN
+- **Stage:** 2
 - **Question:** radius/scale — not Hough — is the real bottleneck. Can `sweep_fallback` lots (banding, saturation, blue-on-blue) get a trustworthy radius?
 - **Instrument:** `ni_r_est`, `ni_scale_conf`, `ni_scale_path`, `det_expected_radius`
 - **Gate:** the hard research track. Self-bootstrapping wide-radius rim Hough was tried and is NOT a clean win (multimodal radius: logos + arcs + rims). Earn a learned segmenter with data first.
@@ -517,6 +588,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** BLOCKED
+- **Stage:** 1
 - **Question:** does the rim-support union pass recover white-on-white, colour-blind?
 - **Instrument:** the Layer-2 union pass; `det_white_recovered`
 - **Gate:** re-run against all 9 fixtures behind a kill switch, with the contained-fragment dedup fix, once radius is trustworthy.
@@ -527,6 +599,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SETTLED-REFUTED
+- **Stage:** 6
 - **Question:** do `dt_peaks` / `mask_blobs` give a usable count-free estimate?
 - **Instrument:** `det_dt_peaks_total`, `det_mask_blobs_raw` vs `gemini_button_count`
 - **Gate:** usable accuracy against truth at scale.
@@ -537,6 +610,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHADOW
+- **Stage:** 2
 - **Question:** a count gate cannot see a misplaced circle or a non-button object — the operator's actual dominant error mode. Can it be measured per lot?
 - **Instrument:** `det_gem_unmatched` + `det_gem_unmatched_json` — the Hough-only unmatched circles `plan_reconciliation` already computes and used to discard
 - **Gate:** a passive per-lot placement metric that accrues alongside the Stage-B count gate. Blank means the match could not run (unknown), which is not zero.
@@ -547,6 +621,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** count-exact ≠ button-exact — detection can find the right number of circles while one is a non-button and one button is missed (lot `1855dcee`). What catches that?
 - **Instrument:** `not_a_button` / `missed_button` taps in `confirm_log.source`
 - **Gate:** each tap is also a labeled training example for the learned-detection track, so the front is as much about accrual as about rate.
@@ -557,6 +632,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** OPEN
+- **Stage:** 0
 - **Question:** does round non-button clutter at a *correct* radius produce false positives the radius filters cannot catch?
 - **Instrument:** `det_gem_unmatched_json`, `not_a_button` taps
 - **Gate:** needs images — latent and untested.
@@ -567,6 +643,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** OPEN
+- **Stage:** 2
 - **Question:** at what button-count density does `scale_first` start fusing?
 - **Instrument:** `det_mask_components` vs `gemini_button_count`, bucketed by count; `det_buttons_per_megapixel`
 - **Gate:** needs dense (7+) lots, the acknowledged bottleneck — daily-feed lots are mostly singles.
@@ -577,6 +654,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** what fraction of pipeline lots are `scale_first`, i.e. how much of the feed is even eligible for unguided automation?
 - **Instrument:** `ni_scale_path` share of the organic feed
 - **Gate:** answered.
@@ -587,6 +665,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHADOW
+- **Stage:** 3
 - **Question:** grid fallback spiked in Logger_20 (0%→5%→5%→0%→**19%**, 15 lots, 14 Gemini-backed). Is it becoming a failure driver?
 - **Instrument:** `det_detector_used`, `det_mask_coverage`
 - **Gate:** watch whether the rate keeps climbing, and whether the non-flooded grid lots have a distinct trigger.
@@ -597,6 +676,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 3
 - **Question:** the guided white-rescue pass was invisible. How often does it fire and what does it recover?
 - **Instrument:** `det_mask_path += "+whitepass"` and `det_white_recovered` (a trailing column to hand-append)
 - **Gate:** watch `+whitepass` and `+satfallback_*` frequency on the same exports — is the chooser choosing well, and is the rim rescue real?
@@ -607,6 +687,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SETTLED-REFUTED
+- **Stage:** 6
 - **Question:** does the bright `V > bg+60` variant catch white-on-white?
 - **Instrument:** `ni_variant`, `det_mask_path`
 - **Gate:** measurable coverage on white-on-white lots.
@@ -617,6 +698,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** Hough engaged on 0% of 1–3 button lots, yet its pass-1 nailed the single button 77% of the time. Was the acceptance floor of 6 discarding correct detections?
 - **Instrument:** `det_hough_pass1` vs `gemini_button_count`, bucketed by lot size
 - **Gate:** accept Hough when it has enough circles to form a grid (≥6) OR when it has essentially found the expected few-button count.
@@ -627,6 +709,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Detection
 - **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** is there anything stopping a detection change from silently regressing the known-hard lots?
 - **Instrument:** `tests/fixtures/lots/` — 9 real lots at 800px + `manifest.json` + `test_detect_fixtures.py`
 - **Gate:** locks the unguided snapshot, guards the two clean lots at `auto` + exact, and asserts the Layer-1 safety property — *a non-`scale_first` path never reaches `gate=auto`*.
@@ -641,6 +724,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Reference and data
 - **Status:** OPEN
+- **Stage:** 2
 - **Question:** a handful of reference photos over-match unrelated crops on IMAGE. Does pruning them stop the wrong #1s?
 - **Instrument:** the pooled FLAGGED list of ≥0.75 wrong-#1s per reference
 - **Gate:** prune, re-shoot or down-weight those references, then confirm each one's wrong-#1 count drops in the next pooled refresh **with no new attractor taking its place**.
@@ -651,6 +735,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Reference and data
 - **Status:** BLOCKED
+- **Stage:** 0
 - **Question:** `_ref_quality_score` is sharpness-first (Laplacian variance), which is not comparable across resolutions — a tiny thumbnail dodges the "weakest ref" flag. Should resolution become the dominant signal?
 - **Instrument:** — (not a data experiment)
 - **Gate:** operator decision on direction. The operator said "nevermind" mid-discussion, so confirm direction before building anything.
@@ -661,6 +746,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Reference and data
 - **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** should a score gate or an agreement gate decide what gets staged into the reference DB?
 - **Instrument:** staging decisions joined to confirmed outcomes
 - **Gate:** the gate that keeps fewer wrong crops and more good ones wins.
@@ -671,6 +757,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Reference and data
 - **Status:** SHIPPED-WATCH
+- **Stage:** 2
 - **Question:** can the winter-sports reference shelf be built by exactly the lots that expose its absence, until the football filter dissolves into an ordinary prior?
 - **Instrument:** `chosen_type` on typed confirms; `shadow_top_json` twins with identical normalized slogans — that set is the cross-sport risk surface
 - **Gate:** references accumulate → `ref_sim` starts arbitrating same-slogan twins ("Plaster Pitt") → the filter becomes a prior rather than a rule.
@@ -681,6 +768,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Reference and data
 - **Status:** SHIPPED-WATCH
+- **Stage:** 2
 - **Question:** is every pipeline lot leaving behind a labeled training example for the learned-detection track?
 - **Instrument:** `pipeline/labels/<job_id>.json` + `.jpg` sidecars — detection-space image, circles with provenance, Gemini reading verbatim; confirms join via `confirm_log.job_id`. Kill switch `BUTTONMATCHER_LABEL_HARVEST=0`.
 - **Gate:** accrual, not a verdict — the learned segmenter has to be earned with data first.
@@ -691,6 +779,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Reference and data
 - **Status:** BLOCKED
+- **Stage:** 0
 - **Question:** the operator visually audited 759/759 `gemini_auto` decisions — but the result is attested only in chat, so it cannot be cited as evidence for any gate.
 - **Instrument:** — (a durable note in `HANDOFF.md` or the Sheet)
 - **Gate:** a one-line durable record makes it citable.
@@ -705,6 +794,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Built but never graded
 - **Status:** BUILT-UNGRADED
+- **Stage:** 1
 - **Question:** does re-matching crops whose #1 lands below `RED_THRESHOLD` with test-time augmentation improve them?
 - **Instrument:** `TTA` flag, default off. No shadow column.
 - **Gate:** give it a shadow following the §A pattern, or remove it. Distinct from A15, which points the same machinery at low-GAP rather than low-score crops.
@@ -715,6 +805,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Built but never graded
 - **Status:** BUILT-UNGRADED
+- **Stage:** 1
 - **Question:** does the two-level reference rerank (`year_score` / `sid_score` / `rerank_delta` per candidate) improve ranks?
 - **Instrument:** `rerank_json` in `match_log`, `rank_rerank` in `confirm_log`; `RERANK` flag, default off "until calibrated"
 - **Gate:** calibrate against confirmed truth, or remove it.
@@ -729,6 +820,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Rollout stages
 - **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** is the system fully instrumented, with a self-certifying stratum identified?
 - **Instrument:** the whole `match_log` / `confirm_log` schema
 - **Gate:** `ni_gate=auto` + `scale_path=scale_first` identifies self-certified unguided lots.
@@ -739,6 +831,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Rollout stages
 - **Status:** OPEN
+- **Stage:** 2
 - **Question:** can the unguided count become primary on `auto`+`scale_first` lots, with Gemini demoted to a cross-check?
 - **Instrument:** gated unguided count vs `gemini_button_count`, passive accrual on the daily feed
 - **Gate:** **≥98% count agreement with Gemini on gated lots at real volume.** Rollback if gated disagreement exceeds 2% over any 50 lots (`auto_overridden` has no UI affordance, so it cannot be the tripwire). Instrument the placement blind spot (B22) before flipping.
@@ -749,6 +842,7 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Rollout stages
 - **Status:** BLOCKED
+- **Stage:** 0
 - **Question:** can Gemini be called only when the gate is below `auto`, the match lacks reference agreement, or the lot is flagged needed/valuable?
 - **Instrument:** `ni_gate`, `ref_sim`, needed-button flags
 - **Gate:** Stage B stable AND the `ref_sim` calibration (A19) shows entry-level visual similarity separates right from wrong at some threshold with ≤2% miss.
@@ -759,6 +853,8 @@ here and the tab's target changes. Never edit the workbook's structure by hand.
 
 - **Track:** Rollout stages
 - **Status:** BLOCKED
+- **Stage:** 0
+- **Volume:** 300 — confirmations with measured precision
 - **Question:** can auto-confirmed lots commit directly, with the human seeing only new slogans, purchase decisions, a random audit sample, and two-signal disagreements?
 - **Instrument:** measured auto precision via the correction flow (A10)
 - **Gate:** **≥98% measured precision over ≥300 confirmations.** Never remove the 1-in-N audit sample — it is the drift detector, sized to catch a 2-point precision drop within a week.
