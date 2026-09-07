@@ -52,6 +52,9 @@ C = _cols(ml.CONFIRM_HEADER)    # confirm_log
 # block that unpacks the leaderboard JSON once for everything downstream.
 RAW_M, RAW_C, DER = "match_log", "confirm_log", "derived"
 
+# The Logger workbook these two tabs mirror.
+LOGGER_KEY = "11BJAJv4tkPKtkrlPVyZqaMpKkpwfuv9t_tnk5WdjPzI"
+
 # derived columns, in order.  ARRAYFORMULA down each so pasting more rows into
 # confirm_log extends them with no further action.
 DERIVED = [
@@ -660,16 +663,22 @@ def write_data_tabs(wb):
     block that unpacks the leaderboard JSON once for everything downstream."""
     for tab, header in ((RAW_M, ml.MATCH_HEADER), (RAW_C, ml.CONFIRM_HEADER)):
         ws = wb.create_sheet(tab)
+        last = get_column_letter(len(header))
         for i, h in enumerate(header, start=1):
             c = ws.cell(row=1, column=i, value=h)
             c.font = WHITE_F
             c.fill = PatternFill("solid", fgColor=NAVY)
         ws.freeze_panes = "A2"
+        # Live by default: pulls the Logger from row 2 down, under our header.
+        # Needs one "Allow access" click the first time.
         ws.cell(row=2, column=1, value=(
-            f"PASTE THE LOGGER'S {tab} ROWS HERE, under this header, starting "
-            "at A2. Append each new export below the last — the formulas read "
-            "the whole column, so everything pools automatically. Delete this "
-            "line first.")).font = DIM
+            f'=IMPORTRANGE("{LOGGER_KEY}","{tab}!A2:{last}")'))
+        ws.cell(row=1, column=len(header) + 2, value=(
+            "A2 pulls this tab live from the Logger — click Allow access on "
+            "the #REF! the first time. To pool across exports instead (needed "
+            "once a schema change forces the Logger tab to be recreated), "
+            "delete the A2 formula and paste export rows here, appending each "
+            "new one below the last.")).font = DIM
 
     ws = wb.create_sheet(DER)
     ws.cell(row=1, column=1, value=(
@@ -725,11 +734,13 @@ def write_readme(wb, fronts, register):
          "looks up the label — never type a stage on INDEX."),
         ("Statuses", " · ".join(STATUS_ORDER)),
         ("Getting the data in",
-         "Paste the Logger's match_log and confirm_log rows into the tabs of "
-         "those names, under the header, starting at A2. APPEND each new "
-         "export below the last — every formula reads the whole column, so "
-         "the numbers pool across exports automatically. That is the only "
-         "import step."),
+         "The match_log and confirm_log tabs pull straight from the Logger "
+         "via IMPORTRANGE in A2 — click Allow access once on each and they "
+         "stay current with no further work. If you would rather pool across "
+         "exports (needed once a schema change forces the Logger tab to be "
+         "recreated and history would otherwise be lost), delete the A2 "
+         "formula and paste export rows in instead, appending each new one "
+         "below the last. Formulas read whole columns either way."),
         ("derived",
          "Unpacks confirm_log's restricted_top_json once — #1's overall, the "
          "#1-to-#2 gap, #1's phrase and year, and a slogan-aware correctness "
