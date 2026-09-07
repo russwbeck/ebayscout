@@ -18,6 +18,19 @@ this file and emits one spreadsheet tab per front, so the workbook cannot say
 something this file does not. Add a front here and it gets a tab; change a gate
 here and the tab's target changes. Never edit the workbook's structure by hand.
 
+**How the Logger data reaches it.** The workbook carries two raw tabs,
+`match_log` and `confirm_log`, that the Logger's rows are pasted into —
+appended, so readings pool across exports rather than replacing each other. A
+third tab, `derived`, unpacks `restricted_top_json` once (ARRAYFORMULA down each
+column, so it extends itself): #1's `overall`, the #1→#2 gap, #1's phrase and
+year, and a slogan-aware correctness flag — `LOWER` then non-alphanumerics
+stripped, the sheet-side `_normalize_key`. Every front whose instrument is a
+column or that JSON then reads those three tabs and recomputes on each paste.
+38 of the 69 fronts work this way. The other 31 cannot: their instrument is a
+Cloud Run stdout line (`NOFLIP_UNLOCK_SHADOW`, `>>> GAME_YEAR:`), a GCS
+sidecar, or an operator decision — those readings are typed into the front's
+progress log from the offline analysis.
+
 ---
 
 ## How to read an entry

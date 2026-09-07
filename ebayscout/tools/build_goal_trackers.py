@@ -34,6 +34,49 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from ebayscout import match_logging as ml  # noqa: E402
+
+
+def _cols(header):
+    """name -> column letter, resolved from the live schema so a formula can
+    never point at a stale column."""
+    return {n: get_column_letter(i) for i, n in enumerate(header, start=1)}
+
+
+M = _cols(ml.MATCH_HEADER)      # match_log
+C = _cols(ml.CONFIRM_HEADER)    # confirm_log
+
+# The two raw tabs the operator pastes Logger exports into, plus the derived
+# block that unpacks the leaderboard JSON once for everything downstream.
+RAW_M, RAW_C, DER = "match_log", "confirm_log", "derived"
+
+# derived columns, in order.  ARRAYFORMULA down each so pasting more rows into
+# confirm_log extends them with no further action.
+DERIVED = [
+    ("ts", f'{RAW_C}!{C["ts"]}2:{C["ts"]}'),
+    ("source", f'{RAW_C}!{C["source"]}2:{C["source"]}'),
+    ("top1_overall", f'VALUE(REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
+                     f'{C["restricted_top_json"]},"""overall"": ([0-9.]+)"))'),
+    ("top2_overall", f'VALUE(REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
+                     f'{C["restricted_top_json"]},'
+                     f'"""overall"":.*?""overall"": ([0-9.]+)"))'),
+    ("gap", "C2:C-D2:D"),
+    ("top1_phrase", f'REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
+                    f'{C["restricted_top_json"]},"""phrase"": ""([^""]*)""")'),
+    ("top1_year", f'REGEXEXTRACT({RAW_C}!{C["restricted_top_json"]}2:'
+                  f'{C["restricted_top_json"]},"""year"": ""(\\d{{4}})""")'),
+    # Slogan-aware key: lowercase, strip everything but letters and digits —
+    # the sheet-side equivalent of _normalize_key, so "I-O-Wasn't" and
+    # "i o wasnt" compare equal.
+    ("key_top1", 'REGEXREPLACE(LOWER(F2:F),"[^a-z0-9]","")'),
+    ("key_chosen", f'REGEXREPLACE(LOWER({RAW_C}!{C["chosen_phrase"]}2:'
+                   f'{C["chosen_phrase"]}),"[^a-z0-9]","")'),
+    ("correct", f'(H2:H=I2:I)*(G2:G=TEXT({RAW_C}!{C["chosen_year"]}2:'
+                f'{C["chosen_year"]},"0"))=1'),
+]
+
 # Every field an entry must carry.  A front missing one fails the build rather
 # than producing a tab with a blank target.
 FIELDS = ("Track", "Status", "Stage", "Question", "Instrument", "Gate",
@@ -70,6 +113,269 @@ WRAP = Alignment(wrap_text=True, vertical="top")
 TOP = Alignment(vertical="top")
 _thin = Side(style="thin", color=RULE)
 BOX = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+
+
+# --- live readings ----------------------------------------------------------
+# One or more formulas per front, evaluated against the pasted Logger tabs.
+# Only fronts a formula can genuinely grade appear here; the rest stay manual
+# because grading them means pooled offline analysis, not a cell.
+#   {m} / {c} / {d} = the match_log / confirm_log / derived tab
+def _live():
+    m, c, d = RAW_M, RAW_C, DER
+    band = (lambda lo, hi: f'=IFERROR(COUNTIFS({d}!C:C,">={lo}",{d}!C:C,"<{hi}",'
+                           f'{d}!J:J,TRUE)/COUNTIFS({d}!C:C,">={lo}",'
+                           f'{d}!C:C,"<{hi}"),"—")')
+    gapband = (lambda lo, hi: f'=IFERROR(COUNTIFS({d}!E:E,">={lo}",{d}!E:E,"<{hi}",'
+                              f'{d}!J:J,TRUE)/COUNTIFS({d}!E:E,">={lo}",'
+                              f'{d}!E:E,"<{hi}"),"—")')
+    rows = f'=COUNTA({m}!{M["ts"]}2:{M["ts"]})'
+    crows = f'=COUNTA({c}!{C["ts"]}2:{C["ts"]})'
+    share = lambda col, val: (f'=IFERROR(COUNTIF({m}!{col}2:{col},"{val}")'
+                              f'/COUNTA({m}!{col}2:{col}),"—")')
+    return {
+ "A1": [("Rows with a full-res shadow",
+         f'=COUNTIF({m}!{M["fullres_top_json"]}2:{M["fullres_top_json"]},"?*")'),
+        ("Shadow #1 differs from live #1",
+         f'=SUMPRODUCT(({m}!{M["fullres_top_json"]}2:{M["fullres_top_json"]}<>"")*'
+         f'(IFERROR(REGEXEXTRACT({m}!{M["fullres_top_json"]}2:'
+         f'{M["fullres_top_json"]},"""phrase"": ""([^""]*)"""),"")<>'
+         f'IFERROR(REGEXEXTRACT({m}!{M["restricted_top_json"]}2:'
+         f'{M["restricted_top_json"]},"""phrase"": ""([^""]*)"""),"")))')],
+ "A2": [("Rows with a variant shadow",
+         f'=COUNTIF({m}!{M["variant_top_json"]}2:{M["variant_top_json"]},"?*")'),
+        ("Variant #1 differs from live #1",
+         f'=SUMPRODUCT(({m}!{M["variant_top_json"]}2:{M["variant_top_json"]}<>"")*'
+         f'(IFERROR(REGEXEXTRACT({m}!{M["variant_top_json"]}2:'
+         f'{M["variant_top_json"]},"""phrase"": ""([^""]*)"""),"")<>'
+         f'IFERROR(REGEXEXTRACT({m}!{M["restricted_top_json"]}2:'
+         f'{M["restricted_top_json"]},"""phrase"": ""([^""]*)"""),"")))')],
+ "A3": [("Confirms scored", f'=COUNT({d}!C:C)'),
+        ("≥ 0.90", band("0.90", "1.01")), ("[0.85, 0.90)", band("0.85", "0.90")),
+        ("[0.82, 0.85)  ← the band in question", band("0.82", "0.85")),
+        ("[0.80, 0.82)", band("0.80", "0.82")), ("[0.75, 0.80)", band("0.75", "0.80")),
+        ("[0.70, 0.75)", band("0.70", "0.75"))],
+ "A4": [("Confirms scored", f'=COUNT({d}!E:E)'),
+        ("≥ 0.20", gapband("0.20", "9")), ("[0.15, 0.20)  ← GAP_ONLY", gapband("0.15", "0.20")),
+        ("[0.12, 0.15)", gapband("0.12", "0.15")), ("[0.10, 0.12)", gapband("0.10", "0.12")),
+        ("[0.05, 0.10)", gapband("0.05", "0.10")), ("[0.00, 0.05)", gapband("0", "0.05"))],
+ "A7": [("Rows with a within-year read",
+         f'=COUNTIF({m}!{M["within_year_json"]}2:{M["within_year_json"]},"?*")'),
+        ("Median runner-up margin",
+         f'=IFERROR(MEDIAN(IFERROR(VALUE(REGEXEXTRACT({m}!'
+         f'{M["within_year_json"]}2:{M["within_year_json"]},'
+         f'"""runner_up_margin"": ([0-9.eE-]+)")),"")),"—")'),
+        ("Margins below 0.01 (the incident read ~0.001)",
+         f'=COUNTIF(ARRAYFORMULA(IFERROR(VALUE(REGEXEXTRACT({m}!'
+         f'{M["within_year_json"]}2:{M["within_year_json"]},'
+         f'"""runner_up_margin"": ([0-9.eE-]+)")),"")),"<0.01")')],
+ "A8": [("Mean rendered diameter, px",
+         f'=IFERROR(AVERAGE({m}!{M["det_radius_mean"]}2:'
+         f'{M["det_radius_mean"]})*2,"—")'),
+        ("Crops below the 64px floor",
+         f'=COUNTIF({m}!{M["det_radius_mean"]}2:{M["det_radius_mean"]},"<32")')],
+ "A10": [("Correction rows logged  ← the whole front",
+          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"correction")'
+          f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"skip_correction")'),
+         ("Confirms total", crows)],
+ "A11": [("Confirms by type — Football share",
+          f'=IFERROR(COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")'
+          f'/COUNTA({c}!{C["chosen_type"]}2:{C["chosen_type"]}),"—")'),
+         ("Non-football confirms",
+          f'=COUNTA({c}!{C["chosen_type"]}2:{C["chosen_type"]})'
+          f'-COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")')],
+ "A12": [("Centered better than live",
+          f'=SUMPRODUCT(({c}!{C["rank_centered"]}2:{C["rank_centered"]}<>"")*'
+          f'({c}!{C["rank_centered"]}2:{C["rank_centered"]}<'
+          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))'),
+         ("Centered worse",
+          f'=SUMPRODUCT(({c}!{C["rank_centered"]}2:{C["rank_centered"]}<>"")*'
+          f'({c}!{C["rank_centered"]}2:{C["rank_centered"]}>'
+          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))')],
+ "A13": [("Correct #1s won with gap < 0.15  ← the shelf-fill list",
+          f'=COUNTIFS({d}!E:E,"<0.15",{d}!J:J,TRUE)')],
+ "A16": [("Distinct #1 phrases seen",
+          f'=IFERROR(COUNTA(UNIQUE(FILTER({d}!F:F,{d}!F:F<>""))),"—")'),
+         ("Wrong #1s (the swap-pair pool)", f'=COUNTIF({d}!J:J,FALSE)')],
+ "A23": [("image_only strictly better than live",
+          f'=SUMPRODUCT(({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}<>"")*'
+          f'({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}<'
+          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))'),
+         ("image_only worse",
+          f'=SUMPRODUCT(({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}<>"")*'
+          f'({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}>'
+          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))')],
+ "A24": [("Confirms by source",
+          f'=IFERROR(QUERY({c}!{C["source"]}1:{C["source"]},"select {C["source"]}, '
+          f'count({C["source"]}) where {C["source"]} is not null group by '
+          f'{C["source"]} order by count({C["source"]}) desc '
+          f'label count({C["source"]}) \'rows\'",1),"—")')],
+ "A25": [("edition_pick rank > 1",
+          f'=COUNTIFS({c}!{C["source"]}2:{C["source"]},"edition_pick",'
+          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},">1")'),
+         ("edition_pick share of confirms",
+          f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"edition_pick")'
+          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")')],
+ "B2": [("Saturated lots (coverage > 0.75)",
+         f'=IFERROR(COUNTIF({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},'
+         f'">0.75")/COUNT({m}!{M["det_mask_coverage"]}2:'
+         f'{M["det_mask_coverage"]}),"—")'),
+        ("Grid fallback on saturated lots",
+         f'=COUNTIFS({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75",'
+         f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid")')],
+ "B3": [("Fused lots (components < Gemini count)",
+         f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
+         f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
+         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'),
+        ("Of those, DT peaks within ±1 of Gemini  ← the ≥80% gate",
+         f'=IFERROR(SUMPRODUCT(({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
+         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})*'
+         f'(ABS({m}!{M["det_dt_peaks_total"]}2:{M["det_dt_peaks_total"]}-'
+         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})<=1))'
+         f'/SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
+         f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
+         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})),"—")'),
+        ("Dense lots (7+ buttons) seen",
+         f'=COUNTIF({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]},">=7")')],
+ "B4": [("Small lots overcounting unguided",
+         f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
+         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<=3)*'
+         f'({m}!{M["ni_selected"]}2:{M["ni_selected"]}>'
+         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'),
+        ("Mean concentric circles removed",
+         f'=IFERROR(AVERAGE({m}!{M["det_overlap_removed"]}2:'
+         f'{M["det_overlap_removed"]}),"—")')],
+ "B5": [("Lots at gate=auto", share(M["ni_gate"], "auto")),
+        ("auto AND scale_first  ← the trusted stratum",
+         f'=IFERROR(COUNTIFS({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto",'
+         f'{m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]},"scale_first")'
+         f'/COUNTA({m}!{M["ni_gate"]}2:{M["ni_gate"]}),"—")'),
+        ("Loophole check — auto on a bailed detector (must be 0)",
+         f'=COUNTIFS({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto",'
+         f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid")')],
+ "B9": [("Lots on a rescue mask path",
+         f'=IFERROR(COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*+*")'
+         f'/COUNTA({m}!{M["det_mask_path"]}2:{M["det_mask_path"]}),"—")'),
+        ("Mask path distribution",
+         f'=IFERROR(QUERY({m}!{M["det_mask_path"]}1:{M["det_mask_path"]},'
+         f'"select {M["det_mask_path"]}, count({M["det_mask_path"]}) where '
+         f'{M["det_mask_path"]} is not null group by {M["det_mask_path"]} '
+         f'order by count({M["det_mask_path"]}) desc limit 12 '
+         f'label count({M["det_mask_path"]}) \'rows\'",1),"—")')],
+ "B11": [("Mean mask coverage",
+          f'=IFERROR(AVERAGE({m}!{M["det_mask_coverage"]}2:'
+          f'{M["det_mask_coverage"]}),"—")'),
+         ("Coverage > 0.75",
+          f'=COUNTIF({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75")')],
+ "B14": [("Lots where the swap fired",
+          f'=COUNTIF({m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0")'),
+         ("Lots with an unbacked circle (the population it exists for)",
+          f'=COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")')],
+ "B7": [("Unbacked-circle lots  ← the population",
+         f'=COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")'),
+        ("Swap fired on",
+         f'=COUNTIF({m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0")'),
+        ("not_a_button confirmations to grade against",
+         f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")')],
+ "B19": [("scale_first share", share(M["ni_scale_path"], "scale_first")),
+         ("Mean scale confidence",
+          f'=IFERROR(AVERAGE({m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]}),"—")'),
+         ("Rows with zero scale confidence",
+          f'=COUNTIF({m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]},0)')],
+ "B20": [("Buttons recovered by the rim pass",
+          f'=IFERROR(SUM({m}!{M["det_white_recovered"]}2:'
+          f'{M["det_white_recovered"]}),"—")')],
+ "B21": [("DT peaks within ±1 of Gemini",
+          f'=IFERROR(SUMPRODUCT(({m}!{M["gemini_button_count"]}2:'
+          f'{M["gemini_button_count"]}<>"")*'
+          f'(ABS({m}!{M["det_dt_peaks_total"]}2:{M["det_dt_peaks_total"]}-'
+          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})<=1))'
+          f'/COUNT({m}!{M["gemini_button_count"]}2:'
+          f'{M["gemini_button_count"]}),"—")')],
+ "B22": [("Lots with an unbacked Hough circle",
+          f'=IFERROR(COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")'
+          f'/COUNT({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]}),"—")'),
+         ("Rows where the match could not run (blank ≠ zero)",
+          f'=COUNTBLANK({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]})')],
+ "B23": [("not_a_button rate",
+          f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")'
+          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")'),
+         ("missed_button rate",
+          f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"missed_button")'
+          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")')],
+ "B25": [("Fused lots by size — 7+ buttons",
+          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>=7)*'
+          f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
+          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'),
+         ("Fused lots — 1-6 buttons",
+          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
+          f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<7)*'
+          f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
+          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))')],
+ "B26": [("scale_first share of the feed", share(M["ni_scale_path"], "scale_first")),
+         ("Rows", rows)],
+ "B27": [("Grid fallback rate", share(M["det_detector_used"], "grid")),
+         ("Of grid lots, how many were flooded",
+          f'=COUNTIFS({m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid",'
+          f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.6")')],
+ "B28": [("Lots taking the whitepass rescue",
+          f'=COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*whitepass*")'),
+         ("Lots taking a saturation fallback",
+          f'=COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*satfallback*")')],
+ "B29": [("Preprocessing variant distribution",
+          f'=IFERROR(QUERY({m}!{M["ni_variant"]}1:{M["ni_variant"]},'
+          f'"select {M["ni_variant"]}, count({M["ni_variant"]}) where '
+          f'{M["ni_variant"]} is not null group by {M["ni_variant"]} '
+          f'label count({M["ni_variant"]}) \'rows\'",1),"—")')],
+ "B30": [("Lots where Hough engaged",
+          f'=COUNTIF({m}!{M["det_hough_pass1"]}2:{M["det_hough_pass1"]},">0")'),
+         ("Small lots (1-3) where it engaged",
+          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
+          f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<=3)*'
+          f'({m}!{M["det_hough_pass1"]}2:{M["det_hough_pass1"]}>0))')],
+ "C4": [("Confirms by sport",
+         f'=IFERROR(QUERY({c}!{C["chosen_type"]}1:{C["chosen_type"]},'
+         f'"select {C["chosen_type"]}, count({C["chosen_type"]}) where '
+         f'{C["chosen_type"]} is not null group by {C["chosen_type"]} '
+         f'label count({C["chosen_type"]}) \'rows\'",1),"—")')],
+ "D2": [("Rows carrying a rerank read",
+         f'=COUNTIF({c}!{C["rank_rerank"]}2:{C["rank_rerank"]},"?*")'),
+        ("Rerank better than live",
+         f'=SUMPRODUCT(({c}!{C["rank_rerank"]}2:{C["rank_rerank"]}<>"")*'
+         f'({c}!{C["rank_rerank"]}2:{C["rank_rerank"]}<'
+         f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))')],
+ "E2": [("Gated lots (auto + scale_first)",
+         f'=COUNTIFS({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto",'
+         f'{m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]},"scale_first")'),
+        ("Of those, unguided count == Gemini  ← the ≥98% gate",
+         f'=IFERROR(SUMPRODUCT(({m}!{M["ni_gate"]}2:{M["ni_gate"]}="auto")*'
+         f'({m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}="scale_first")*'
+         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
+         f'({m}!{M["ni_selected"]}2:{M["ni_selected"]}='
+         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'
+         f'/SUMPRODUCT(({m}!{M["ni_gate"]}2:{M["ni_gate"]}="auto")*'
+         f'({m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}="scale_first")*'
+         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")),"—")'),
+        ("Disagreements (rollback fires above 2% of any 50)",
+         f'=SUMPRODUCT(({m}!{M["ni_gate"]}2:{M["ni_gate"]}="auto")*'
+         f'({m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}="scale_first")*'
+         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
+         f'({m}!{M["ni_selected"]}2:{M["ni_selected"]}<>'
+         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))')],
+ "E3": [("Lots below gate=auto (what Gemini would still be called on)",
+         f'=IFERROR(1-COUNTIF({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto")'
+         f'/COUNTA({m}!{M["ni_gate"]}2:{M["ni_gate"]}),"—")')],
+ "E4": [("Confirmations accrued  ← the ≥300 gate", crows),
+        ("Of those, auto-path",
+         f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"*auto*")'),
+        ("Corrections logged (precision denominator)",
+          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"correction")')],
+    }
+
+
+LIVE = _live()
+
+# front id -> index into LIVE[id] whose value IS the gate's accrual count.
+VOLUME_LIVE = {"A10": 0, "E4": 0, "B3": 0, "B4": 0, "A13": 0}
 
 
 # --- parsing ----------------------------------------------------------------
@@ -166,10 +472,7 @@ def write_front_tab(wb, front):
     ws.cell(row=7, column=4, value=LADDER[front["Stage"]]).font = DIM
     if front["VolumeN"]:
         _kv(ws, 8, "Volume needed", f'{front["VolumeN"]} {front["VolumeOf"]}')
-        ws.cell(row=8, column=3, value=(
-            f'=IFERROR(LOOKUP(2,1/(C{LOG_HEADER_ROW+1}:C{LOG_HEADER_ROW+LOG_ROWS}'
-            f'<>""),C{LOG_HEADER_ROW+1}:C{LOG_HEADER_ROW+LOG_ROWS})'
-            f'/{front["VolumeN"]},"")')).number_format = "0%"
+        vol_cell = ws.cell(row=8, column=3)  # filled once log_row is known
     else:
         _kv(ws, 8, "Volume needed", "— the gate names no n")
     _kv(ws, 9, "Instrument", front["Instrument"], height=46)
@@ -182,16 +485,45 @@ def write_front_tab(wb, front):
         "Bump Stage when the evidence moves; log the reading that moved it "
         "below.")).font = DIM
 
-    _band(ws, LOG_HEADER_ROW - 1,
+    live = LIVE.get(front["id"])
+    if live:
+        _band(ws, 17, "LIVE — recomputed from the pasted Logger tabs", 7)
+        for k, (label, formula) in enumerate(live):
+            r = 18 + k
+            lab = ws.cell(row=r, column=1, value=label)
+            lab.alignment = WRAP
+            ws.cell(row=r, column=2, value=formula)
+        ws.cell(row=18 + len(live), column=1, value=(
+            "Pooled over whatever is currently in match_log / confirm_log.")
+        ).font = DIM
+    else:
+        _band(ws, 17, "LIVE — none; this front is graded offline", 7)
+        ws.cell(row=18, column=1, value=(
+            "No cell formula can grade this one — see Instrument above. Record "
+            "the reading from the offline analysis in the log below.")
+        ).font = DIM
+
+    log_row = 18 + (len(live) + 2 if live else 2)
+    _band(ws, log_row - 1,
           "PROGRESS LOG — one line per Logger export graded against the gate", 7)
     for i, h in enumerate(LOG_COLS, start=1):
-        c = ws.cell(row=LOG_HEADER_ROW, column=i, value=h)
+        c = ws.cell(row=log_row, column=i, value=h)
         c.font = BOLD
         c.fill = PatternFill("solid", fgColor=LIGHT)
         c.border = BOX
     for k in range(LOG_ROWS):
-        r = LOG_HEADER_ROW + 1 + k
-        ws.cell(row=r, column=1).number_format = "yyyy-mm-dd"
+        ws.cell(row=log_row + 1 + k, column=1).number_format = "yyyy-mm-dd"
+    front["_log_row"] = log_row
+    if front["VolumeN"]:
+        if front["id"] in VOLUME_LIVE and live:
+            src = f"B{18 + VOLUME_LIVE[front['id']]}"
+            vol_cell.value = f'=IFERROR({src}/{front["VolumeN"]},"")'
+            ws.cell(row=8, column=4, value="counts itself — no typing").font = DIM
+        else:
+            lo, hi = log_row + 1, log_row + LOG_ROWS
+            vol_cell.value = (f'=IFERROR(LOOKUP(2,1/(C{lo}:C{hi}<>""),'
+                              f'C{lo}:C{hi})/{front["VolumeN"]},"")')
+        vol_cell.number_format = "0%"
     ws.freeze_panes = "A4"
 
 
@@ -201,7 +533,7 @@ IDX_COLS = ["Front", "Title", "Track", "Stage", "Progress", "Toward",
 
 
 def write_index(wb, fronts):
-    ws = wb.create_sheet("INDEX", 1)
+    ws = wb.create_sheet("INDEX")
     _band(ws, 1, f"INDEX — {len(fronts)} fronts", len(IDX_COLS), font=H1, fill=NAVY)
     ws.cell(row=2, column=1, value=(
         "Stage is the evidence ladder (0-6) — the one axis comparable across "
@@ -228,8 +560,9 @@ def write_index(wb, fronts):
                           start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    first, last = LOG_HEADER_ROW + 1, LOG_HEADER_ROW + LOG_ROWS
     for k, f in enumerate(fronts):
+        first = f["_log_row"] + 1
+        last = f["_log_row"] + LOG_ROWS
         r = hr + 1 + k
         q = f"'{tab_name(f)}'"
         c = ws.cell(row=r, column=1, value=f["id"])
@@ -266,7 +599,7 @@ def write_index(wb, fronts):
 
 def write_rollup(wb, fronts):
     """Status and track counts — how the program is distributed, at a glance."""
-    ws = wb.create_sheet("ROLLUP", 2)
+    ws = wb.create_sheet("ROLLUP", 1)
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 10
     ws.column_dimensions["C"].width = 76
@@ -322,6 +655,40 @@ def write_rollup(wb, fronts):
             r += 1
 
 
+def write_data_tabs(wb):
+    """The two tabs the operator pastes Logger exports into, plus the derived
+    block that unpacks the leaderboard JSON once for everything downstream."""
+    for tab, header in ((RAW_M, ml.MATCH_HEADER), (RAW_C, ml.CONFIRM_HEADER)):
+        ws = wb.create_sheet(tab)
+        for i, h in enumerate(header, start=1):
+            c = ws.cell(row=1, column=i, value=h)
+            c.font = WHITE_F
+            c.fill = PatternFill("solid", fgColor=NAVY)
+        ws.freeze_panes = "A2"
+        ws.cell(row=2, column=1, value=(
+            f"PASTE THE LOGGER'S {tab} ROWS HERE, under this header, starting "
+            "at A2. Append each new export below the last — the formulas read "
+            "the whole column, so everything pools automatically. Delete this "
+            "line first.")).font = DIM
+
+    ws = wb.create_sheet(DER)
+    ws.cell(row=1, column=1, value=(
+        "Derived from confirm_log — the leaderboard JSON unpacked once so "
+        "every front can read it. ARRAYFORMULA, so it extends itself as rows "
+        "are pasted. Do not type here.")).font = DIM
+    for i, (name, expr) in enumerate(DERIVED, start=1):
+        L = get_column_letter(i)
+        ws.column_dimensions[L].width = 22
+        c = ws.cell(row=2, column=i, value=name)
+        c.font = WHITE_F
+        c.fill = PatternFill("solid", fgColor=NAVY)
+        # Column A anchors the block; the rest key off confirm_log being filled.
+        ws.cell(row=3, column=i, value=(
+            f'=ARRAYFORMULA(IF({RAW_C}!{C["ts"]}2:{C["ts"]}="","",'
+            f'IFERROR({expr},"")))'))
+    ws.freeze_panes = "A3"
+
+
 def write_readme(wb, fronts, register):
     ws = wb.create_sheet("README", 0)
     ws.column_dimensions["A"].width = 24
@@ -357,10 +724,24 @@ def write_readme(wb, fronts, register):
          "On the front's own tab, cell B7. INDEX pulls it, draws the bar, and "
          "looks up the label — never type a stage on INDEX."),
         ("Statuses", " · ".join(STATUS_ORDER)),
-        ("Not live-linked",
-         "These fronts are graded by joining and pooling Logger exports, not "
-         "by reading one column, so nothing here auto-populates from the "
-         "Logger. The readings are entered by whoever graded the batch."),
+        ("Getting the data in",
+         "Paste the Logger's match_log and confirm_log rows into the tabs of "
+         "those names, under the header, starting at A2. APPEND each new "
+         "export below the last — every formula reads the whole column, so "
+         "the numbers pool across exports automatically. That is the only "
+         "import step."),
+        ("derived",
+         "Unpacks confirm_log's restricted_top_json once — #1's overall, the "
+         "#1-to-#2 gap, #1's phrase and year, and a slogan-aware correctness "
+         "flag (lowercased, non-alphanumerics stripped: the sheet-side "
+         "_normalize_key). Every band front reads it. ARRAYFORMULA, so it "
+         "extends itself. Do not type in it."),
+        ("What is live vs typed",
+         "38 of the 69 fronts have a LIVE block that recomputes on every "
+         "paste. The other 31 have no cell formula that can grade them — the "
+         "instrument is a Cloud Run stdout line, a GCS sidecar, or an "
+         "operator decision — and their readings are typed into the progress "
+         "log from the offline analysis."),
     ]
     r = 3
     for k, v in rows:
@@ -412,10 +793,14 @@ def main():
     wb = Workbook()
     wb.remove(wb.active)
     write_readme(wb, fronts, args.register)
-    write_index(wb, fronts)
+    write_index_placeholder = None
     write_rollup(wb, fronts)
+    write_data_tabs(wb)
     for f in fronts:
         write_front_tab(wb, f)
+    # INDEX last: it needs each front's log row, which write_front_tab sets.
+    write_index(wb, fronts)
+    wb.move_sheet("INDEX", offset=-(len(wb.sheetnames) - 1))
     wb.save(args.out)
     print(f"{len(fronts)} fronts → {len(wb.sheetnames)} tabs → {args.out}")
     for s in STATUS_ORDER:
