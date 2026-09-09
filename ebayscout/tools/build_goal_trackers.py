@@ -158,44 +158,142 @@ BOX = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 #   {m} / {c} / {d} = the match_log / confirm_log / derived tab
 def _live():
     m, c, d = RAW_M, RAW_C, DER
-    band = (lambda lo, hi: f'=IFERROR(COUNTIFS({d}!C:C,">={lo}",{d}!C:C,"<{hi}",'
-                           f'{d}!J:J,TRUE)/COUNTIFS({d}!C:C,">={lo}",'
-                           f'{d}!C:C,"<{hi}"),"—")')
-    gapband = (lambda lo, hi: f'=IFERROR(COUNTIFS({d}!E:E,">={lo}",{d}!E:E,"<{hi}",'
-                              f'{d}!J:J,TRUE)/COUNTIFS({d}!E:E,">={lo}",'
-                              f'{d}!E:E,"<{hi}"),"—")')
+
+    # --- three corrections, applied throughout (2026-09-07 log review) -------
+    #
+    # 1. A JSON column is NOT blank when its shadow didn't run — it holds the
+    #    literal "[]" or "{}".  COUNTIF(col,"?*") matches any text, so it
+    #    counted every row: A1 read "4170 rows with a full-res shadow" against
+    #    310 real ones.  `populated` excludes the empty markers.
+    #
+    # 2. A blank rank compares as 0, which is less than every real rank, so
+    #    `rank_x < rank_restricted` scored "better" on every row where
+    #    rank_restricted never got written.  A12 read 113 improvements against
+    #    29, A23 152 against 70.  `beats` requires BOTH ranks present.
+    #
+    # 3. Detection facts are per-IMAGE but match_log has one row per CROP, so
+    #    any det_*/ni_* count is weighted by lot size — an 80-button sheet
+    #    counts 80 times.  B27 read grid fallback at 27.3% against 22.6%
+    #    per image; E2 read "1349 gated lots" against 215.  `per_image` pins
+    #    the count to crop_num = 1.
+    CROP1 = f'{m}!{M["crop_num"]}2:{M["crop_num"]},1'
+
+    def populated(tab, col):
+        """Rows where a JSON column actually carries a leaderboard."""
+        r = f'{tab}!{col}2:{col}'
+        return f'=SUMPRODUCT(({r}<>"")*({r}<>"[]")*({r}<>"{{}}"))'
+
+    def beats(col_a, col_b, op):
+        """Rows where BOTH ranks are present and col_a `op` col_b."""
+        a, b = f'{c}!{col_a}2:{col_a}', f'{c}!{col_b}2:{col_b}'
+        return f'=SUMPRODUCT(({a}<>"")*({b}<>"")*({a}{op}{b}))'
+
+    def per_image(*conds):
+        """COUNTIFS over IMAGES, not crops."""
+        return f'=COUNTIFS({CROP1},' + ",".join(conds) + ")"
+
+    images = f'=COUNTIF({CROP1})'
+    # Bare (no leading '=') fragments, for composing into larger formulas.
+    _images = f'COUNTIF({CROP1})'
+    _gem = f'{m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]}'
+    _gem_lots = f'COUNTIFS({CROP1},{_gem},">0")'
+    _gem_scored = f'COUNTIFS({CROP1},{_gem},"<>")'
+
+    # The Stage-B gated stratum, per image.  `ni_gate=auto` is always
+    # `scale_first` in practice, but both are named so the gate stays explicit.
+    _gate = f'{m}!{M["ni_gate"]}2:{M["ni_gate"]}'
+    _path = f'{m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}'
+    _gcount = f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}'
+    _nisel = f'{m}!{M["ni_selected"]}2:{M["ni_selected"]}'
+    _crop1c = f'{m}!{M["crop_num"]}2:{M["crop_num"]}=1'
+    _gate_auto = f'COUNTIFS({CROP1},{_gate},"auto")'
+    _gated = f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first")'
+    _gated_scored = (f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first",'
+                     f'{_gcount},"<>")')
+    _agree = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
+              f'*({_gcount}<>"")*({_nisel}={_gcount}))')
+    _agree1 = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
+               f'*({_gcount}<>"")*(ABS({_nisel}-{_gcount})<=1))')
+
+    # Bands: `src` restricts to human-confirmed rows.  gemini_auto fires only
+    # when CLIP already agreed with Gemini, so grading a band against those
+    # rows asks the board whether it agrees with itself — and they are ~75% of
+    # confirmations.  Every machine source is `gemini*` or `auto*`; excluding
+    # both leaves the rows a person actually decided.
+    HUMAN = f'{d}!B:B,"<>gemini*",{d}!B:B,"<>auto*"'
+
+    def _band(col, lo, hi, human=False):
+        src = f",{HUMAN}" if human else ""
+        return (f'=IFERROR(COUNTIFS({d}!{col}:{col},">={lo}",'
+                f'{d}!{col}:{col},"<{hi}"{src},{d}!J:J,TRUE)'
+                f'/COUNTIFS({d}!{col}:{col},">={lo}",'
+                f'{d}!{col}:{col},"<{hi}"{src}),"—")')
+
+    def _band_n(col, lo, hi, human=False):
+        src = f",{HUMAN}" if human else ""
+        return (f'=COUNTIFS({d}!{col}:{col},">={lo}",'
+                f'{d}!{col}:{col},"<{hi}"{src})')
+
+    band = lambda lo, hi: _band("C", lo, hi)
+    hband = lambda lo, hi: _band("C", lo, hi, human=True)
+    hband_n = lambda lo, hi: _band_n("C", lo, hi, human=True)
+    gapband = lambda lo, hi: _band("E", lo, hi)
+    hgapband = lambda lo, hi: _band("E", lo, hi, human=True)
+    hgapband_n = lambda lo, hi: _band_n("E", lo, hi, human=True)
+
     rows = f'=COUNTA({m}!{M["ts"]}2:{M["ts"]})'
     crows = f'=COUNTA({c}!{C["ts"]}2:{C["ts"]})'
-    share = lambda col, val: (f'=IFERROR(COUNTIF({m}!{col}2:{col},"{val}")'
-                              f'/COUNTA({m}!{col}2:{col}),"—")')
+    share = lambda col, val: (
+        f'=IFERROR(COUNTIFS({CROP1},{m}!{col}2:{col},"{val}")'
+        f'/COUNTIF({CROP1}),"—")')
     return {
  "A1": [("Rows with a full-res shadow",
-         f'=COUNTIF({m}!{M["fullres_top_json"]}2:{M["fullres_top_json"]},"?*")'),
+         populated(m, M["fullres_top_json"])),
         ("Shadow #1 differs from live #1",
          f'=SUMPRODUCT(({m}!{M["fullres_top_json"]}2:{M["fullres_top_json"]}<>"")*'
+         f'({m}!{M["fullres_top_json"]}2:{M["fullres_top_json"]}<>"[]")*'
          f'(IFERROR(REGEXEXTRACT({m}!{M["fullres_top_json"]}2:'
          f'{M["fullres_top_json"]},"""phrase"": ""([^""]*)"""),"")<>'
          f'IFERROR(REGEXEXTRACT({m}!{M["restricted_top_json"]}2:'
          f'{M["restricted_top_json"]},"""phrase"": ""([^""]*)"""),"")))')],
  "A2": [("Rows with a variant shadow",
-         f'=COUNTIF({m}!{M["variant_top_json"]}2:{M["variant_top_json"]},"?*")'),
+         populated(m, M["variant_top_json"])),
         ("Variant #1 differs from live #1",
          f'=SUMPRODUCT(({m}!{M["variant_top_json"]}2:{M["variant_top_json"]}<>"")*'
+         f'({m}!{M["variant_top_json"]}2:{M["variant_top_json"]}<>"[]")*'
          f'(IFERROR(REGEXEXTRACT({m}!{M["variant_top_json"]}2:'
          f'{M["variant_top_json"]},"""phrase"": ""([^""]*)"""),"")<>'
          f'IFERROR(REGEXEXTRACT({m}!{M["restricted_top_json"]}2:'
          f'{M["restricted_top_json"]},"""phrase"": ""([^""]*)"""),"")))')],
- "A3": [("Confirms scored", f'=COUNT({d}!C:C)'),
+ "A3": [("Confirms scored (pooled)", f'=COUNT({d}!C:C)'),
         ("≥ 0.90", band("0.90", "1.01")), ("[0.85, 0.90)", band("0.85", "0.90")),
         ("[0.82, 0.85)  ← the band in question", band("0.82", "0.85")),
         ("[0.80, 0.82)", band("0.80", "0.82")), ("[0.75, 0.80)", band("0.75", "0.80")),
-        ("[0.70, 0.75)", band("0.70", "0.75"))],
- "A4": [("Confirms scored", f'=COUNT({d}!E:E)'),
+        ("[0.70, 0.75)", band("0.70", "0.75")),
+        ("— HUMAN-CONFIRMED ONLY — grade the bands on these —", ""),
+        ("≥ 0.90 (human)", hband("0.90", "1.01")),
+        ("  n", hband_n("0.90", "1.01")),
+        ("[0.85, 0.90) (human)", hband("0.85", "0.90")),
+        ("  n", hband_n("0.85", "0.90")),
+        ("[0.82, 0.85) (human)  ← the band in question", hband("0.82", "0.85")),
+        ("  n", hband_n("0.82", "0.85")),
+        ("[0.75, 0.82) (human)", hband("0.75", "0.82")),
+        ("  n", hband_n("0.75", "0.82"))],
+ "A4": [("Confirms scored (pooled)", f'=COUNT({d}!E:E)'),
         ("≥ 0.20", gapband("0.20", "9")), ("[0.15, 0.20)  ← GAP_ONLY", gapband("0.15", "0.20")),
         ("[0.12, 0.15)", gapband("0.12", "0.15")), ("[0.10, 0.12)", gapband("0.10", "0.12")),
-        ("[0.05, 0.10)", gapband("0.05", "0.10")), ("[0.00, 0.05)", gapband("0", "0.05"))],
+        ("[0.05, 0.10)", gapband("0.05", "0.10")), ("[0.00, 0.05)", gapband("0", "0.05")),
+        ("— HUMAN-CONFIRMED ONLY — grade the bands on these —", ""),
+        ("≥ 0.20 (human)", hgapband("0.20", "9")),
+        ("  n", hgapband_n("0.20", "9")),
+        ("[0.15, 0.20) (human)  ← GAP_ONLY", hgapband("0.15", "0.20")),
+        ("  n", hgapband_n("0.15", "0.20")),
+        ("[0.12, 0.15) (human)", hgapband("0.12", "0.15")),
+        ("  n", hgapband_n("0.12", "0.15")),
+        ("[0.00, 0.05) (human)", hgapband("0", "0.05")),
+        ("  n", hgapband_n("0", "0.05"))],
  "A7": [("Rows with a within-year read",
-         f'=COUNTIF({m}!{M["within_year_json"]}2:{M["within_year_json"]},"?*")'),
+         populated(m, M["within_year_json"])),
         ("Median runner-up margin",
          f'=IFERROR(MEDIAN(IFERROR(VALUE(REGEXEXTRACT({m}!'
          f'{M["within_year_json"]}2:{M["within_year_json"]},'
@@ -220,26 +318,26 @@ def _live():
           f'=COUNTA({c}!{C["chosen_type"]}2:{C["chosen_type"]})'
           f'-COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")')],
  "A12": [("Centered better than live",
-          f'=SUMPRODUCT(({c}!{C["rank_centered"]}2:{C["rank_centered"]}<>"")*'
-          f'({c}!{C["rank_centered"]}2:{C["rank_centered"]}<'
-          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))'),
+          beats(C["rank_centered"], C["rank_restricted"], "<")),
          ("Centered worse",
-          f'=SUMPRODUCT(({c}!{C["rank_centered"]}2:{C["rank_centered"]}<>"")*'
-          f'({c}!{C["rank_centered"]}2:{C["rank_centered"]}>'
-          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))')],
+          beats(C["rank_centered"], C["rank_restricted"], ">")),
+         ("Unchanged",
+          beats(C["rank_centered"], C["rank_restricted"], "="))],
  "A13": [("Correct #1s won with gap < 0.15  ← the shelf-fill list",
           f'=COUNTIFS({d}!E:E,"<0.15",{d}!J:J,TRUE)')],
  "A16": [("Distinct #1 phrases seen",
           f'=IFERROR(COUNTA(UNIQUE(FILTER({d}!F:F,{d}!F:F<>""))),"—")'),
          ("Wrong #1s (the swap-pair pool)", f'=COUNTIF({d}!J:J,FALSE)')],
- "A23": [("image_only strictly better than live",
-          f'=SUMPRODUCT(({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}<>"")*'
-          f'({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}<'
-          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))'),
+ "A23": [("image_only strictly better than live (all confirms)",
+          beats(C["rank_image_only"], C["rank_restricted"], "<")),
          ("image_only worse",
-          f'=SUMPRODUCT(({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}<>"")*'
-          f'({c}!{C["rank_image_only"]}2:{C["rank_image_only"]}>'
-          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))')],
+          beats(C["rank_image_only"], C["rank_restricted"], ">")),
+         # The front is about TYPED rows; the counts above span every
+         # confirmation and read far larger than the population in question.
+         ("Typed rows carrying both ranks  ← the actual population",
+          f'=COUNTIFS({c}!{C["source"]}2:{C["source"]},"typed_search",'
+          f'{c}!{C["rank_image_only"]}2:{C["rank_image_only"]},"<>",'
+          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},"<>")')],
  "A24": [("Confirms by source",
           f'=IFERROR(QUERY({c}!{C["source"]}1:{C["source"]},"select {C["source"]}, '
           f'count({C["source"]}) where {C["source"]} is not null group by '
@@ -280,14 +378,12 @@ def _live():
         ("Mean concentric circles removed",
          f'=IFERROR(AVERAGE({m}!{M["det_overlap_removed"]}2:'
          f'{M["det_overlap_removed"]}),"—")')],
- "B5": [("Lots at gate=auto", share(M["ni_gate"], "auto")),
+ "B5": [("Lots at gate=auto (per image)", share(M["ni_gate"], "auto")),
         ("auto AND scale_first  ← the trusted stratum",
-         f'=IFERROR(COUNTIFS({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto",'
-         f'{m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]},"scale_first")'
-         f'/COUNTA({m}!{M["ni_gate"]}2:{M["ni_gate"]}),"—")'),
+         f'=IFERROR({_gated}/{_images},"—")'),
         ("Loophole check — auto on a bailed detector (must be 0)",
-         f'=COUNTIFS({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto",'
-         f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid")')],
+         per_image(f'{m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto"',
+                   f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"'))],
  "B9": [("Lots on a rescue mask path",
          f'=IFERROR(COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*+*")'
          f'/COUNTA({m}!{M["det_mask_path"]}2:{M["det_mask_path"]}),"—")'),
@@ -328,10 +424,13 @@ def _live():
           f'/COUNT({m}!{M["gemini_button_count"]}2:'
           f'{M["gemini_button_count"]}),"—")')],
  "B22": [("Lots with an unbacked Hough circle",
-          f'=IFERROR(COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")'
-          f'/COUNT({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]}),"—")'),
-         ("Rows where the match could not run (blank ≠ zero)",
-          f'=COUNTBLANK({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]})')],
+          f'=IFERROR({_gem_lots}/{_gem_scored},"—")'),
+         ("Unbacked circles in total",
+          f'=SUMIFS({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},{CROP1})'),
+         # COUNTBLANK over an open range counts every empty row in the grid,
+         # not just the data — it read 22698 against a 4170-row corpus.
+         ("Lots where the match could not run (blank ≠ zero)",
+          f'={_images}-{_gem_scored}')],
  "B23": [("not_a_button rate",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")'
           f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")'),
@@ -349,10 +448,14 @@ def _live():
           f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))')],
  "B26": [("scale_first share of the feed", share(M["ni_scale_path"], "scale_first")),
          ("Rows", rows)],
- "B27": [("Grid fallback rate", share(M["det_detector_used"], "grid")),
+ "B27": [("Grid fallback rate (per image)", share(M["det_detector_used"], "grid")),
+         ("Grid lots", per_image(f'{m}!{M["det_detector_used"]}2:'
+                                 f'{M["det_detector_used"]},"grid"')),
+         # Was a per-crop count against a per-image denominator, so it could
+         # report more flooded grid lots than there were grid lots (665 vs 144).
          ("Of grid lots, how many were flooded",
-          f'=COUNTIFS({m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid",'
-          f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.6")')],
+          per_image(f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"',
+                    f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.6"'))],
  "B28": [("Lots taking the whitepass rescue",
           f'=COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*whitepass*")'),
          ("Lots taking a saturation fallback",
@@ -379,27 +482,19 @@ def _live():
          f'=SUMPRODUCT(({c}!{C["rank_rerank"]}2:{C["rank_rerank"]}<>"")*'
          f'({c}!{C["rank_rerank"]}2:{C["rank_rerank"]}<'
          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))')],
- "E2": [("Gated lots (auto + scale_first)",
-         f'=COUNTIFS({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto",'
-         f'{m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]},"scale_first")'),
+ # Every count here was per-CROP, so an 80-button sheet counted 80 gated
+ # "lots": it read 1349 against 215 images.  _gated/_agree/_disagree are
+ # pinned to crop_num = 1.
+ "E2": [("Gated lots (auto + scale_first, per image)", f'={_gated}'),
+        ("Of those, scored against Gemini", f'={_gated_scored}'),
         ("Of those, unguided count == Gemini  ← the ≥98% gate",
-         f'=IFERROR(SUMPRODUCT(({m}!{M["ni_gate"]}2:{M["ni_gate"]}="auto")*'
-         f'({m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}="scale_first")*'
-         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
-         f'({m}!{M["ni_selected"]}2:{M["ni_selected"]}='
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'
-         f'/SUMPRODUCT(({m}!{M["ni_gate"]}2:{M["ni_gate"]}="auto")*'
-         f'({m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}="scale_first")*'
-         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")),"—")'),
+         f'=IFERROR({_agree}/{_gated_scored},"—")'),
         ("Disagreements (rollback fires above 2% of any 50)",
-         f'=SUMPRODUCT(({m}!{M["ni_gate"]}2:{M["ni_gate"]}="auto")*'
-         f'({m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}="scale_first")*'
-         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
-         f'({m}!{M["ni_selected"]}2:{M["ni_selected"]}<>'
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))')],
+         f'={_gated_scored}-{_agree}'),
+        ("Within ±1 of Gemini  ← the cheaper question, same columns",
+         f'=IFERROR({_agree1}/{_gated_scored},"—")')],
  "E3": [("Lots below gate=auto (what Gemini would still be called on)",
-         f'=IFERROR(1-COUNTIF({m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto")'
-         f'/COUNTA({m}!{M["ni_gate"]}2:{M["ni_gate"]}),"—")')],
+         f'=IFERROR(1-{_gate_auto}/{_images},"—")')],
  "E4": [("Confirmations accrued  ← the ≥300 gate", crows),
         ("Of those, auto-path",
          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"*auto*")'),
