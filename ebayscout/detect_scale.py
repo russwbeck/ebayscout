@@ -122,3 +122,147 @@ def consensus_radius(votes):
         conf = min(conf, 0.60)
 
     return r_est, round(conf, 4), n_merged
+
+
+# --- Tiny-circle guard ------------------------------------------------------
+#
+# "Tiny circle syndrome": the multi-scale Hough sweep searches radii down to
+# ~0.3x the base radius, so on a lot photo it also fires on every round thing
+# PRINTED ON a button — the letter bowls of o/e/g/0/9, the Mellon/Citizens/cb
+# logo roundels, the two-digit year — plus the classic half-radius accumulator
+# ghost inside a real rim.  Those sub-button circles then survive every filter
+# downstream:
+#
+#   * the fill-ratio filter PASSES them at ~1.0 (a small disc inside a blue
+#     button is entirely "blue"), and _score_solution's fill_mean term is
+#     therefore biased in their favour;
+#   * the overlap dedup rejects on 0.7 x min(r_candidate, r_accepted), which
+#     for a small circle inside a big one is 0.7 x its own tiny radius — so a
+#     letter bowl half a button away from the centre is never suppressed;
+#   * the inner-circle removal needs the centre within 0.3 x r_big, which an
+#     off-centre logo or year misses;
+#   * ebayscout's scan mode skips the radius-consistency filter outright.
+#
+# Two pure rules fix it, both keyed on the same fact: buttons in a lot lie flat
+# and are all one size.
+#
+#   (a) CONTAINMENT — a candidate whose centre lies inside an already-accepted
+#       (larger) circle's disc is a feature ON that button, not another button.
+#       Same geometry as detect.py's _fill_veto_reason check (a), which was
+#       measured vetoing 5/5 phantoms; this applies it to the PRIMARY Hough set,
+#       which the veto deliberately never touches.
+#   (b) COHORT BAND — once a clear majority of the accepted circles agree on a
+#       radius, circles far outside that band are sub-features (or giants), not
+#       buttons.  Deliberately looser than the guided path's 0.7-1.3 x median:
+#       it is a syndrome guard, not a uniformity filter, so a genuinely
+#       odd-sized button (up to 1.8x) still survives — that recall worry is
+#       exactly why scan mode had no radius filter at all.
+
+# A candidate centre closer than this fraction of an accepted circle's radius
+# is inside that button.
+CONTAINED_FRAC = 0.85
+
+# Cohort band around the dominant radius.  Asymmetric on purpose: the syndrome
+# produces circles at <= ~0.5x the true radius, while real size variety in one
+# lot tops out well under 1.8x.
+BAND_LO = 0.55
+BAND_HI = 1.80
+
+# The band only applies when the cohort is big enough to be believed ...
+BAND_MIN_CIRCLES = 4
+# ... and when this fraction of it actually agrees on the dominant radius.
+BAND_MIN_SUPPORT = 0.60
+
+# Radii within this ratio of each other count as the same size when looking for
+# the dominant radius.
+BAND_CLUSTER_RATIO = 1.35
+
+
+def is_contained(cx, cy, cr, accepted, frac=CONTAINED_FRAC):
+    """True when (cx, cy) lies inside one of ``accepted``'s discs.
+
+    ``accepted`` is an iterable of (x, y, r).  Only circles at least as large
+    as the candidate can contain it, so a same-size neighbour whose centre
+    happens to be close is judged by the caller's ordinary overlap rule, not
+    by this one.
+    """
+    try:
+        cx = float(cx)
+        cy = float(cy)
+        cr = float(cr)
+        frac = float(frac)
+    except (TypeError, ValueError):
+        return False
+    for a in accepted or ():
+        try:
+            ax, ay, ar = float(a[0]), float(a[1]), float(a[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if ar <= 0 or ar < cr:
+            continue
+        if ((cx - ax) ** 2 + (cy - ay) ** 2) ** 0.5 < frac * ar:
+            return True
+    return False
+
+
+def dominant_radius(radii, cluster_ratio=BAND_CLUSTER_RATIO):
+    """The best-supported radius in ``radii`` and how much of the set backs it.
+
+    For each radius, counts how many others sit within ``cluster_ratio`` of it
+    (either way) and returns the radius with the most support:
+    ``(r_star, support_count)``.  ``(None, 0)`` on empty/invalid input.
+
+    A plain median would be dragged down by a heavily contaminated set (24 real
+    buttons + 25 letter bowls medians to a letter); the modal radius does not.
+    """
+    vals = []
+    for r in radii or ():
+        try:
+            r = float(r)
+        except (TypeError, ValueError):
+            continue
+        if r > 0:
+            vals.append(r)
+    if not vals:
+        return None, 0
+    try:
+        ratio = float(cluster_ratio)
+    except (TypeError, ValueError):
+        ratio = BAND_CLUSTER_RATIO
+    if ratio < 1.0:
+        ratio = BAND_CLUSTER_RATIO
+
+    best_r, best_n = None, 0
+    for r in vals:
+        lo, hi = r / ratio, r * ratio
+        n = sum(1 for v in vals if lo <= v <= hi)
+        # Ties go to the LARGER radius: a contaminated set's sub-features are
+        # always the smaller cluster, and a real button is never a sub-feature.
+        if n > best_n or (n == best_n and best_r is not None and r > best_r):
+            best_r, best_n = r, n
+    return best_r, best_n
+
+
+def cohort_band(radii,
+                *,
+                lo=BAND_LO,
+                hi=BAND_HI,
+                min_circles=BAND_MIN_CIRCLES,
+                min_support=BAND_MIN_SUPPORT,
+                cluster_ratio=BAND_CLUSTER_RATIO):
+    """Acceptable radius band for a circle set, or None when it can't be judged.
+
+    Returns ``(lo_r, hi_r, r_star, support_fraction)``.  None means "leave the
+    set alone": too few circles, or no radius a clear majority agrees on — the
+    ambiguous case where dropping a size outlier would cost a real button.
+    """
+    vals = [r for r in (radii or ()) if isinstance(r, (int, float)) and r > 0]
+    if len(vals) < int(min_circles):
+        return None
+    r_star, support = dominant_radius(vals, cluster_ratio=cluster_ratio)
+    if not r_star:
+        return None
+    frac = support / float(len(vals))
+    if frac < float(min_support):
+        return None
+    return r_star * float(lo), r_star * float(hi), r_star, round(frac, 4)

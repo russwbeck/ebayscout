@@ -47,6 +47,13 @@ def _bg_diff_enabled():
     return _flag_on("EBAYSCOUT_BG_DIFF", "BUTTONMATCHER_BG_DIFF")
 
 
+def _tiny_guard_enabled():
+    """Tiny-circle guard (containment + cohort band, see detect_scale) is on by
+    default; EBAYSCOUT_TINY_GUARD=0 (or BUTTONMATCHER_TINY_GUARD=0) disables it
+    (instant rollback to the pre-guard sweep behaviour without a redeploy)."""
+    return _flag_on("EBAYSCOUT_TINY_GUARD", "BUTTONMATCHER_TINY_GUARD")
+
+
 def _blob_buster_enabled():
     """Distance-transform splitting of touching buttons is on by default;
     EBAYSCOUT_BLOB_BUSTER=0 (or BUTTONMATCHER_BLOB_BUSTER=0) disables it."""
@@ -1023,6 +1030,48 @@ def _fill_proposal_ok(cx, cy, cr, accepted_circles):
     """True if a deficit-fill proposal survives the phantom veto (see
     _fill_veto_reason)."""
     return _fill_veto_reason(cx, cy, cr, accepted_circles) is None
+
+
+def _drop_subfeatures(circles, tag=""):
+    """Tiny-circle guard: drop sub-button circles from a SELECTED circle set.
+
+    Two pure rules from detect_scale: (a) containment — a circle centred inside
+    a larger accepted one is printing ON that button (a letter bowl, a bank
+    logo roundel, the year), not a second button; (b) cohort band — once a
+    clear majority of the set agree on a radius, circles far outside that band
+    are sub-features or giants.
+
+    Deliberately runs only on an already-selected set, never inside a Hough
+    pass: pruning a pass before _score_solution sees it makes a noise-heavy
+    pass look MORE radius-coherent and can hand it the win (measured on the
+    turf fixtures — case3 went 1 crop -> 17).  Pass selection therefore stays
+    exactly as it was and this is purely subtractive.
+
+    Rule (a) is the same geometry as _fill_veto_reason check (a), which the
+    veto applies to deficit-fill PROPOSALS only; the primary Hough set — where
+    the syndrome actually lives — was never covered by it.
+
+    Returns (kept, n_dropped).
+    """
+    if not _tiny_guard_enabled() or not circles:
+        return list(circles), 0
+    kept = []
+    for c in sorted(circles, key=lambda c: c[2], reverse=True):
+        if dscale.is_contained(c[0], c[1], c[2], kept):
+            continue
+        kept.append(c)
+    n_contained = len(circles) - len(kept)
+    n_band = 0
+    band = dscale.cohort_band([c[2] for c in kept])
+    if band is not None:
+        lo, hi, r_star, support = band
+        in_band = [c for c in kept if lo <= c[2] <= hi]
+        n_band = len(kept) - len(in_band)
+        kept = in_band
+    if n_contained or n_band:
+        print(f">>> TINY_GUARD{tag}: dropped {n_contained} contained + "
+              f"{n_band} off-band of {len(circles)} -> {len(kept)}", flush=True)
+    return kept, n_contained + n_band
 
 
 def _merge_circle_sets(primary, secondary, fill_threshold, mask, diag_out=None):
@@ -2235,6 +2284,23 @@ def _detect_buttons_once(image_bgr, rows=None, cols=None, expected=None, debug=F
             else:
                 _det_overlap_removed += 1
                 _rej_radii.append(int(r))
+
+        # Tiny-circle guard, before the count truncation below. This matters
+        # most here: that truncation ranks survivors by fill_ratio, and a
+        # sub-button circle (a letter bowl, a logo roundel) fills at ~1.0 —
+        # strictly better than any real button, whose rim and background bite
+        # into the disc. Unguarded, printing on the buttons can therefore
+        # DISPLACE real buttons from the user's count.
+        _tg_kept, _tg_dropped = _drop_subfeatures(filtered, " guided")
+        if _tg_dropped:
+            _kept_set = set(_tg_kept)
+            for _c in filtered:
+                if _c in _kept_set:
+                    continue
+                _rej_radii.append(int(_c[2]))
+                _fill_by_circle.pop(_c, None)
+            _det_overlap_removed += _tg_dropped
+        filtered = _tg_kept
 
         det_count_noinput = len(filtered)
 

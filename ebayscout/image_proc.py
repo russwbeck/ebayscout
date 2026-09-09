@@ -19,6 +19,7 @@ from PIL import Image
 
 from . import config
 from . import detect_mask as dmask
+from . import detect_scale as dscale
 from .utils import sweep_radii
 
 
@@ -30,12 +31,56 @@ def _bg_diff_enabled():
     )
 
 
+def _tiny_guard_enabled():
+    """Tiny-circle guard (containment + cohort band, see detect_scale) is on by
+    default; EBAYSCOUT_TINY_GUARD=0 disables it (instant rollback to the
+    pre-guard sweep behaviour without a redeploy)."""
+    return os.environ.get("EBAYSCOUT_TINY_GUARD", "1").strip() not in (
+        "0", "false", "False", "",
+    )
+
+
 def _blob_buster_enabled():
     """Distance-transform splitting of touching buttons is on by default;
     EBAYSCOUT_BLOB_BUSTER=0 disables it (instant rollback without redeploy)."""
     return os.environ.get("EBAYSCOUT_BLOB_BUSTER", "1").strip() not in (
         "0", "false", "False", "",
     )
+
+
+def _drop_subfeatures(circles, tag=""):
+    """Tiny-circle guard: drop sub-button circles from a SELECTED circle set.
+
+    Two rules, both from detect_scale: (a) containment — a circle centred
+    inside a larger accepted one is printing ON that button (letter bowl, bank
+    logo, year), not a second button; (b) cohort band — once a clear majority
+    agree on a radius, circles far outside it are sub-features or giants.
+
+    Runs only on an already-chosen set, never inside a Hough pass: pruning a
+    pass before _score_solution sees it makes a noise-heavy pass look MORE
+    radius-coherent and can hand it the win (measured on the turf fixtures,
+    case3: 1 crop -> 17).  Selection therefore stays exactly as it was and this
+    is purely subtractive.  Returns (kept, n_dropped).
+    """
+    if not _tiny_guard_enabled() or not circles:
+        return list(circles), 0
+    kept: list = []
+    for c in sorted(circles, key=lambda c: c[2], reverse=True):
+        if dscale.is_contained(c[0], c[1], c[2], kept):
+            continue
+        kept.append(c)
+    n_contained = len(circles) - len(kept)
+    n_band = 0
+    band = dscale.cohort_band([c[2] for c in kept])
+    if band is not None:
+        lo, hi, r_star, support = band
+        in_band = [c for c in kept if lo <= c[2] <= hi]
+        n_band = len(kept) - len(in_band)
+        kept = in_band
+    if n_contained or n_band:
+        print(f">>> IMAGE: tiny-guard{tag} — dropped {n_contained} contained + "
+              f"{n_band} off-band of {len(circles)} → {len(kept)}", flush=True)
+    return kept, n_contained + n_band
 
 
 def download_image(url: str, timeout: int = 15) -> bytes:
@@ -505,6 +550,21 @@ def detect_and_crop(
             print(f">>> IMAGE: blob-buster (components={_mask_components} < "
                   f"expected={expected}): {_before} +{len(cleaned) - _before} "
                   f"of {len(_dt)} distance-peaks → {len(cleaned)}", flush=True)
+
+        # Tiny-circle guard — LAST, so it has the final word on what gets
+        # cropped. Scan mode has no median radius filter on purpose (it would
+        # prune the size-outlier button, often the one we need), which left the
+        # whole sub-button population — letter bowls, logo roundels, half-radius
+        # accumulator ghosts — in the crops. Containment + the cohort band are
+        # the weaker rules that fit: nothing is dropped for being an odd size
+        # until a clear majority agree on a radius, and the band then still
+        # keeps 0.55x-1.8x of it. Running it before the blob-buster instead
+        # would backfire — the shrunken set trips the blob-buster's
+        # `len(cleaned) < expected` trigger and it refills with DT proposals
+        # (measured: case5_frame_display_13 went 14 crops -> 21).
+        if cleaned:
+            cleaned, _ = _drop_subfeatures(
+                cleaned, " scan" if scan_mode else " count")
 
         print(
             f">>> IMAGE: Hough circles — mode: {'scan' if scan_mode else 'count'}, "
