@@ -1442,3 +1442,98 @@ wrong-auto cost AND every threshold is recalibrated first — otherwise REVERT.
   Leave `_match_fullres_enabled` alone (already default OFF).
 - The `fullres_top` / `fullres_top_json` plumbing in the shared `match_logging.py`
   is measurement-only and can STAY in both repos (harmless empty column).
+
+---
+
+# Part X — idempotency: every trigger fires at least once (2026-09-09)
+
+*Not a detection hypothesis. This is the engineering error class that has now
+produced five separate incidents across the write path, and it recurs because
+each one looked like a different bug. Written after the 2026-09-08 55-crop lot;
+the evidence for that one is the `Bot Writes` tab, the Logger's `confirm_log`,
+and the Slack thread, cross-read against each other.*
+
+## 10.1 The five incidents, and the one shape
+
+| # | What was seen | What it actually was |
+|---|---|---|
+| 2026-09-02 | 2000 "Take The Steam Out" confirmed twice, 6s apart; the count moved by **one** | read-modify-write race: both writers read the same cached count and wrote `cached + 1` |
+| 2026-09-04 | `/inventory backfill apply` died mid-deletion; its own message said a re-run was safe | a bulk repair that was neither atomic nor resumable, **and said the opposite** |
+| 2026-09-05/06 | five buttons lost to `[429]`, and the audit rows for some of them lost too | at-most-once write with no retry — the record and the thing it records degraded independently |
+| 2026-09-08 | 46 buttons already in the sheet re-posted as review cards under a summary saying they were already written | the whole confirm loop ran **twice**; "already counted" and "the write failed" were the same `False` |
+| 2026-09-06 → 09 | 3 of the 49 lots that reached the sheet lost their entire `match_log` batch | the Logger had no retry: one `append_rows`, and a 429 dropped the batch |
+
+Different symptoms, one shape: **an action that is triggered from outside is
+triggered at least once, not exactly once** — and the code decided what to do
+about the second copy either by accident or not at all. Slack redelivers, an
+operator double-clicks a button that has not visibly responded yet, an internal
+HTTP kick can be retried, a container can restart mid-lot. The second copy is
+not an anomaly to be prevented; it is the normal case to be designed for.
+
+## 10.2 The reusable rule
+
+**Every externally-triggered action gets a second copy. Decide what the second
+copy does, in code, at the point where it arrives — and never let "already done"
+and "failed" reach the caller as the same answer.**
+
+- **Claim before you work; release on exit, not on completion.** The 2026-09-08
+  loop had nothing marking the job as running (`_delete_pipeline_job` only ran at
+  the END), so a second click re-entered all 55 crops. The claim must be taken
+  before the first side effect. It must also be released in a `finally` and not
+  held forever: a run that died half-way leaves work undone, and a deliberate
+  second click is then the *recovery*, not the bug.
+- **"Already done" is a success, not a failure.** `record_inventory_sheet`
+  returned `False` for both "this crop is already counted" and "the write did not
+  happen", and the auto path read that single `False` as "the sheet did not get
+  this button" — so it demoted 46 already-counted buttons to review cards asking
+  the operator to confirm them again. They now return `WRITE_OK` /
+  `WRITE_ALREADY` / `WRITE_NONE`. Two states that demand opposite responses must
+  never share a return value.
+- **Know how long your idempotency key lives, and what its loss costs.**
+  `_inventory_written` is in-memory: it deduped perfectly *while one container
+  served the lot* — which is the only reason 2026-09-08 did not double-count 46
+  buttons — and it dies with the container. Those stale review cards were
+  therefore live double-count traps the moment the instance recycled. A
+  process-local key is correct only under `--max-instances=1` and only within one
+  container's life; say so where it is defined.
+- **Retry and dedupe are one design, not two.** Retrying without a key
+  double-counts; a key without retries drops. The count write has both (the
+  `sheet_retry` ladder plus the ledger). The Logger had the key's protection but
+  no retry, so it dropped. Whenever you add one, check the other is there.
+- **Read-modify-write on a shared cell is not idempotent.** `cached + 1` is a
+  blind set that silently reverts whatever happened in between — another
+  instance's write, or a person's edit in the UI. Re-read at write time and apply
+  the *delta*, not the total (`rebase_write`). This narrows the race to
+  milliseconds; it does not close it, because Sheets has no atomic increment.
+- **A bulk repair is one atomic write, or it is resumable — and its failure
+  message must never promise a safe re-run unless it is one.** The half-applied
+  backfill wrote the folded counts before deleting the orphans, so the partial
+  state was the one a replay would double-count.
+
+## 10.3 Audit heuristic — "did this run twice?"
+
+The 2026-09-08 lot was misread for a whole session as *lost* buttons when it was
+actually *duplicated work*. Ask this first, before reconstructing anything:
+
+- **A terminal message posted twice.** The "Fix an error?" footer is emitted once
+  per confirm loop; the thread had two, **0.14s apart**. One line of evidence,
+  and it settles the question — look for whatever message your loop posts exactly
+  once at the end.
+- **Paired rows seconds apart in `confirm_log`.** Every `gemini_auto` crop in that
+  lot is logged twice, ~0.15s apart. `confirm_log` records what the matcher
+  *decided*, so a decision made twice is two rows.
+- **`skip` rows in `Bot Writes` that rival the `update` rows.** That lot: **55
+  updates, 55 skips, 3 errors**. The skips all read "crop already counted in this
+  thread" — that is the ledger catching the second pass, i.e. the system telling
+  you it ran twice and holding the line.
+- **A summary that disagrees with the audit.** The Slack summary still said "47 of
+  48 reached the sheet — Button 29 did NOT" hours after button 29 had landed
+  (`pick`, 01:40:50, row 697, 4→5). In-memory summaries go stale; **`Bot Writes`
+  is the record of what happened to the sheet, and the Slack summary is not.**
+
+The corollary is the one that cost the most time: **a gap in the Slack thread is
+not proof of a lost button.** Cards that were clicked are deleted, twin-picker
+cards never look like ordinary cards, and the summary can be stale. Reconcile
+`match_log` (detected) → `confirm_log` (decided) → `Bot Writes` (written) before
+concluding anything is missing. On that lot all 55 crops were counted exactly
+once and the sheet needed no correction at all.
