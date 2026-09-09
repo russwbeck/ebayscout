@@ -265,33 +265,26 @@ def _live():
          f'{M["variant_top_json"]},"""phrase"": ""([^""]*)"""),"")<>'
          f'IFERROR(REGEXEXTRACT({m}!{M["restricted_top_json"]}2:'
          f'{M["restricted_top_json"]},"""phrase"": ""([^""]*)"""),"")))')],
- "A3": [("Confirms scored (pooled)", f'=COUNT({d}!C:C)'),
-        ("≥ 0.90", band("0.90", "1.01")), ("[0.85, 0.90)", band("0.85", "0.90")),
-        ("[0.82, 0.85)  ← the band in question", band("0.82", "0.85")),
-        ("[0.80, 0.82)", band("0.80", "0.82")), ("[0.75, 0.80)", band("0.75", "0.80")),
-        ("[0.70, 0.75)", band("0.70", "0.75")),
-        ("— HUMAN-CONFIRMED ONLY — grade the bands on these —", ""),
+ # 7 rows each, matching the built workbook's LIVE block exactly — the
+ # repair script writes in place, and anything longer would overwrite the
+ # PROGRESS LOG below it.  The bands are graded HUMAN-CONFIRMED: gemini_auto
+ # fires only when CLIP already agreed with Gemini, so a pooled band asks the
+ # board whether it agrees with itself.  Pooled [0.82,0.85) reads 97.4%,
+ # human 90.3% — the second is the one a threshold move must answer to.
+ "A3": [("Human-confirmed confirms scored", hband_n("0", "1.01")),
         ("≥ 0.90 (human)", hband("0.90", "1.01")),
-        ("  n", hband_n("0.90", "1.01")),
         ("[0.85, 0.90) (human)", hband("0.85", "0.90")),
-        ("  n", hband_n("0.85", "0.90")),
         ("[0.82, 0.85) (human)  ← the band in question", hband("0.82", "0.85")),
-        ("  n", hband_n("0.82", "0.85")),
-        ("[0.75, 0.82) (human)", hband("0.75", "0.82")),
-        ("  n", hband_n("0.75", "0.82"))],
- "A4": [("Confirms scored (pooled)", f'=COUNT({d}!E:E)'),
-        ("≥ 0.20", gapband("0.20", "9")), ("[0.15, 0.20)  ← GAP_ONLY", gapband("0.15", "0.20")),
-        ("[0.12, 0.15)", gapband("0.12", "0.15")), ("[0.10, 0.12)", gapband("0.10", "0.12")),
-        ("[0.05, 0.10)", gapband("0.05", "0.10")), ("[0.00, 0.05)", gapband("0", "0.05")),
-        ("— HUMAN-CONFIRMED ONLY — grade the bands on these —", ""),
+        ("[0.80, 0.82) (human)", hband("0.80", "0.82")),
+        ("[0.75, 0.80) (human)", hband("0.75", "0.80")),
+        ("[0.70, 0.75) (human)", hband("0.70", "0.75"))],
+ "A4": [("Human-confirmed confirms scored", hgapband_n("0", "9")),
         ("≥ 0.20 (human)", hgapband("0.20", "9")),
-        ("  n", hgapband_n("0.20", "9")),
         ("[0.15, 0.20) (human)  ← GAP_ONLY", hgapband("0.15", "0.20")),
-        ("  n", hgapband_n("0.15", "0.20")),
         ("[0.12, 0.15) (human)", hgapband("0.12", "0.15")),
-        ("  n", hgapband_n("0.12", "0.15")),
-        ("[0.00, 0.05) (human)", hgapband("0", "0.05")),
-        ("  n", hgapband_n("0", "0.05"))],
+        ("[0.10, 0.12) (human)", hgapband("0.10", "0.12")),
+        ("[0.05, 0.10) (human)", hgapband("0.05", "0.10")),
+        ("[0.00, 0.05) (human)", hgapband("0", "0.05"))],
  "A7": [("Rows with a within-year read",
          populated(m, M["within_year_json"])),
         ("Median runner-up margin",
@@ -320,24 +313,20 @@ def _live():
  "A12": [("Centered better than live",
           beats(C["rank_centered"], C["rank_restricted"], "<")),
          ("Centered worse",
-          beats(C["rank_centered"], C["rank_restricted"], ">")),
-         ("Unchanged",
-          beats(C["rank_centered"], C["rank_restricted"], "="))],
+          beats(C["rank_centered"], C["rank_restricted"], ">"))],
  "A13": [("Correct #1s won with gap < 0.15  ← the shelf-fill list",
           f'=COUNTIFS({d}!E:E,"<0.15",{d}!J:J,TRUE)')],
  "A16": [("Distinct #1 phrases seen",
           f'=IFERROR(COUNTA(UNIQUE(FILTER({d}!F:F,{d}!F:F<>""))),"—")'),
          ("Wrong #1s (the swap-pair pool)", f'=COUNTIF({d}!J:J,FALSE)')],
- "A23": [("image_only strictly better than live (all confirms)",
-          beats(C["rank_image_only"], C["rank_restricted"], "<")),
-         ("image_only worse",
-          beats(C["rank_image_only"], C["rank_restricted"], ">")),
-         # The front is about TYPED rows; the counts above span every
-         # confirmation and read far larger than the population in question.
-         ("Typed rows carrying both ranks  ← the actual population",
+ # The front is about TYPED rows, so the population comes first — the
+ # all-confirms count read 152 against 5 typed rows that actually qualify.
+ "A23": [("Typed rows carrying both ranks  ← the actual population",
           f'=COUNTIFS({c}!{C["source"]}2:{C["source"]},"typed_search",'
           f'{c}!{C["rank_image_only"]}2:{C["rank_image_only"]},"<>",'
-          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},"<>")')],
+          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},"<>")'),
+         ("image_only better than live (all confirms)",
+          beats(C["rank_image_only"], C["rank_restricted"], "<"))],
  "A24": [("Confirms by source",
           f'=IFERROR(QUERY({c}!{C["source"]}1:{C["source"]},"select {C["source"]}, '
           f'count({C["source"]}) where {C["source"]} is not null group by '
@@ -425,9 +414,7 @@ def _live():
           f'{M["gemini_button_count"]}),"—")')],
  "B22": [("Lots with an unbacked Hough circle",
           f'=IFERROR({_gem_lots}/{_gem_scored},"—")'),
-         ("Unbacked circles in total",
-          f'=SUMIFS({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},{CROP1})'),
-         # COUNTBLANK over an open range counts every empty row in the grid,
+         # COUNTBLANK over an open range counted every empty row in the grid,
          # not just the data — it read 22698 against a 4170-row corpus.
          ("Lots where the match could not run (blank ≠ zero)",
           f'={_images}-{_gem_scored}')],
@@ -449,8 +436,6 @@ def _live():
  "B26": [("scale_first share of the feed", share(M["ni_scale_path"], "scale_first")),
          ("Rows", rows)],
  "B27": [("Grid fallback rate (per image)", share(M["det_detector_used"], "grid")),
-         ("Grid lots", per_image(f'{m}!{M["det_detector_used"]}2:'
-                                 f'{M["det_detector_used"]},"grid"')),
          # Was a per-crop count against a per-image denominator, so it could
          # report more flooded grid lots than there were grid lots (665 vs 144).
          ("Of grid lots, how many were flooded",
@@ -486,11 +471,8 @@ def _live():
  # "lots": it read 1349 against 215 images.  _gated/_agree/_disagree are
  # pinned to crop_num = 1.
  "E2": [("Gated lots (auto + scale_first, per image)", f'={_gated}'),
-        ("Of those, scored against Gemini", f'={_gated_scored}'),
         ("Of those, unguided count == Gemini  ← the ≥98% gate",
          f'=IFERROR({_agree}/{_gated_scored},"—")'),
-        ("Disagreements (rollback fires above 2% of any 50)",
-         f'={_gated_scored}-{_agree}'),
         ("Within ±1 of Gemini  ← the cheaper question, same columns",
          f'=IFERROR({_agree1}/{_gated_scored},"—")')],
  "E3": [("Lots below gate=auto (what Gemini would still be called on)",
@@ -970,6 +952,39 @@ def emit_csv(fronts, path):
             ])
 
 
+# The LIVE row count each front was BUILT with.  The deployed workbook's
+# layout is fixed: LIVE rows start at 18 and the "Pooled over…" note, the
+# PROGRESS LOG header and the operator's typed readings follow immediately.
+# The Apps Script repair writes in place, so growing a block by even one row
+# silently overwrites the log.  Read off the built workbook 2026-09-09.
+LIVE_ROW_BUDGET = {
+    "A1": 2, "A2": 2, "A3": 7, "A4": 7, "A7": 3, "A8": 2, "A10": 2, "A11": 2,
+    "A12": 2, "A13": 1, "A16": 2, "A23": 2, "A24": 1, "A25": 2,
+    "B2": 2, "B3": 3, "B4": 2, "B5": 3, "B7": 3, "B9": 2, "B11": 2, "B14": 2,
+    "B19": 3, "B20": 1, "B21": 1, "B22": 2, "B23": 2, "B25": 2, "B26": 2,
+    "B27": 2, "B28": 2, "B29": 1, "B30": 2, "C4": 1, "D2": 2, "E2": 3,
+    "E3": 1, "E4": 3,
+}
+
+
+def check_live_row_budget():
+    """Raise if any front's LIVE block no longer fits the built workbook.
+
+    Adding a reading is not free once the workbook exists — see
+    emit_apps_script.  Either keep the count, or rebuild the workbook from
+    scratch and refresh this map (which costs the progress logs).
+    """
+    bad = []
+    for fid, rows in LIVE.items():
+        want = LIVE_ROW_BUDGET.get(fid)
+        if want is not None and len(rows) != want:
+            bad.append(f"{fid}: {len(rows)} rows, workbook has {want}")
+    if bad:
+        raise SystemExit(
+            "LIVE block no longer matches the built workbook — the repair "
+            "script would overwrite the PROGRESS LOG:\n  " + "\n  ".join(bad))
+
+
 def emit_apps_script(fronts, path):
     """A repair script for a workbook that is already in Sheets.
 
@@ -977,11 +992,23 @@ def emit_apps_script(fronts, path):
     the formulas: Sheets splits pasted text on commas, an array formula will
     not overwrite a non-empty neighbour, and the .xlsx import drops every
     Google-only function.  setFormula() has none of those problems — it writes
-    the string straight into the cell.  Idempotent: re-run it any time."""
-    cells = [(DER, "A3", derived_formula())]
+    the string straight into the cell.  Idempotent: re-run it any time.
+
+    Writes the LABEL (column A) beside every formula (column B).  A repair that
+    corrects what a cell computes but leaves the old caption is worse than no
+    repair: A3's bands are graded human-confirmed now, and a row still captioned
+    "[0.82, 0.85)" would read as the pooled number it no longer is.
+
+    Every front's LIVE block must keep the row count it was BUILT with.  The
+    script writes in place from row 18, and the "Pooled over…" note, the
+    PROGRESS LOG header and the operator's typed readings sit directly below —
+    one extra row per front would overwrite the log this workbook exists to
+    keep.  ``check_live_row_budget`` enforces that."""
+    check_live_row_budget()
+    cells = [(DER, "A3", derived_formula(), None)]
     for f in fronts:
-        for k, (_label, formula) in enumerate(LIVE.get(f["id"], [])):
-            cells.append((tab_name(f), f"B{18 + k}", formula))
+        for k, (label, formula) in enumerate(LIVE.get(f["id"], [])):
+            cells.append((tab_name(f), f"B{18 + k}", formula, label))
 
     lines = [
         "/**",
@@ -999,15 +1026,20 @@ def emit_apps_script(fronts, path):
         "  var written = 0, missing = [];",
         "  var CELLS = [",
     ]
-    for tab, cell, formula in cells:
+    for tab, cell, formula, label in cells:
         lines.append(f"    [{json.dumps(tab)}, {json.dumps(cell)}, "
-                     f"{json.dumps(formula)}],")
+                     f"{json.dumps(formula)}, {json.dumps(label)}],")
     lines += [
         "  ];",
         "  for (var i = 0; i < CELLS.length; i++) {",
         "    var sh = ss.getSheetByName(CELLS[i][0]);",
         "    if (!sh) { missing.push(CELLS[i][0]); continue; }",
         "    sh.getRange(CELLS[i][1]).setFormula(CELLS[i][2]);",
+        "    if (CELLS[i][3] !== null) {",
+        "      // Keep the caption truthful about what the cell now computes.",
+        "      sh.getRange('A' + CELLS[i][1].substring(1))"
+        ".setValue(CELLS[i][3]);",
+        "    }",
         "    written++;",
         "  }",
         "  SpreadsheetApp.flush();",
