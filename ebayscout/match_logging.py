@@ -45,7 +45,27 @@ import datetime
 import json
 import os
 import re
+import threading
+import time
 import traceback
+
+# The Sheets write quota is per PROJECT, not per spreadsheet — the live 429 says
+# so: "limit 'Write requests per minute per user' ... for consumer
+# 'project_number:...'".  So the Logger competes with the inventory sheet for the
+# same 60 writes/minute, and under a burst the Logger is what loses: its writes
+# had no retry, so a batch that came back 429 was printed and dropped.  Measured:
+# 3 lots of the 196 logged lost their whole match_log batch that way, two of them
+# in a window that was already returning 429 (2026-09-06 and 2026-09-09).
+#
+# ``sheet_retry`` is the same ladder the inventory count write uses, kept as ONE
+# definition of "is this a rate limit" — gspread has moved its error classes
+# around across versions and that judgement must not fork.  This module is
+# byte-identical across buttonmatcher (flat layout) and ebayscout (a package),
+# so the import has to work both ways; that is all the fallback below is for.
+try:                                    # ebayscout: ebayscout/match_logging.py
+    from . import sheet_retry as _retry
+except ImportError:                     # buttonmatcher: ./match_logging.py
+    import sheet_retry as _retry
 
 
 # --- Configuration -----------------------------------------------------------
@@ -884,6 +904,8 @@ class SheetLogger:
     ``match_ws`` and ``confirm_ws`` need only support ``append_rows(rows)`` and
     ``append_row(row)``.  Either may be None (logging silently disabled).  Never
     raises into the caller: logging must not break the bot.
+
+    A write the quota rejects is retried rather than dropped — see ``_append``.
     """
 
     def __init__(self, match_ws, confirm_ws, *, service):
@@ -892,6 +914,13 @@ class SheetLogger:
         self._service = service
         self._warned_disabled = False   # so a disabled logger says so ONCE
         self._logged_first_write = False
+        # Serializes the retry ladders, because sheet_retry's delays are
+        # deliberately un-jittered on the promise that its callers cannot
+        # stampede each other.  The inventory path keeps that promise with its
+        # sheet write lock; this is the same promise for this module.  It costs
+        # nothing when writes succeed (one append per image, one per click) and
+        # is exactly what you want when they do not.
+        self._write_lock = threading.Lock()
 
     @property
     def service(self):
@@ -908,6 +937,36 @@ class SheetLogger:
                   f"startup).", flush=True)
             self._warned_disabled = True
 
+    def _append(self, write, what):
+        """Run one worksheet append, retrying only what the quota rejected.
+
+        A 429 means "not now", not "no", and this module's whole job is to be
+        the record of what the matcher did — a batch dropped on the first 429 is
+        a lot's diagnostics gone for good, and the bigger the lot the more
+        likely both the drop and the loss.  Every other error (a deleted tab, a
+        revoked token, a malformed row) will fail again just as fast, so it is
+        reported at once rather than slept on.
+
+        Still never raises: the count and the confirm are the deliverables, the
+        record of them is not, and a logging outage must not become a broken bot.
+        Returns True when the write landed.
+        """
+        with self._write_lock:
+            for delay in _retry.retry_delays():
+                try:
+                    write()
+                    return True
+                except Exception as e:
+                    if delay is None or not _retry.is_rate_limited(e):
+                        print(f">>> MATCH_LOG: {what} FAILED: "
+                              f"{type(e).__name__}: {e}", flush=True)
+                        traceback.print_exc()
+                        return False
+                    print(f">>> MATCH_LOG: {what} rate-limited — retrying in "
+                          f"{delay:g}s", flush=True)
+                    time.sleep(delay)
+        return False
+
     def log_image_crops(self, job_id, records):
         """Append all per-crop match rows for one image in a single batched call."""
         if not records:
@@ -915,30 +974,21 @@ class SheetLogger:
         if self._match_ws is None:
             self._warn_disabled_once("match write")
             return
-        try:
-            rows = [flatten_match_record(r) for r in records]
-            self._match_ws.append_rows(rows, value_input_option="RAW")
+        rows = [flatten_match_record(r) for r in records]
+        if self._append(lambda: self._match_ws.append_rows(
+                rows, value_input_option="RAW"), f"match write for job {job_id}"):
             if not self._logged_first_write:
                 print(f">>> MATCH_LOG: ✅ first match write OK "
                       f"({len(rows)} row(s), job {job_id}).", flush=True)
                 self._logged_first_write = True
-        except Exception as e:
-            print(f">>> MATCH_LOG: match write FAILED for job {job_id}: "
-                  f"{type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
 
     def log_confirmation(self, check_id, record):
         if self._confirm_ws is None:
             self._warn_disabled_once("confirm write")
             return
-        try:
-            self._confirm_ws.append_row(
-                flatten_confirm_record(record), value_input_option="RAW"
-            )
-        except Exception as e:
-            print(f">>> MATCH_LOG: confirm write FAILED for {check_id}: "
-                  f"{type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
+        row = flatten_confirm_record(record)
+        self._append(lambda: self._confirm_ws.append_row(
+            row, value_input_option="RAW"), f"confirm write for {check_id}")
 
 
 def _extract_spreadsheet_key(raw):

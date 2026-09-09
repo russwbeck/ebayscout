@@ -29,9 +29,12 @@ behavior. For the latest status and next steps, start with `ebayscout/HANDOFF.md
 ## Process expectations
 
 - **buybot is decommissioned (2026-07-05).** Shared files (`detect.py`/
-  `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, the shared docs)
-  sync across buttonmatcher + ebayscout only; ignore older docs that name
-  buybot as a third sync target.
+  `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, `sheet_retry.py`,
+  the shared docs) sync across buttonmatcher + ebayscout only; ignore older docs
+  that name buybot as a third sync target. `sheet_retry.py` joined the set on
+  2026-09-09, when `match_logging` started retrying the Sheets write quota
+  through it; `match_logging.py` imports it relative-first, plain-second so the
+  one file works in ebayscout's package layout and buttonmatcher's flat one.
 - Develop on the designated feature branch; commit + push; open a PR only when
   asked. **Always re-query the GitHub API for PR state before reporting it** —
   never assert merged/mergeable from memory.
