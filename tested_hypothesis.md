@@ -1537,3 +1537,171 @@ cards never look like ordinary cards, and the summary can be stale. Reconcile
 `match_log` (detected) → `confirm_log` (decided) → `Bot Writes` (written) before
 concluding anything is missing. On that lot all 55 crops were counted exactly
 once and the sheet needed no correction at all.
+# Part XI — the 2026-09 shadow-promotion sweep: four verdicts (2026-09-09)
+
+*Every shadow and every built-but-ungraded flag was graded against its own
+stated gate on the 2026-09-07 Logger export. Four fronts reached a verdict and
+are closed here. The ones still accruing evidence stay in
+`HYPOTHESES_IN_PROGRESS.md`; the register spanning both is `LOGGER_FRONTS.md`.*
+
+## 11.1 Full-res matching (front A1) — REFUTED, third independent read
+
+**Closes the Part IX experiment.** The question was whether matching the crop at
+≤2200px instead of the ≤800px detection frame produces better #1s or more
+correct auto-confirms. The gate Part IX set was explicit: *promote only if
+truth@#1 and net-new correct autos beat ≤800px at scale with **zero new wrong
+autos***.
+
+Graded on the 2026-09-07 export — n=196 paired confirmations out of 310
+instrumented crops, the largest read the front has ever had:
+
+| | ≤800px (live) | ≤2200px (shadow) |
+|---|---|---|
+| #1 identical | — | 195 / 196 |
+| truth@#1 | 188 | 189 |
+| new correct autos | — | +6 |
+| **new WRONG autos** | — | **+1** |
+| correct autos lost | — | −2 |
+
+The one wrong auto is the whole verdict: `1994 "Eye Don't Think So"`
+auto-confirmed as its punctuation twin `1997 "'Eye' Don't Think So"`. The gate
+named zero, so the front fails on its own terms — and it fails on the same
+failure class (punctuation twins) that A2 exists to handle, at higher
+resolution, which is the opposite of the mechanism full-res was supposed to
+supply.
+
+**It is also unreachable at scale.** The shadow only ever runs on `/sort`,
+`/inventory` and `/scout`. The Gemini pipeline path is **92.5% of volume** and
+never had it, so even a positive read would have bought a win on 7.5% of the
+fleet.
+
+Two earlier reads agreed and are superseded by this one: refuted live on
+Logger_19 (7 lots, same-photo A/B — Part IX "SUPERSEDES the first read"), and
+neutral-to-negative on the Logger_21 paired A/B (n≈100, 90/93 identical,
+−1 truth@#1).
+
+**Done 2026-09-07.** `BUTTONMATCHER_MATCH_FULLRES_SHADOW` now defaults to `0`;
+the second full-res encode and match no longer run. Per the retirement rule,
+**the producer stopped, the column did not**: `fullres_top_json` keeps its
+positional slot and writes `[]`, exactly what it already carried on the 3,860
+rows where the shadow never fired. No header change, no workbook rebuild.
+
+**What is NOT affected.** The `/reference` staging crop still cuts confirmed
+crops from the full-res working image — `_staging_crop_jpeg` is gated on
+`BUTTONMATCHER_STAGE_CONFIRMS` alone and is pinned by
+`tests/test_reference_staging_crop.py`. Full-res is refuted *as a matching
+resolution*, not as a source for reference photos.
+
+**Do not re-propose** without a full recalibration of `AUTO_RESOLVE_THRESHOLD`
+/ `GAP_ONLY` / `SLOGAN_GAP` first, and not at all until the shadow can reach
+the pipeline path.
+
+## 11.2 Gemini-x/y crop anchoring (front B6) — REFUTED as a blanket anchor; the instrument STAYS
+
+**Closes §4.8.** The proposal was to anchor crops on Gemini's x/y instead of
+Hough's centres, fixing grid-fallback mis-centring. §4.8's own revisit
+condition was: *only gated on low `snap_frac` AND `n_agree ≈ n_gemini` — and
+there, by definition, there is little left to fix.*
+
+The 2026-09-07 export meets that drop condition outright. Across 480 lots
+carrying Gemini points: **n_gemini 3132, n_agree 2984 (95.3%)**, and
+`snap_frac_median` has a median of **0.075** (p90 0.310). Hough and Gemini
+already agree on 19 of every 20 buttons, and where they agree the centres are
+within 7.5% of a radius. So blanket anchoring is **dropped**.
+
+The earlier read (2026-07-19, 99 Gemini lots pooled L16/17/18/20/21) reached
+the same place by a different route, and explains *why* the residual 30% is not
+an opportunity: it is dominated by lots where **Gemini is the untrustworthy
+one** — `agree=0` lots where Gemini read 1 button and Hough read 23 (anchoring
+would delete 22 real buttons), and frame-distortion lots at `snap_frac` 0.764,
+the §4.8 incident class. The outcome join is the tell: of 24 lots where
+anchoring would ADD a "missed" Gemini button, only **2** had a human
+`missed_button`. Anchoring is most needed exactly where Gemini is least
+trustworthy.
+
+**The logging stays on** — this corrects the first pass of the sweep, which had
+it queued for retirement:
+
+1. `gemini_anchored` is a dict assembled over values the reconcile **already
+   computes** (`covered`, `median_r`, `unmatched_*`). It costs one
+   `json.dumps` and no extra pass, matmul or encode. There is no producer to
+   stop.
+2. `snap_frac_median` is the calibration the **LIVE** `_anchor_gate_enabled()`
+   cites for its 0.75×radius threshold — its docstring reads "fleet-wide
+   snap_frac_median ≈ 0.07", and this export reads 0.075, still on target.
+   Retiring the column would remove the only running check on a shipped gate to
+   save nothing.
+
+**The DROP half survives as B7.** `n_hough_only` (185 unbacked circles on this
+export) is a real phantom signal — 9 of 21 `n_hough_only>0` lots coincided with
+a human `not_a_button` pooled L16–L21. That value belongs to the on-mask
+phantom dup-drop front, and reaches it through `det_gem_unmatched`. B6 gives up
+the ADD half only.
+
+## 11.3 TTA weak-crop second pass (front D1) — REMOVED, ungradable by construction
+
+Re-matching crops whose #1 landed below `RED_THRESHOLD` with test-time
+augmentation. It carried a flag (`TTA`, default off) and shipped code, and was
+never A/B'd — **and never could have been**, which is the finding worth
+recording:
+
+- It had **no shadow column**, and it changed the live answer when enabled. No
+  export could grade it without shipping it first.
+- Unlike the rerank (11.4) it **cannot be replayed offline**. Re-cropping and
+  rotating changes the pixels, so a logged leaderboard cannot be re-scored
+  against it. There is no path from stored data to a verdict.
+
+The prize was small independently: the sub-`RED_THRESHOLD` trigger fires on
+**41 of 1,416 confirmed crops (2.9%)**, of which 32 have a wrong #1.
+
+**Done 2026-09-07.** `_tta_enabled`, `_tta_variants` and the weak-crop retry
+block removed from `main.py`. No column ever existed, so no schema change.
+
+**The idea is not dead — its aim was wrong.** Pointing the same machinery at
+**low-GAP** rather than low-score crops survives as front A15, which records the
+recipe for rebuilding it shadow-first. The lesson generalizes: *a lever that
+changes the live answer and has no shadow column is not an experiment, it is an
+unreviewed change.* Build the column first.
+
+## 11.4 The leaderboard is far tighter than the rerank assumed (front D2) — CONFIRMED; weights cut 5×
+
+The two-level reference rerank (`year_score` / `sid_score` / `rerank_delta` per
+candidate) shipped behind `RERANK`, default off "until calibrated", and sat
+ungraded because its columns are empty (`rerank_json` 0 of 4170, `rank_rerank`
+0 of 2010).
+
+"It cannot be graded without turning it on" was **wrong**, and that is the
+first finding. `tools/calibrate_from_logs.py rerank` replays the rerank's
+*ceiling* offline from `confirm_log` — no flag flip, no deploy — by asking what
+a perfectly-informed signal and a maximally-wrong one would each do to the
+already-logged leaderboards. Over 1,416 confirmations (1,297 already at rank 1):
+
+| combined bound | deep answers rescued (of 119) | correct #1s flipped (of 1,297) |
+|---|---|---|
+| ±0.10 (as shipped) | 103 | **536** |
+| ±0.05 | 89 | 251 |
+| ±0.02 | 60 | 76 |
+
+**41% of correct #1s sit within 0.10 of their runner-up.** The leaderboard is
+much tighter than the original hand-picked weights assumed, so the shipped
+bound could destroy four correct answers for every deep one it rescued. The
+weight was roughly **5× too high**.
+
+**Done 2026-09-07.** `YEAR_WEIGHT` and `SID_WEIGHT` dropped 0.05 → **0.02**
+each, with the replay table recorded in the `rerank.py` docstring and a test
+pinning the bound. Code and both columns kept.
+
+**Kept, not removed,** because the design is the measurement that would replace
+two human clicks: Year Score ("does this crop look like year Y versus the rest
+of its era?") is the answer to the bank-era pick (A24), and SloganID Score
+("does it look like THIS button versus look-alike peers in other years?") is
+the answer to the same-wording reissue stratum (A7/A16). The front stays open
+in `HYPOTHESES_IN_PROGRESS.md` for the one step that remains: re-run the replay
+against the REAL Year/SloganID scores rather than the perfect-signal proxy, and
+if the measured accuracy makes ±0.04 favourable, ship it shadow-first so
+`rerank_json` finally fills.
+
+**The reusable half** (compare §4.2): before turning a flag on to grade it, ask
+whether the logs already contain enough to replay its ceiling. Two of the four
+fronts in this sweep could be settled from stored data alone; the one that
+could not (11.3) was deleted for exactly that reason.

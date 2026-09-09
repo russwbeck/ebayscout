@@ -103,7 +103,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `fullres_top_json` paired against `restricted_top_json` on the same row; lever `MATCH_FULLRES_SHADOW`; live path stays off via `MATCH_FULLRES=0`
 - **Gate:** paired A/B across ALL Loggers after the logging-header fix. Promote only if truth@#1 and net-new correct autos beat ≤800px at scale with zero new wrong autos. Standing expectation: no win.
 - **Standing:** leaning REFUTE. Refuted live on Logger_19 (7 lots, same-photo A/B); Logger_21 paired n≈100 — 90/93 identical, −1 truth@#1; headroom ~1 correct auto/run, landing in the same [0.82,0.85) band a threshold drop would reach, so no discrimination.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §A H1; `tested_hypothesis.md` Part IX; `log_analysis.md` "Full-res match SHADOW"
+- **Source:** `tested_hypothesis.md` §10.1 (verdict) + Part IX (the experiment); `log_analysis.md` "Full-res match SHADOW"
 
 ### A2 — Text-variant match shadow
 
@@ -114,7 +114,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `variant_top_json` joined to `restricted_top_json` per crop; lever `VARIANT_SHADOW`; `TEXT_VARIANTS=1` would make it live
 - **Gate:** across a batch — (a) does a confirmed truth that is OFF the restricted board come ON or to #1 with variants, and (b) does it demote ANY correct #1? Promote only if net-positive with zero correct-#1 demotions.
 - **Standing:** NO DATA YET. Built 2026-07-19; needs a batch and the `match_log` tab recreated for the new header. Touches punctuated puns only (`I-O-Was`, `Pitt Isn't It`), not plain-text ones (`'Eers to Penn State`).
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §A H2
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` A2
 
 ### A3 — Auto-confirm score-band reference
 
@@ -125,7 +125,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** every `confirm_log` row's `restricted_top_json` — #1's `overall`, graded slogan-aware against `chosen_year`/`chosen_phrase` (NOT via `rank_restricted`, which carries the year-only bug pre-L20)
 - **Gate:** a band is loosenable only when it is clean at pooled scale. This front never closes — it is the standing reference that must be refreshed before ANY threshold move.
 - **Standing:** HOLD 0.85. Pooled L16–L21, 2310 crops: ≥0.90 = 98.5%, [0.85,0.90) = 97.3%, **[0.82,0.85) = 96.4%** with 8 wrong-slogan #1s. `Never Badger A Lion` 2001 sits at 0.832 and was a manual pick 3× — the 0.85 floor is exactly what routed it to a human.
-- **Source:** `log_analysis.md` "Auto-confirm threshold REFERENCE"; `HYPOTHESES_IN_PROGRESS.md` §A H3
+- **Source:** `log_analysis.md` "Auto-confirm threshold REFERENCE"; `HYPOTHESES_IN_PROGRESS.md` A3/A4
 
 ### A4 — Auto-confirm gap-band reference
 
@@ -147,7 +147,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** shadow line `NOFLIP_UNLOCK_SHADOW: would auto-approve …`; levers `NOFLIP_GAP` (0.05) + `NOFLIP_OVERALL` (0.70). Nothing live.
 - **Gate:** grade the would-auto rows across a batch it was NOT tuned on — every would-auto correct, no wrong fire.
 - **Standing:** shipped as a shadow on Logger_18 and tuned on that pool, so per the §4.2 rule it must clear a fresh batch before it can ship.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §A H4; `log_analysis.md` Logger_18 "NOFLIP_UNLOCK shipped as a shadow"
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` A5; `log_analysis.md` Logger_18 "NOFLIP_UNLOCK shipped as a shadow"
 
 ### A6 — Mode 1: forcing true #1s higher
 
@@ -158,7 +158,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** no single switch — resolves through A2 (variants, for punctuated puns) and C1 (reference curation, for the sticky attractors). Tracked via the FLAGGED wrong-#1 lists.
 - **Gate:** do the off-board truths reach the board (A2), and do the attractors stop winning after their references are pruned (C1)?
 - **Standing:** diagnosed and pooled L16–L21. The repeat over-promoters are IMAGE attractors at img 0.90–0.98: `Happy 125th Penn State` 1980 ×6, `Penn State and Proud of it` 1992 ×6, `Never Badger A Lion` 2001 ×5.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §A H5; `log_analysis.md` threshold REFERENCE FLAGGED lists
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` A6; `log_analysis.md` threshold REFERENCE FLAGGED lists
 
 ### A7 — Within-year slogan margin
 
@@ -169,7 +169,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `within_year_json` — `{year, image_score, n_slogans, runner_up_margin, winner_is_top1, top[5]}`. `runner_up_margin` is the winner's lead over the runner-up inside its OWN year, the number no other column can show.
 - **Gate:** join `runner_up_margin` to confirmed truth across a batch. Promote "demote when `runner_up_margin` < M" only if some M catches the wrong within-year picks at an acceptable coverage cost — EVERY button has same-year siblings, so measure autos lost per wrong auto prevented before shipping.
 - **Standing:** NO DATA YET; column just added and the operator must extend the `match_log` header by hand. Shipped a wrong AUTO on 2026-09-03 ("'Eers to Penn State" confirmed as same-year "Penn State and Proud of it", margin ~0.001, clearing four gates at once). Control group in hand: a 12-button 1987 board held all four same-year flagged pairs and matched every one correctly, 7 on AUTO — so same-year is not itself predictive; the discriminator looks like SHARED TEXT. Guarded today by a curated allowlist of one pair.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §A H13; `confusable_slogans.py`
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` A7; `confusable_slogans.py`
 
 ### A8 — Low-res auto-confirm guard
 
@@ -380,7 +380,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** telemetry `n_printed_year_gamematch`; `TWIN GUARD … via game_date (bowl offset)`; lever `GAME_DATE_YEAR` (default on)
 - **Gate:** `>>> GAME_YEAR: N bowl-offset entries indexed` on boot, with N ≈ the count of Jan-dated football buttons; then bowl twins resolve to the season year with non-zero `n_printed_year_gamematch` and no new wrong twins.
 - **Standing:** merged 2026-07-19. Data goes live once the dated `text_db.json` is uploaded and deployed.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §A H9
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` A26
 
 ---
 
@@ -452,7 +452,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `det_gemini_anchored_json` — `{n_agree, snap_frac_median, n_gemini_only, n_hough_only}`
 - **Gate:** revisit only gated on low `snap_frac` AND `n_agree ≈ n_gemini` — and there, by definition, there is little left to fix. Otherwise formally drop it.
 - **Standing:** LEANING REFUTE as a blanket anchor, graded 2026-07-19 on 99 Gemini lots pooled L16/17/18/20/21. 70% of lots are already perfect (Hough == Gemini) with `snap_frac_median` 0.072 (92% ≤ 0.25) — safe but nothing to gain. The ~30% where anchoring would move something is dominated by lots where Gemini is UNreliable (agree=0 lots where Gemini read 1 button and Hough 23; frame-distortion lots at snapf 0.764). The outcome join is the tell: of 24 lots where anchoring would ADD a "missed" Gemini button, only 2 had a human `missed_button`. The useful DROP half folds into B7.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §B H6; `tested_hypothesis.md` §4.8
+- **Source:** `tested_hypothesis.md` §10.2 (verdict) + §4.8 (the hypothesis)
 
 ### B7 — On-mask phantom dup-drop
 
@@ -463,7 +463,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** proposed `RECONCILE_DUP_SHADOW would-drop` line + `det_n_dup_dropped`; kill switch `BUTTONMATCHER_RECONCILE_DUP_DROP`. Corroborating signals already logged: `n_hough_only` from the anchor shadow and `det_gem_unmatched_json`.
 - **Gate:** shadow-log would-drop circles for one cycle and grade against `not_a_button` confirmations on `(job_id, crop_num)` before dropping anything. Precision target: ≥ the 9/21 (~43%) `n_hough_only` ↔ `not_a_button` coincidence, ideally higher once off-mask/overlap gated. Hard-gate on `gemini_count>0` + over-count + overlap-with-kept so a real button Gemini merely missed is never dropped.
 - **Standing:** the best-evidenced open item and the one that should lead. Persistent across the whole observable history: pooling L16–L20, 18 lots carried unmatched phantom-candidates and the swap fired on 2 — it addresses ~11% of the population it exists for. The third signal is max overlap/IoU against the KEPT circles: a solo button Gemini missed does not overlap another circle; a duplicate or split does.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §B H7; `log_analysis.md` Logger_20 §A1
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` B7; `log_analysis.md` Logger_20 §A1
 
 ### B8 — Count-padding uncertain tag
 
@@ -474,7 +474,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** proposed `det_n_uncertain_pad`; kill switch `BUTTONMATCHER_UNCERTAIN_PAD`. Signature is `det_n_crops == det_count_user` while unguided Hough saw far fewer.
 - **Gate:** the tagged crops should coincide with `not_a_button` confirmations, and must never hide a real faint button. Fire only on large gap (start `gap ≥ 3` or `≥ 0.25×expected`) plus low fill.
 - **Standing:** the last crop of a lot is `not_a_button` on 5 of 64 lots = 8%, against a 1.9% base rate — padding lands at the tail to hit the number. Needs a shadow cycle to earn the demotion. Do not change the user count's role in radius calibration.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §B H8; `log_analysis.md` Logger_20 §A2/B
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` B8; `log_analysis.md` Logger_20 §A2/B
 
 ### B9 — White and light-background detection
 
@@ -485,7 +485,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `det_mask_path`, `det_detector_used`, `det_count_noinput`; existing `white_rescue` / grid-hole force-fill / `+bgdiff`; a proposed saturation gate on the white mask arm
 - **Gate:** targeted re-run of the known light-bg photos with `+bgdiff` on/off and, once built, the saturation gate. Pair with Gemini runs for the anchoring angle.
 - **Standing:** **85% of human-touch failures sit on light/white/flooded lots.** Diagnosed on the Logger_20 wrestling board (`c31f77e1`) and `b204bf`; no single switch yet.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §B H10; `log_analysis.md` Logger_20 case study
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` B9; `log_analysis.md` Logger_20 case study
 
 ### B10 — Grid-hole force-fill
 
@@ -742,7 +742,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** the pooled FLAGGED list of ≥0.75 wrong-#1s per reference
 - **Gate:** prune, re-shoot or down-weight those references, then confirm each one's wrong-#1 count drops in the next pooled refresh **with no new attractor taking its place**.
 - **Standing:** targets identified pooled L16–L21: `Happy 125th Penn State` 1980 (×6), `Penn State and Proud of it` 1992 (×6), `Never Badger A Lion` 2001 (×5), `Lions Clean House` 2005, `Lions Won't Need A Recount` 2001.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §C H11
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` C1
 
 ### C2 — Reference quality metric
 
@@ -753,7 +753,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** — (not a data experiment)
 - **Gate:** operator decision on direction. The operator said "nevermind" mid-discussion, so confirm direction before building anything.
 - **Standing:** open as a question, not as an experiment.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §C H12; `HANDOFF.md` known issues
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` C2; `HANDOFF.md` known issues
 
 ### C3 — Reference save policy
 
