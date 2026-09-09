@@ -865,3 +865,103 @@ serve different purposes and their search features are built as such. Daily =
 `/crawl` = its own `CRAWL500_QUERIES` (with the shared seller/keyword/category
 safeguards from config, folded in via merged PR #36). Do not re-unify the term
 sets. See `SEARCH_TERMS_AUTO_VS_CRAWL.md`.
+
+## 31. Why `/crawl` staged ~11 reference crops out of ~300 buttons: the year-folded candidate pool
+
+**The bottleneck was never the staging gates — it was that `gemini_resolve` could
+not SEE the right slogan.** A crop's CLIP candidate list is **year-folded**:
+`clip_matcher._score_slogans` loops over candidate *years* and emits exactly ONE
+row per year (that year's text-argmax slogan), for at most 8 dual-signal years;
+`match_logging.build_leaderboard` folds the same way (`best_by_year`). So the
+"top-10 candidates" the resolver matches Gemini's read against is really ≤8
+(year, slogan) pairs, one per year. A slogan shadowed by a **sibling of its own
+year** (buttonmatcher's measured case: "Michigan Impossible" outscoring "I-owa
+Doubt It" within 1995) is absent from the pool at *every* depth.
+
+That is fatal for reference staging specifically, because the whole chain is
+gated on Gemini agreement:
+
+    crop → resolver sees Gemini's slogan in the pool? → resolution → res.auto
+         → classify_crops auto-confirm → staging_candidates → reference/_staging
+
+No pool row ⇒ Scenario C ("manual") ⇒ no resolution ⇒ not auto-confirmed ⇒ never
+staged. And the crops most likely to be shadowed are exactly the ones whose
+slogan CLIP ranks weakly — i.e. the ones the reference DB most needs.
+
+**Fix: the DB-direct agreement tier, ported from buttonmatcher** (which hit this
+first — `main._gemini_db_candidates`, Logger_14). When Gemini's read is a known
+DB slogan at ≥ `GEMINI_DB_DIRECT_CONF` (0.85, stricter than the resolver's 0.70
+because this tier has no CLIP-rank corroboration) on an **anchored** association,
+that slogan's DB rows are appended to the crop's pool so Scenario A/B can match
+it. Appended at the END, so `cands[0]` — and every CLIP score, gap and logged
+leaderboard — is untouched. Kill switch `BUTTONMATCHER_GEMINI_DB_DIRECT=0`.
+Pure helper: `pipeline_classify.gemini_db_candidates`.
+
+**A DB-direct match NEVER auto-stages — the reference bar is unchanged.** This
+matters because the two services are not comparable here: buttonmatcher's
+`/inventory` operator watches every auto-confirm on screen and stages what he has
+already validated with his own eyes, whereas ebayscout stages unattended, at
+`/crawl` scale, into the same shared library. A DB-direct row is Gemini's read
+with **no independent CLIP corroboration** — good enough to identify and price a
+lot, not good enough to write a reference photo on. So `gemini_resolve` now
+propagates `db_direct` on each resolution and `staging_candidates` drops those
+crops on *every* rung, not just the weak ones. Net effect: ebayscout's staging bar
+is exactly what it was before this tier existed — **two independent signals (CLIP
+ranked it AND Gemini read it), or nothing**. What the tier buys ebayscout is
+matching and deal detection on buttons it used to miss entirely; the reference
+library gains nothing from it, deliberately. `drop_db_direct` in the funnel line
+counts what the bar refuses.
+
+**Telemetry, so this is never guesswork again.** `/crawl` is fire-and-forget, and
+the only observable was "N buttons in, M reference crops out". Every lot now logs
+`PIPELINE RESOLVE` (per-crop: Gemini's read, confidence, anchored, whether the
+slogan is in the DB at all, its DB years, whether it resolved, and the full CLIP
+pool) and `PIPELINE STAGE_FUNNEL` (per-gate drop counts:
+`no_resolution` / `not_auto` / `synthetic` / `below_conf` / `ambiguous_year` /
+`no_geometry`). Summing STAGE_FUNNEL over a run names the gate that ate the
+difference. Pure helper: `pipeline_classify.staging_funnel`.
+
+**The other structural drops are by design — measure them before changing them.**
+`staging_candidates` still refuses Gemini-synthesised boxes (`gemini_led`,
+`gemini_recovered`): those crops are framed from Gemini's x/y, not a real Hough
+circle, so they make poor reference photos — but on a lot where detection bailed
+to the projection grid, `gemini_led` replaces *every* crop and that lot stages
+zero. Likewise a CLIP-green-only crop (no Gemini resolution) auto-confirms for
+deal purposes but never stages, by design. `drop_synthetic` and
+`drop_no_resolution` in the funnel line quantify both.
+
+## 32. STOP is the ONLY per-slogan gate on staging — in BOTH services
+
+The operator's rule, stated plainly: *the only slogans that stop receiving
+reference crops are the ones declared `stop` in the `/reference` sequence;
+everything else keeps staging until he says stop.* Two things violated it, in
+opposite directions.
+
+**buttonmatcher was inventing a second gate.** `_stage_confirmed_crop` refused to
+stage any crop whose slogan already held `REF_CAP` (4) references. That froze a
+library entry the moment it filled: no later crop could ever challenge a weak
+reference — even though `/reference` has an entire at-cap pass
+(`plan_at_cap_decisions` / `_ref_auto_replace_pass`, the 10-point rule) built to
+judge exactly those crops without a click. Removed; `BUTTONMATCHER_STAGE_AT_CAP=0`
+restores it. (buttonmatcher commit; see `REFERENCE_CURATION.md`.)
+
+**ebayscout was ignoring the real gate.** `promote_crops_to_reference_staging`
+never read `reference/_staging_policy.json` at all — the shared blob buttonmatcher
+writes when the operator types `stop`. So ebayscout kept writing crops into
+slogans that had been declared finished, unattended, which is the hardest place
+for an unwanted write to be noticed. It now reads the policy per lot (one blob GET
+against a lot that already costs a Gemini call and a CLIP pass) and refuses those
+entry_ids. The id namespace is shared — `clip_matcher.entry_id_for` produces the
+same ids buttonmatcher stores — so the two services agree on slogan identity, and
+`parse_staging_policy` mirrors `reference_review.policy_from_json` exactly.
+
+**ebayscout fails CLOSED on an unreadable policy** (buttonmatcher fails open).
+The asymmetry is deliberate and follows the same reasoning as #31: buttonmatcher
+stages what an operator has just validated on screen, so guessing "no stops" costs
+one reviewable crop. ebayscout stages unattended at `/crawl` scale, so guessing
+"no stops" writes into curated slogans and costs manual cleanup, while failing
+closed costs a few crops that recur on the next lot. Cheaper mistake wins.
+
+Net: ebayscout's staging now has exactly two gates — the two-independent-signal
+bar (#31) and the operator's STOP list. Nothing else in either service decides on
+its own that a slogan has had enough.

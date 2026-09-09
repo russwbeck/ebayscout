@@ -311,6 +311,10 @@ PIPELINE_CROPS_PREFIX  = "ebay_scout/pipeline_crops/"
 # Shared reference staging area buttonmatcher's /reference flow consumes. On a
 # Yes vote ebayscout copies crop FILES here (it never writes vectors.pt).
 REFERENCE_STAGING_PREFIX = "reference/_staging/"
+# buttonmatcher's /reference `stop` list — entry_ids the operator declared
+# finished. Written by buttonmatcher, READ by both services (shared bucket), so
+# ebayscout's unattended staging honours the same operator decision.
+REFERENCE_STAGING_POLICY_BLOB = "reference/_staging_policy.json"
 # Stale pending/crop blobs older than this many days are swept (never-returned
 # Gem reads, abandoned Yes/No prompts).
 PIPELINE_TTL_DAYS = 7

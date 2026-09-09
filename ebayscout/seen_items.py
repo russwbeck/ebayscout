@@ -16,7 +16,7 @@ from datetime import date
 
 from google.cloud import storage
 
-from . import config
+from . import config, pipeline_classify
 
 
 def load_seen(bucket_name: str = config.BUCKET_NAME) -> dict[str, str]:
@@ -241,11 +241,39 @@ def stage_pipeline_crop(job_id: str, n: int, jpg_bytes: bytes,
         return None
 
 
+def load_staging_policy(bucket) -> tuple[set, bool]:
+    """buttonmatcher's /reference STOP list -> (stopped_entry_ids, readable).
+
+    ``readable`` distinguishes "no stops declared" (blob absent — stage
+    everything) from "could not read the policy" (an error — the caller must NOT
+    assume the list is empty).  That distinction is the whole point for an
+    unattended writer: guessing empty means writing into slogans the operator
+    declared finished."""
+    try:
+        blob = bucket.blob(config.REFERENCE_STAGING_POLICY_BLOB)
+        if not blob.exists():
+            return set(), True                 # no stops declared yet
+        return pipeline_classify.parse_staging_policy(
+            json.loads(blob.download_as_text())), True
+    except Exception as exc:
+        print(f"!!! PIPELINE: stop-staging policy read failed: {exc}", flush=True)
+        return set(), False
+
+
 def promote_crops_to_reference_staging(job_id: str, manifest: dict,
                                        bucket_name: str = config.BUCKET_NAME) -> int:
     """YES vote: copy each temp crop into reference/_staging/<entry_id>/<ts>.jpg
     (the shared area buttonmatcher's /reference flow consumes), then remove the
     temp crops + manifest. Returns the number of crops staged.
+
+    Honours buttonmatcher's /reference STOP list: a slogan the operator declared
+    finished never receives another ebayscout crop.  This is the ONE per-slogan
+    gate on ebayscout staging — nothing else here decides a slogan has had enough.
+
+    Fails CLOSED when the policy cannot be read: ebayscout stages unattended, so
+    a transient error must cost a few crops (they recur on the next lot) rather
+    than write into slogans the operator has finished with, which costs manual
+    cleanup of a curated library.
 
     ebayscout writes only image FILES here — it never encodes or writes vectors.pt.
     """
@@ -253,7 +281,19 @@ def promote_crops_to_reference_staging(job_id: str, manifest: dict,
     try:
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        for crop in manifest.get("crops", []):
+        stopped, policy_ok = load_staging_policy(bucket)
+        if not policy_ok:
+            print(f"!!! PIPELINE: refusing to stage {len(manifest.get('crops', []))} "
+                  f"crop(s) for job={job_id} — the /reference STOP list is "
+                  f"unreadable and staging fails closed.", flush=True)
+            return 0
+        crops, dropped = pipeline_classify.filter_stopped_crops(
+            manifest.get("crops", []), stopped)
+        if dropped:
+            print(f">>> PIPELINE STAGE_SKIP: {len(dropped)} crop(s) for "
+                  f"{sorted({c.get('entry_id') for c in dropped})} — operator "
+                  f"declared STOP in /reference.", flush=True)
+        for crop in crops:
             src_name  = crop.get("gcs_name")
             entry_id  = crop.get("entry_id")
             if not src_name or not entry_id:
