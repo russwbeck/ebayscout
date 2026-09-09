@@ -527,6 +527,118 @@ def test_logger_empty_records_no_write():
     assert mws.rows == []
 
 
+# --- the quota retry (2026-09-09) --------------------------------------------
+# The Sheets write quota is per PROJECT, so the Logger competes with the
+# inventory sheet for the same 60 writes/minute.  Its writes had no retry, so a
+# batch that came back 429 was printed and dropped: 3 of the 196 lots logged
+# lost their whole match_log batch that way.  A big lot is both the most likely
+# to trip the quota and the most expensive to lose.
+
+class _Flaky:
+    """Fails the first ``n`` calls with ``exc``, then succeeds."""
+
+    def __init__(self, n, exc):
+        self.n, self.exc, self.calls, self.rows = n, exc, 0, []
+
+    def _maybe_fail(self):
+        self.calls += 1
+        if self.calls <= self.n:
+            raise self.exc
+
+    def append_rows(self, rows, value_input_option=None):
+        self._maybe_fail()
+        self.rows.extend(rows)
+
+    def append_row(self, row, value_input_option=None):
+        self._maybe_fail()
+        self.rows.append(row)
+
+
+def _no_sleep(monkey=[]):
+    """Retry delays are real seconds; tests must not actually wait 12 of them."""
+    import time as _t
+    orig = _t.sleep
+    ml.time.sleep = lambda *_a, **_k: None
+    return orig
+
+
+def test_a_rate_limited_match_batch_is_retried_not_dropped():
+    orig = _no_sleep()
+    try:
+        ws = _Flaky(2, Exception("APIError: [429]: Quota exceeded for quota "
+                                 "metric 'Write requests'"))
+        logger = ml.SheetLogger(ws, _FakeWS(), service="b")
+        logger.log_image_crops("j", [{"detection": {}}])
+        assert ws.calls == 3, f"gave up after {ws.calls} attempt(s)"
+        assert len(ws.rows) == 1, "the batch was dropped instead of retried"
+    finally:
+        ml.time.sleep = orig
+
+
+def test_a_rate_limited_confirm_is_retried_too():
+    orig = _no_sleep()
+    try:
+        ws = _Flaky(1, Exception("[429] RESOURCE_EXHAUSTED"))
+        logger = ml.SheetLogger(_FakeWS(), ws, service="b")
+        logger.log_confirmation("k", {"ts": "x"})
+        assert len(ws.rows) == 1
+    finally:
+        ml.time.sleep = orig
+
+
+def test_only_the_quota_error_is_retried():
+    """A deleted tab or a revoked token will fail again just as fast; sleeping
+    on it only delays the report."""
+    orig = _no_sleep()
+    try:
+        ws = _Flaky(99, RuntimeError("Worksheet not found"))
+        logger = ml.SheetLogger(ws, _FakeWS(), service="b")
+        logger.log_image_crops("j", [{"detection": {}}])
+        assert ws.calls == 1, f"a non-quota error was retried {ws.calls} times"
+    finally:
+        ml.time.sleep = orig
+
+
+def test_the_retry_gives_up_and_still_never_raises():
+    orig = _no_sleep()
+    try:
+        ws = _Flaky(99, Exception("[429] Quota exceeded"))
+        logger = ml.SheetLogger(ws, ws, service="b")
+        logger.log_image_crops("j", [{"detection": {}}])   # must not raise
+        logger.log_confirmation("k", {"ts": "x"})          # must not raise
+        assert ws.rows == []
+    finally:
+        ml.time.sleep = orig
+
+
+def test_the_retry_uses_the_one_shared_definition_of_a_rate_limit():
+    """gspread has moved its error classes across versions; that judgement must
+    not fork between the inventory write and the Logger."""
+    import inspect
+    src = inspect.getsource(ml.SheetLogger._append)
+    assert "_retry.is_rate_limited(" in src
+    assert "_retry.retry_delays()" in src
+
+
+def test_the_first_write_banner_only_prints_on_a_write_that_landed():
+    orig = _no_sleep()
+    try:
+        ws = _Flaky(99, Exception("[429] Quota exceeded"))
+        logger = ml.SheetLogger(ws, _FakeWS(), service="b")
+        logger.log_image_crops("j", [{"detection": {}}])
+        assert logger._logged_first_write is False, (
+            "a dropped batch announced itself as the first successful write")
+    finally:
+        ml.time.sleep = orig
+
+
+def test_the_retries_are_serialized():
+    """sheet_retry's delays are un-jittered on the promise that its callers
+    cannot stampede each other; this module has to keep that promise."""
+    logger = ml.SheetLogger(_FakeWS(), _FakeWS(), service="b")
+    assert hasattr(logger, "_write_lock")
+
+
 def test_shadow_pass_enabled_env():
     os.environ.pop("BUTTONMATCHER_SHADOW_PASS", None)
     assert ml.shadow_pass_enabled() is True
@@ -868,3 +980,54 @@ def test_rank_of_slogan_fixes_year_collision_bug():
     assert m.rank_of_slogan("1984", "Turtle", b2) == 1
     # custom normalize_fn (punctuation/case folding) honored
     assert m.rank_of_slogan("2024", "sm-who!", [{"phrase": "SM WHO", "year": "2024"}]) == 1
+
+
+def test_retired_shadows_keep_their_columns_and_write_empty():
+    """A retired shadow gives up its computation, never its column.
+
+    A1 (full-res match) and A12 (text-baseline centering) were refuted and
+    switched off 2026-09-07.  Their columns MUST stay in place — the Progress
+    Trackers workbook addresses match_log/confirm_log by letter and every
+    pooled export was pasted under the current header, so a removal silently
+    re-points the formulas in 69 front tabs.  With the producers off the cells
+    simply carry the empty value they already carried whenever the shadow did
+    not run.
+    """
+    # match_log stays 87 columns, with fullres_top_json where it has always been.
+    # (The workbook's pasted tab reads 89 wide — it pads two helper cells after
+    # the header; the Logger schema itself is these 87.)
+    assert len(ml.MATCH_HEADER) == 87, len(ml.MATCH_HEADER)
+    assert ml.MATCH_HEADER.index("fullres_top_json") == 84   # column CG
+    assert ml.MATCH_HEADER.index("variant_top_json") == 85   # column CH
+    assert ml.MATCH_HEADER.index("within_year_json") == 86   # column CI
+    assert ml.MATCH_HEADER.index("restricted_top_json") == 51  # column AZ
+
+    rec = ml.build_match_record(
+        service="buttonmatcher", command="/sort", mode="sort", job_id="j",
+        thread_ts="t", channel_id="c", user_id="u", crop_num=1, check_id="",
+        detection={}, bank="all",
+        restricted_top=[{"year": "1995", "phrase": "Hoo's Sorry Now"}],
+        shadow_top=[], shadow_enabled=True,
+        fullres_top=None,               # A1 retired — pass nothing
+    )
+    flat = ml.flatten_match_record(rec)
+    assert len(flat) == len(ml.MATCH_HEADER)
+    assert flat[ml.MATCH_HEADER.index("fullres_top_json")] == "[]"
+    # the live board is untouched by the retirement
+    assert "Hoo's Sorry Now" in flat[ml.MATCH_HEADER.index("restricted_top_json")]
+
+    # confirm_log stays 23 columns, rank_centered last and blank when off
+    assert len(ml.CONFIRM_HEADER) == 23, len(ml.CONFIRM_HEADER)
+    assert ml.CONFIRM_HEADER.index("rank_centered") == len(ml.CONFIRM_HEADER) - 1
+    crec = ml.build_confirm_record(
+        service="buttonmatcher", command="/sort", job_id="j", thread_ts="t",
+        crop_num=1, check_id="", user_id="u", chosen_year="1995",
+        chosen_phrase="Hoo's Sorry Now", chosen_type="Football",
+        typed_slogan="", source="pick", rank_restricted=1, rank_shadow=1,
+        shadow_leaderboard_size=40,
+        rank_centered=ml.rank_of("1995", []),   # A12 retired — empty board
+    )
+    cflat = ml.flatten_confirm_record(crec)
+    assert len(cflat) == len(ml.CONFIRM_HEADER)
+    assert cflat[ml.CONFIRM_HEADER.index("rank_centered")] == ""
+    assert cflat[ml.CONFIRM_HEADER.index("rank_restricted")] == 1
