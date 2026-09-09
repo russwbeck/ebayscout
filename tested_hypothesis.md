@@ -1737,8 +1737,8 @@ the half-radius ghost, not the button.
 in `detect.py`/`detect_pipeline.py` (guided) and `image_proc.py` (scan).
 Purely subtractive, off by `*_TINY_GUARD=0`.
 
-**Measured:** total |scan crops − truth| over the 26 fixtures **251 → 202**;
-total crops 310 → 233; scan-path precision 0.579 → 0.595 with **recall
+**Measured:** total |scan crops − truth| over the 26 fixtures **251 → 199**;
+total crops 310 → 236; scan-path precision 0.579 → 0.595 with **recall
 unchanged** (22 TP / 14 FN in both arms — no real button was lost). The 18-test
 fixture battery and the manifest snapshot lock are **unchanged**.
 
@@ -1772,7 +1772,7 @@ Every button in one lot is the same size, so a healthy accepted set has
 | fixture | truth | scan crops before | spread before | after | spread after |
 |---|---|---|---|---|---|
 | `banded_quad_4` | 4 | **86** | 6.43 | 35 | 6.00 |
-| `case1_wood_glare_37` | 37 | 46 | 5.50 | **28** | 2.78 |
+| `case1_wood_glare_37` | 37 | 46 | 5.50 | **31** | 2.78 |
 | `case5_frame_display_13` | 13 | 14 | 6.20 | 11 | 5.64 |
 | `dark_on_white_13` | 13 | 15 | 3.93 | 14 | 3.93 |
 | `white_on_white_minnesota_12` | 12 | 7 | 1.78 | 6 | 1.18 |
@@ -1811,9 +1811,10 @@ dominant radius onto the buttons (r*=106, support 0.78). Only the remainder,
 now a minority, ever reaches the band. `test_dominant_radius_needs_containment_to_run_first`
 locks this ordering.
 
-## 12.4 Two placement mistakes, both caught by measurement
+## 12.4 Three placement mistakes, all caught by measurement
 
-Recorded because both looked obviously correct and both made things worse:
+Recorded because all three looked obviously correct and all three made
+things worse:
 
 1. **Filtering inside each Hough pass, before `_score_solution`.** Pruning a
    pass makes it look *more* radius-coherent, which can hand a noise-heavy pass
@@ -1827,12 +1828,56 @@ Recorded because both looked obviously correct and both made things worse:
    guard now runs **last**, after the blob-buster, so it has the final word on
    what gets cropped.
 
+3. **Letting the two stages run once, in order.** Containment goes largest-first,
+   so a giant phantom (a glare ring spanning several buttons) is accepted as an
+   anchor, swallows every real button whose centre falls inside it, and is only
+   *then* deleted by the band — the buttons are gone and nothing was gained.
+   Found by auditing every circle the guard removed rather than by reading the
+   code: on `case1_wood_glare_37` a 55px phantom ate three 24px circles sitting
+   at the dominant radius (r*=29). The stages now **iterate** — off-band circles
+   leave the pool and containment is redone without them — which rescues all
+   three (scan crops 28 → 31, total |crops − truth| 202 → 199).
+
 *The reusable half:* a filter that improves a set's internal quality score can
 change which candidate set is selected, and that second-order effect can swamp
 the first-order cleanup. Put purely-subtractive guards after every selection and
-every deficit-fill, never inside them.
+every deficit-fill, never inside them — and when two subtractive rules compose,
+check that the first cannot destroy evidence the second would have vindicated.
 
-## 12.5 What is locked
+## 12.5 The audit: every circle the guard removes
+
+The count metric alone cannot answer "is this helping?" — a lot going from 14
+crops to 11 could be three phantoms removed or three buttons lost. So every
+removal across the 26 photos was enumerated, rendered and inspected:
+
+- **74 circles removed in total**, all on the scan path. The guided path was
+  **untouched on all 26 photos** — `detect_buttons`' own median band and
+  `_collapse_concentric` already cover these lots.
+- **18 of the 26 photos are bit-identical** with the guard on or off. The
+  removals concentrate in three: `banded_quad_4` (51), `case1_wood_glare_37`
+  (15), `case5_frame_display_13` (3).
+- Of the containment removals, the median circle is **0.44× the radius of the
+  circle containing it** (max 0.85×); exactly one was the same size as its
+  anchor, i.e. a duplicate detection of that same button.
+- The 7 band removals are two giants (1.9× and 3.25× the dominant radius) and
+  five circles at 0.34–0.52× of it.
+- Visual inspection of all eight photos where the guard acted: every removed
+  circle is printing on an already-detected button, a duplicate of one, or a
+  phantom spanning several. The single-drop lots are the clearest —
+  `white_on_white_minnesota_12` loses a circle inside the already-detected
+  "Don't Volunteer for Lion Duty"; `granite_glare_13` one inside "Knock 'Em
+  Seedless"; `cast_mellon99_13` a giant spanning four buttons.
+
+Two caveats stated plainly. The count metric is **meaningless on lots where
+detection misses everything** — on `case5_frame_display_13` the scan path finds
+zero real buttons in either arm (maroon-on-black Citizens buttons the colour
+mask cannot see), so its 14 → 11 is fourteen phantoms becoming eleven. And the
+fixtures are committed at the **800px guided working frame**, while production
+scan runs at up to 1400px; the user's own photo was measured at six sizes from
+500px to 1600px with no change either way, but the fixture corpus does not
+exercise full-resolution scan.
+
+## 12.6 What is locked
 
 - `tests/test_detect_scale.py` (shared, byte-identical) — the pure rules,
   including the ordering contract and a regression built from the radii actually
@@ -1849,7 +1894,7 @@ every deficit-fill, never inside them.
   today (the guided path's median band and `_collapse_concentric` cover these
   particular lots); it is a forward guard, not evidence of the fix.
 
-## 12.6 Not fixed here
+## 12.7 Not fixed here
 
 The sweep still *searches* down to `0.30 × base_r` (floor 9px), so the tiny
 circles are still found — they are removed afterwards rather than never

@@ -1051,29 +1051,44 @@ def _drop_subfeatures(circles, tag=""):
     veto applies to deficit-fill PROPOSALS only; the primary Hough set — where
     the syndrome actually lives — was never covered by it.
 
+    The two stages iterate, so an off-band circle never gets to keep a real
+    button out by having acted as a containment anchor (see the loop).
+
     Returns (kept, n_dropped).
     """
     if not _tiny_guard_enabled() or not circles:
         return list(circles), 0
-    kept = []
-    for c in sorted(circles, key=lambda c: c[2], reverse=True):
-        if dscale.is_contained(c[0], c[1], c[2], kept):
-            continue
-        kept.append(c)
-    n_contained = len(circles) - len(kept)
-    n_band = 0
-    band = dscale.cohort_band([c[2] for c in kept])
-    if band is not None:
-        lo, hi, r_star, support = band
-        in_band = [c for c in kept if lo <= c[2] <= hi]
-        n_band = len(kept) - len(in_band)
-        kept = in_band
-    if n_contained or n_band:
-        print(f">>> TINY_GUARD{tag}: dropped {n_contained} contained + "
-              f"{n_band} off-band of {len(circles)} -> {len(kept)}", flush=True)
-    return kept, n_contained + n_band
-
-
+    pool = list(circles)
+    kept = list(circles)
+    for _round in range(3):
+        kept = []
+        for c in sorted(pool, key=lambda c: c[2], reverse=True):
+            if dscale.is_contained(c[0], c[1], c[2], kept):
+                continue
+            kept.append(c)
+        band = dscale.cohort_band([c[2] for c in kept])
+        if band is None:
+            break
+        lo, hi = band[0], band[1]
+        off_band = [c for c in kept if not (lo <= c[2] <= hi)]
+        kept = [c for c in kept if lo <= c[2] <= hi]
+        if not off_band:
+            break
+        # An off-band circle must not keep anything out. Containment runs
+        # first, so a giant phantom (a glare ring spanning several buttons)
+        # can be accepted as an anchor, swallow the real buttons inside it,
+        # and only THEN be deleted by the band -- losing those buttons for
+        # nothing. Measured on case1_wood_glare_37: a 55px phantom swallowed
+        # three 24px circles at the dominant radius (r*=29). So drop the
+        # off-band circles from the POOL and redo containment without them,
+        # which brings back everything they were hiding. The pool strictly
+        # shrinks, so this converges; the cap is belt-and-braces.
+        pool = [c for c in pool if lo <= c[2] <= hi]
+    n_dropped = len(circles) - len(kept)
+    if n_dropped:
+        print(f">>> TINY_GUARD{tag}: dropped {n_dropped} sub-button circle(s) "
+              f"of {len(circles)} -> {len(kept)}", flush=True)
+    return kept, n_dropped
 def _merge_circle_sets(primary, secondary, fill_threshold, mask, diag_out=None):
     """Merge two (x, y, r) circle lists, keeping all primary circles and adding
     secondary circles that are not already covered by a primary circle.

@@ -148,6 +148,37 @@ def test_drop_subfeatures_is_purely_subtractive():
     assert len(kept) == 4
 
 
+def test_an_off_band_phantom_may_not_swallow_real_buttons():
+    """The ordering hazard the two stages create, and why they iterate.
+
+    Containment runs before the band, so a giant phantom — a glare ring
+    spanning several buttons — can be accepted as an anchor (it is the largest
+    circle, so it goes first), swallow every real button whose centre falls
+    inside it, and only THEN be deleted by the band.  Net effect: those buttons
+    are lost and nothing is gained.  Measured on case1_wood_glare_37 before the
+    fix: a 55px phantom swallowed three 24px circles sitting at the dominant
+    radius (r*=29).
+
+    The guard therefore iterates — off-band circles leave the pool and
+    containment is redone without them — so anything a phantom was hiding comes
+    back.  Here: a 12-button grid plus one giant covering four of them.
+    """
+    if not HAVE_CV2:
+        print("SKIP test_an_off_band_phantom_may_not_swallow_real_buttons (no cv2)")
+        return
+    step = 220
+    buttons = [(200 + step * c, 200 + step * r, 100)
+               for r in range(3) for c in range(4)]
+    giant = (200 + step // 2, 200 + step // 2, 250)   # covers the 2x2 block
+    kept, dropped = image_proc._drop_subfeatures([giant] + buttons)
+    assert giant not in kept, "the off-band giant survived"
+    missing = [b for b in buttons if b not in kept]
+    assert not missing, (
+        f"the giant swallowed {len(missing)} real button(s) before the band "
+        f"removed it: {missing}")
+    assert dropped == 1 and len(kept) == len(buttons)
+
+
 def test_kill_switch_is_a_no_op_path():
     if not HAVE_CV2:
         print("SKIP test_kill_switch_is_a_no_op_path (no cv2)")
@@ -173,5 +204,6 @@ if __name__ == "__main__":
     test_guard_drops_the_printing_and_keeps_every_button()
     test_default_is_guarded()
     test_drop_subfeatures_is_purely_subtractive()
+    test_an_off_band_phantom_may_not_swallow_real_buttons()
     test_kill_switch_is_a_no_op_path()
     print("all tiny-circle scan-path tests passed")
