@@ -30,11 +30,20 @@ behavior. For the latest status and next steps, start with `ebayscout/HANDOFF.md
 
 - **buybot is decommissioned (2026-07-05).** Shared files (`detect.py`/
   `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, `sheet_retry.py`,
-  the shared docs) sync across buttonmatcher + ebayscout only; ignore older docs
-  that name buybot as a third sync target. `sheet_retry.py` joined the set on
-  2026-09-09, when `match_logging` started retrying the Sheets write quota
-  through it; `match_logging.py` imports it relative-first, plain-second so the
-  one file works in ebayscout's package layout and buttonmatcher's flat one.
+  `confusable_slogans.py`, the shared docs) sync across buttonmatcher + ebayscout
+  only; ignore older docs that name buybot as a third sync target.
+  `sheet_retry.py` joined the set on 2026-09-09, when `match_logging` started
+  retrying the Sheets write quota through it; `match_logging.py` imports it
+  relative-first, plain-second so the one file works in ebayscout's package
+  layout and buttonmatcher's flat one. `confusable_slogans.py` joined on
+  2026-09-10 — the curated look-alike groups are one list for both services,
+  but the two USE it differently: buttonmatcher demotes an auto-confirm to a
+  human picker, ebayscout has no human lane and instead flags the deal alert
+  (see `pipeline_classify.lookalike_note`).
+- **`rerank.py` weights are calibrated, not guessed.** `YEAR_WEIGHT` and
+  `SID_WEIGHT` must stay equal across both repos —
+  `tests/test_buttonmatcher_parity.py` pins them. Raising them needs a fresh
+  `tools/calibrate_from_logs.py rerank` replay, in both repos, in one PR.
 - Develop on the designated feature branch; commit + push; open a PR only when
   asked. **Always re-query the GitHub API for PR state before reporting it** —
   never assert merged/mergeable from memory.

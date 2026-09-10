@@ -48,7 +48,7 @@ except Exception as _exc:   # pragma: no cover
 # ---------------------------------------------------------------------------
 # Module-level state (populated by init())
 # ---------------------------------------------------------------------------
-_model        = None   # CLIP ViT-B/32 (quantized)
+_model        = None   # CLIP ViT-B/32 (NOT quantized -- DECISIONS.md #12)
 _preprocess   = None   # torchvision transform
 _device       = "cpu"
 

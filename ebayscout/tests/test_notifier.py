@@ -161,3 +161,70 @@ class TestSendWarning:
         mock_client.chat_postMessage.assert_called_once()
         call_text = mock_client.chat_postMessage.call_args[1].get("text", "")
         assert "Test warning message" in call_text
+
+
+class TestLookalikeFlag:
+    """The look-alike warning on a deal alert.
+
+    ebayscout has no human-review lane to demote a confusable match into
+    (`_post_yellow_review` is defined but never called), so instead of dropping
+    the match it warns on the post — at the one moment a human IS present and
+    money is at stake. The numbers are the point: a same-year look-alike keys a
+    different `get_buy_decision` row, so it moves both what the lot is worth and
+    whether the button is needed at all.
+    """
+
+    NOTE = {
+        "alternatives": [{"slogan": "Penn State and Proud of it", "year": "1992",
+                          "price": 12.0, "amount_needed": 0}],
+        "price_here": 30.0,
+        "value_swing": 18.0,
+        "need_here": 1,
+        "any_not_needed": True,
+    }
+
+    def test_line_names_the_sibling_its_value_and_the_swing(self):
+        line = notifier._lookalike_line(self.NOTE)
+        assert "Penn State and Proud of it" in line
+        assert "$12.00" in line          # what it would be worth instead
+        assert "$18.00" in line          # how far the lot value could be off
+        assert "NOT needed" in line
+        assert "check the photo" in line
+
+    def test_no_line_without_a_note(self):
+        assert notifier._lookalike_line(None) == ""
+        assert notifier._lookalike_line({}) == ""
+        assert notifier._lookalike_line({"alternatives": []}) == ""
+
+    def test_no_swing_line_when_the_money_is_the_same(self):
+        note = dict(self.NOTE, value_swing=0.0, any_not_needed=True)
+        note["alternatives"] = [dict(note["alternatives"][0], price=30.0)]
+        line = notifier._lookalike_line(note)
+        assert "could be off by" not in line
+        assert "check the photo" in line
+
+    def test_needed_alert_carries_the_flag(self):
+        mock_client = MagicMock()
+        needed = [{"year": "1992", "slogan": "'Eers to Penn State",
+                   "max_price_single": "$30.00", "amount_needed": 1,
+                   "lookalike": self.NOTE}]
+        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+            notifier.send_needed_alert(
+                slack_token="xoxb-fake", channel="#scout", listing=FAKE_LISTING,
+                needed_buttons=needed, asking_price=15.0, lot_value=30.0)
+        text = mock_client.chat_postMessage.call_args[1].get("text", "")
+        assert "'Eers to Penn State" in text
+        assert "look-alike" in text
+        assert "$18.00" in text
+
+    def test_needed_alert_unchanged_when_nothing_is_confusable(self):
+        mock_client = MagicMock()
+        needed = [{"year": "1992", "slogan": "Clear Winner",
+                   "max_price_single": "$30.00", "amount_needed": 1,
+                   "lookalike": None}]
+        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+            notifier.send_needed_alert(
+                slack_token="xoxb-fake", channel="#scout", listing=FAKE_LISTING,
+                needed_buttons=needed, asking_price=15.0, lot_value=30.0)
+        text = mock_client.chat_postMessage.call_args[1].get("text", "")
+        assert "look-alike" not in text

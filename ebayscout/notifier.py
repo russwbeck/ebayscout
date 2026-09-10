@@ -14,6 +14,33 @@ from slack_sdk.errors import SlackApiError
 from . import config
 
 
+def _lookalike_line(note: dict | None, indent: str = "     ") -> str:
+    """One warning line for a match whose slogan has curated look-alikes.
+
+    ebayscout cannot demote a look-alike to a human (there is no review lane),
+    so it says so on the alert instead — at the one moment a human IS present
+    and money is at stake. The numbers are the point: which OTHER slogan this
+    could be, what it would be worth instead, and whether it is needed at all.
+    """
+    if not note:
+        return ""
+    alts = note.get("alternatives") or []
+    if not alts:
+        return ""
+    named = ", ".join(
+        f'"{a.get("slogan")}" ({a.get("year")}, ${a.get("price", 0.0):.2f}'
+        f'{", NOT needed" if (a.get("amount_needed") or 0) <= 0 else ""})'
+        for a in alts
+    )
+    bits = [f"{indent}⚠︎ look-alike: could also be {named}"]
+    swing = note.get("value_swing") or 0.0
+    if swing > 0:
+        bits.append(f"{indent}   lot value could be off by ${swing:.2f} on this button")
+    if note.get("any_not_needed"):
+        bits.append(f"{indent}   if it is the other one, you may not need it — check the photo")
+    return "\n".join(bits)
+
+
 def send_undervalued_alert(
     slack_token: str,
     channel: str,
@@ -57,6 +84,9 @@ def send_undervalued_alert(
         needed_tag = f"  ⭐ needed ({needed})" if needed > 0 else ""
         line = f"  • {year} — \"{slogan}\"    max: {price}{needed_tag}"
         button_lines.append(line)
+        flag = _lookalike_line(m.get("lookalike"))
+        if flag:
+            button_lines.append(flag)
 
     buttons_text = "\n".join(button_lines) if button_lines else "  (none identified with confidence)"
 
@@ -118,6 +148,9 @@ def send_needed_alert(
         needed = m.get("amount_needed", 0)
         line = f"  • {year} — \"{slogan}\"   need {needed}, max: {price}"
         needed_lines.append(line)
+        flag = _lookalike_line(m.get("lookalike"))
+        if flag:
+            needed_lines.append(flag)
 
     needed_text = "\n".join(needed_lines)
     seller_text = f"Seller: {seller}"
