@@ -42,6 +42,7 @@ from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
 from . import seen_items
+from . import confusable_slogans as cfs
 from . import edition_twins as edt
 from .utils import (
     extract_years,
@@ -137,6 +138,7 @@ slogan_years: dict[str, set] = {}
 # review instead of silently picking an edition. Kill switch:
 # BUTTONMATCHER_TWIN_GUARD=0 (shared convention with buttonmatcher).
 TWIN_REGISTRY: dict = {}
+CONFUSABLE_REGISTRY: dict = {}
 
 
 def _twin_guard_enabled() -> bool:
@@ -254,6 +256,22 @@ def _ensure_clip_loaded() -> bool:
             except Exception as exc:
                 TWIN_REGISTRY = {}
                 print(f"!!! TWINS: registry build failed (guard fails open): {exc}", flush=True)
+            # Confusable-slogan registry — the same entries again.  Unlike
+            # buttonmatcher this does NOT gate auto-confirm (there is no human
+            # lane here to demote into); it only flags the deal alert, because a
+            # same-year look-alike moves the two numbers the alert reports:
+            # amount_needed and max_price_single.  Fail-open: an empty registry
+            # just means alerts post unflagged, exactly as they do today.
+            try:
+                global CONFUSABLE_REGISTRY
+                CONFUSABLE_REGISTRY = cfs.build_confusable_registry(
+                    cfs.CONFUSABLE_GROUPS, _twin_entries, normalize.normalize_key)
+                print(f">>> CONFUSABLE: {cfs.registry_summary(CONFUSABLE_REGISTRY)}",
+                      flush=True)
+            except Exception as exc:
+                CONFUSABLE_REGISTRY = {}
+                print(f"!!! CONFUSABLE: registry build failed (alerts post "
+                      f"unflagged): {exc}", flush=True)
             return True
         except Exception as exc:
             print(f"!!! WAKE: CLIP init failed: {exc}", flush=True)
@@ -1108,7 +1126,9 @@ def process_pipeline_lot(job_id: str) -> None:
                     b["year"], b["slogan"], buy_rules)
                 matches.append({"year": b["year"], "slogan": b["slogan"],
                                 "overall": b["overall"], "max_price_single": _ps,
-                                "amount_needed": _amt})
+                                "amount_needed": _amt,
+                                "lookalike": _lookalike_note(
+                                    b["slogan"], b["year"], buy_rules)})
             notifier.send_undervalued_alert(
                 slack_token=_slack_token, channel=_channel_id, listing=listing,
                 matches=matches, lot_value=lot_value, asking_price=asking or 0.0,
@@ -1502,6 +1522,40 @@ def _log_confirmation(job_id: str, check_id: str, crop_num: int,
         print(f"!!! LOG: confirm record failed for {check_id}: {exc}", flush=True)
 
 
+def _lookalike_flag_enabled():
+    """Look-alike value flag on deal alerts is on by default;
+    EBAYSCOUT_LOOKALIKE_FLAG=0 removes the extra line without a redeploy."""
+    return os.environ.get("EBAYSCOUT_LOOKALIKE_FLAG", "1").strip() not in (
+        "0", "false", "False", "",
+    )
+
+
+def _lookalike_note(slogan, year, buy_rules) -> dict | None:
+    """Curated look-alike warning for a match about to be alerted on, or None.
+
+    Fails OPEN in every failure mode: a missing registry, an unknown slogan or
+    any exception returns None and the alert posts exactly as it does today.
+    """
+    if not _lookalike_flag_enabled() or not CONFUSABLE_REGISTRY:
+        return None
+    try:
+        family = cfs.confusable_family(
+            CONFUSABLE_REGISTRY, slogan, normalize.normalize_key)
+        if not family:
+            return None
+
+        def _priced(y, s):
+            price, _, _, amt = sheets_client.get_buy_decision(y, s, buy_rules)
+            return sheets_client.parse_price(price), amt
+
+        return pipeline_classify.lookalike_note(
+            slogan, year, family, _priced, normalize.normalize_key)
+    except Exception as exc:
+        print(f"!!! LOOKALIKE: flag failed (alert posts unflagged): {exc}",
+              flush=True)
+        return None
+
+
 def _check_needed_hit(top: dict, buy_rules: dict) -> dict | None:
     """If `top` (a confirmed year/slogan match) satisfies a standing need
     (amount_needed > 0, and not a placeholder/non-alerting slogan), return an
@@ -1517,6 +1571,10 @@ def _check_needed_hit(top: dict, buy_rules: dict) -> dict | None:
     enriched = dict(top)
     enriched["max_price_single"] = price_single
     enriched["amount_needed"]    = amount_needed
+    # Both alert paths (pipeline and the CLIP _evaluate_listing scan) build
+    # their needed_buttons through here, so flagging once covers both.
+    enriched["lookalike"] = _lookalike_note(
+        top.get("slogan"), top.get("year"), buy_rules)
     return enriched
 
 
