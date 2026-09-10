@@ -88,10 +88,11 @@ def test_rerank_results_promotes_and_resorts():
     # 1986 gets the maximum positive delta, 1985 the maximum negative one.
     scores = {1985: (-1.0, -1.0), 1986: (1.0, 1.0)}
     out = rr.rerank_results(results, lambda r: scores[r["year"]])
+    _max = rr.YEAR_WEIGHT + rr.SID_WEIGHT
     assert out[0]["year"] == 1986
-    assert out[0]["overall"] == 0.78
-    assert out[1]["overall"] == 0.60
-    assert out[0]["rerank_delta"] == 0.10
+    assert abs(out[0]["overall"] - (0.68 + _max)) < 1e-9
+    assert abs(out[1]["overall"] - (0.70 - _max)) < 1e-9
+    assert abs(out[0]["rerank_delta"] - _max) < 1e-9
 
 
 def test_rerank_results_bounded_delta_cannot_exclude():
@@ -107,3 +108,17 @@ def test_rerank_disabled_by_default():
     os.environ["BUTTONMATCHER_RERANK"] = "1"
     assert rr.rerank_enabled() is True
     os.environ.pop("BUTTONMATCHER_RERANK", None)
+
+
+def test_weights_stay_at_the_calibrated_bound():
+    """The 2026-09-07 replay put the combined bound at 0.02+0.02.
+
+    At the old 0.05+0.05 a maximally wrong signal flipped 536 of 1,297 correct
+    #1s to win 103 — 41% of correct answers sit within 0.10 of their runner-up.
+    Raising these again requires re-running
+    `tools/calibrate_from_logs.py rerank` against the real Year/SloganID
+    scores, not the perfect-signal proxy.
+    """
+    assert rr.YEAR_WEIGHT == 0.02, rr.YEAR_WEIGHT
+    assert rr.SID_WEIGHT == 0.02, rr.SID_WEIGHT
+    assert rr.YEAR_WEIGHT + rr.SID_WEIGHT <= 0.04 + 1e-9

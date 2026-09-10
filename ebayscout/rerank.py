@@ -26,11 +26,25 @@ Pure-python (no cv2/numpy/torch); similarities are computed by the caller.
 
 import os
 
-# Max additive contribution of each score to `overall`.  Seeds pending offline
-# calibration (tools/calibrate_from_logs.py re-ranks logged shadow_top_json
-# under candidate weights against confirmed answers).
-YEAR_WEIGHT = 0.05
-SID_WEIGHT = 0.05
+# Max additive contribution of each score to `overall`.
+#
+# CALIBRATED 2026-09-07 (was 0.05/0.05).  The original seeds assumed a
+# leaderboard loose enough that a bounded delta could only help.  The replay
+# says otherwise: `calibrate_from_logs.py rerank --confirm-log ... --delta D`
+# over 1,416 confirmations (1,297 already at rank 1) reads
+#
+#     D=0.10 (the old combined bound): rescues 103 of the 119 deep answers,
+#             but a maximally wrong signal flips 536 of the 1,297 correct #1s
+#     D=0.05:  rescues  89, flips 251
+#     D=0.02:  rescues  60, flips  76
+#
+# 41% of correct #1s sit within 0.10 of their runner-up, so at the old weight
+# the worst case costs ~5x what the best case wins.  0.02 each puts upside and
+# downside on the same order while still reaching half the rescuable answers.
+# Re-run the replay against the REAL Year/SloganID scores (not the
+# perfect-signal proxy) before raising these again.
+YEAR_WEIGHT = 0.02
+SID_WEIGHT = 0.02
 
 # CLIP image-similarity gaps of ~0.05 are decisive in practice; this scales a
 # raw similarity contrast into the [-1, 1] score range.
@@ -44,7 +58,14 @@ SID_ABS_BASELINE = 0.82
 
 def rerank_enabled():
     """Re-ranking is opt-in until calibrated; EBAYSCOUT_RERANK=1 (or the shared
-    BUTTONMATCHER_RERANK=1) enables it.  Default off."""
+    BUTTONMATCHER_RERANK=1) enables it.  Default off.
+
+    Still OFF, but the front is alive: this is the design that would replace
+    the human bank-era pick with a measurement (Year Score) and separate
+    same-wording reissues from each other (SloganID Score) — fronts A24 and
+    A7/A16.  It is gradeable offline TODAY from confirm_log, no flag flip
+    required; see the weight calibration above and
+    SHADOW_PROMOTION_REVIEW.md §4."""
     for var in ("EBAYSCOUT_RERANK", "BUTTONMATCHER_RERANK"):
         if os.environ.get(var, "0").strip() in ("1", "true", "True"):
             return True
