@@ -537,10 +537,28 @@ PROGRESS LOGs and so is not worth doing for a tab count.
    blank because that mask never saturated. The hand-added headers align with
    the code's positions — nothing shifted.
 
-   **Still worth doing: a fresh buttonmatcher hydration.** The staleness
-   warning persists (6 `text_db.json` entries absent from the
-   `text_features.pt` cache), and until it clears, a `bowl_year=0` is ambiguous
-   between "no bowl buttons seen" and "the bowl candidates were never scored".
+   **The staleness warning was a false positive — resolved 2026-09-12, no
+   hydration needed.** I had flagged the 6 `text_db.json` entries absent from
+   the `text_features.pt` cache as a reason a `bowl_year=0` might be ambiguous.
+   It isn't. The user's `/reference check` reported `in json, not yet
+   encoded : 0` and `IN CACHE, NOT IN JSON : 0` — a direct contradiction — and
+   the reconciliation is that buttonmatcher deliberately never encodes
+   `Slogan Unknown N` placeholder rows: `hydrate_data()` filters them through
+   `slogan_search.is_placeholder_slogan`. `slogan_search.py` is
+   buttonmatcher-only and ebayscout's guard applied no such filter, so it
+   counted the 6 placeholders (ids 755, 888, 890, 906, 911, 912 — exactly the
+   6) as missing, permanently. A hydration could not have cleared it either:
+   `hydrate_data()` downloads an existing cache blob as-is and only re-encodes
+   when the blob is absent.
+
+   Fixed: `normalize.is_placeholder_slogan` mirrors buttonmatcher's predicate
+   and the guard now excludes placeholders from **both** sides of the
+   comparison, so a future warning means a real stale cache. The rule now
+   exists twice (that file is not in the shared set), so
+   `test_placeholder_predicate_body_is_byte_identical_to_buttonmatcher` pins
+   the two bodies equal and a third test asserts the guard actually subtracts
+   the set rather than describing it in a comment. A `bowl_year=0` was never
+   ambiguous.
 8. ~~Decide B31.~~ **Done 2026-09-12** — neither option I offered was right.
    The two detectors are logically identical, so buttonmatcher's battery
    already covers ebayscout's logic; the unguarded risk was the files drifting.

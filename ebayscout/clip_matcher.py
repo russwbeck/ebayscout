@@ -147,6 +147,7 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             # schema: {"<id>": {"slogan":..., "year":..., "type":...}, ...}.
             _slogan_key_to_entry.clear()
             _game_year_by_key.clear()
+            _placeholder_keys = set()
             try:
                 tdb_path = os.path.join(tmpdir, "text_db.json")
                 bucket.blob("text_db.json").download_to_filename(tdb_path)
@@ -161,6 +162,14 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
                         continue
                     _nk = normalize.normalize_key(_rec.get("slogan", ""))
                     _slogan_key_to_entry[(_yr, _nk)] = str(_eid)
+                    # A placeholder ('Slogan Unknown 3') is in text_db.json but
+                    # is NEVER encoded into text_features.pt -- buttonmatcher's
+                    # hydrate_data drops it.  Remember which keys those are so
+                    # the staleness guard below doesn't count them as missing
+                    # forever.  Tested on the raw slogan text, not _nk, so the
+                    # predicate stays byte-identical to buttonmatcher's.
+                    if normalize.is_placeholder_slogan(_rec.get("slogan", "")):
+                        _placeholder_keys.add((_yr, _nk))
                     # Bowl-offset entry: only stored when the game year differs
                     # from the season year, since a matching year adds nothing
                     # (the season year already matches).  Same rule as
@@ -199,11 +208,19 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             # swallowed, never blocks init().
             try:
                 if _slogan_key_to_entry:
+                    # Both sides drop placeholders: a cache encoded BEFORE
+                    # buttonmatcher started excluding them would otherwise
+                    # show up as bogus "cached pair not in text_db.json".
                     _cache_keys = {
                         (int(_y), normalize.normalize_key(_p))
                         for _p, _y in zip(_text_phrases, _text_years)
+                        if not normalize.is_placeholder_slogan(_p)
                     }
-                    _db_keys = set(_slogan_key_to_entry.keys())
+                    # Placeholders are legitimately absent from the cache
+                    # (buttonmatcher never encodes them), so counting them here
+                    # produced a PERMANENT false "6 entries missing" warning
+                    # that made every real staleness report unreadable.
+                    _db_keys = set(_slogan_key_to_entry.keys()) - _placeholder_keys
                     _stale = len(_cache_keys - _db_keys)
                     _pending = len(_db_keys - _cache_keys)
                     if _stale or _pending:
@@ -212,7 +229,9 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
                               f"not found in text_db.json, {_pending} text_db.json "
                               f"entries not found in the cache. Matching still uses the "
                               f"cache as loaded; a fresh buttonmatcher hydration (e.g. "
-                              f"after a /slogan edit) will refresh it.", flush=True)
+                              f"after a /slogan edit) will refresh it. "
+                              f"({len(_placeholder_keys)} 'Slogan Unknown' placeholder(s) "
+                              f"excluded — those are never encoded.)", flush=True)
             except Exception as _stale_exc:
                 print(f">>> CLIP: text_features.pt staleness check skipped ({_stale_exc})",
                       flush=True)
