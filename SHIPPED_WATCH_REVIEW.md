@@ -300,8 +300,14 @@ since the workbook cannot be more current than the file it is generated from.
 
 1. Re-run the Apps Script repair so the nine corrected cells in §1 show real
    numbers. Nothing below is readable from the workbook until this happens.
-2. Move the six **CLOSE** verdicts into `tested_hypothesis.md` and set those
-   entries to `SETTLED-CONFIRMED` / Stage 6, B14 with them.
+2. ~~Move the six **CLOSE** verdicts into `tested_hypothesis.md` and set those
+   entries to `SETTLED-CONFIRMED` / Stage 6, B14 with them.~~ **Done
+   2026-09-12** — `tested_hypothesis.md` **Part XIII**, §13.1-13.7, and the
+   seven register entries now point at their verdict section. Nothing was
+   promoted or retired: `SHIPPED-WATCH` already meant live, and A11's
+   unrestricted board in particular must keep running — it is read by
+   `_cross_sport_blocked()` and `_augment_results_with_nonfootball()`, so
+   stopping it would delete the fix rather than the instrument.
 3. Reconcile the two `LOGGER_FRONTS.md` copies (§6).
 4. The two operator checks that cost one command each: A26's boot line, C5's
    sidecar count.

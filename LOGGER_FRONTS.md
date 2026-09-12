@@ -215,7 +215,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** the auto-confirm half is shipped — score-only AUTO is blocked whenever the shadow #1 is a different, non-Football candidate. If misses persist because the shadow #1 stays football, widen to "any non-football candidate in shadow top-3 outscoring the football top".
 - **Standing:** measured on Logger_2's 2,590 rows — unfiltered shadow #1 agrees with restricted #1 91%; a non-football candidate takes #1 on ~15% of crawl crops but only 0.6% at ≥0.85. Decision to keep-as-is was overtaken the same day by a basketball lot auto-confirming as football twins (5 wrong AUTOs), which forced the auto-confirm half. The unfiltered-suggestions half remains open.
 - **Closed 2026-09-12:** gate MET on a batch it was not tuned on (4,170 rows / 637 images, 2026-07-19 -> 09-07). **63 score-only autos, zero fired against a different non-Football shadow #1.** The two boards now disagree on 12 of 1,435 confirmations (0.9%; Logger_2 read 9%), and every disagreement was resolved by a human or a tap, never by an auto. The unfiltered board is earning its keep in the picker — Hockey `Blue & White Chill Thrill` 0.908 taken over Football `Southern Cal-amity` 0.660. The open unfiltered-suggestions half is **C4's question**, not this one's. See `SHIPPED_WATCH_REVIEW.md` §3.
-- **Source:** `AUTOMATION_ROADMAP.md` Phase 4d; `AUTOMATION_VISION.md` §4 parallel track
+- **Source:** `AUTOMATION_ROADMAP.md` Phase 4d; `AUTOMATION_VISION.md` §4 parallel track; **verdict: `tested_hypothesis.md` §13.1**
 
 ### A12 — Per-slogan text-baseline centering
 
@@ -501,7 +501,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** the grid gap must be a stable signal across resolutions.
 - **Standing:** CONFIRMED and SHIPPED 2026-07-18, both repos. The gap is resolution-independent where detection is not.
 - **Closed 2026-09-12:** no instrument to read and no recurrence across 637 images / eight weeks. Nothing a further watch would learn. See `SHIPPED_WATCH_REVIEW.md` §3.
-- **Source:** `tested_hypothesis.md` Part VIII
+- **Source:** `tested_hypothesis.md` Part VIII; **verdict: `tested_hypothesis.md` §13.2**
 
 ### B11 — The flood gate's own calibration set
 
@@ -525,7 +525,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** the kept mask must clear the floor before inversion is trusted.
 - **Standing:** FIXED and SHIPPED 2026-07-15, both repos.
 - **Closed 2026-09-12:** 8 of 637 images took `+holeinvert` and **all eight reached Hough; none fell to the grid.** The floor works but is not roomy — four of the eight sat at coverage **0.085**, five thousandths above `HOLE_INVERT_MIN_COVERAGE`. If inversion ever regresses, that is the number to look at. See `SHIPPED_WATCH_REVIEW.md` §3.
-- **Source:** `tested_hypothesis.md` §4.10
+- **Source:** `tested_hypothesis.md` §4.10; **verdict: `tested_hypothesis.md` §13.3**
 
 ### B13 — Gemini coordinate scale
 
@@ -548,7 +548,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** the risky action is DROPPING, so it needs two independent signals; generalised so the drop does not require a button to recover in its place.
 - **Standing:** FIXED and SHIPPED. Working as designed — but dormant in practice (fires on ~1 of 78 lots), which is exactly what B7 exists to extend.
 - **Stopped 2026-09-12:** dormant confirmed a third time, per image this time — the swap fires on **5 of 637 lots (0.8%)** against a population of **65** lots carrying an unbacked circle. (The tab read 51 and 698; both were per-crop.) Working as designed, nothing to watch. Extending it is B7's question. See `SHIPPED_WATCH_REVIEW.md` §2.
-- **Source:** `tested_hypothesis.md` §4.6
+- **Source:** `tested_hypothesis.md` §4.6; **verdict: `tested_hypothesis.md` §13.4**
 
 ### B15 — Deficit-fill over-trust
 
@@ -560,7 +560,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** gate the new path, verify it is on-target, fall back — the reusable lesson from this front, now applied to every subsequent detection fix.
 - **Standing:** CONFIRMED and fixed. One part remains **still open**: the gate restores the prior behaviour rather than solving the underlying trust question.
 - **Closed 2026-09-12:** the front's real product was the doctrine, and B2, B11 and B17 all shipped under it. The path itself fires on **3 of 637 lots**. The underlying trust question is B7's and B20's, not this one's — closed as doctrine. See `SHIPPED_WATCH_REVIEW.md` §3.
-- **Source:** `tested_hypothesis.md` §4.1, §4.2
+- **Source:** `tested_hypothesis.md` §4.1, §4.2; **verdict: `tested_hypothesis.md` §13.5**
 
 ### B16 — Carpets
 
@@ -595,7 +595,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** frame agreement before position agreement.
 - **Standing:** SHIPPED 2026-07-17.
 - **Closed 2026-09-12:** no instrument to read and no DUAL-class recurrence across 637 images. See `SHIPPED_WATCH_REVIEW.md` §3.
-- **Source:** `tested_hypothesis.md` Part VII
+- **Source:** `tested_hypothesis.md` Part VII; **verdict: `tested_hypothesis.md` §13.6**
 
 ### B19 — Layer-1 radius robustness
 
@@ -651,7 +651,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** each tap is also a labeled training example for the learned-detection track, so the front is as much about accrual as about rate.
 - **Standing:** stable and normalised — `not_a_button` ~1.5–2.5%, no drift across L16–L20. `missed_button` exploded in Logger_18 from the same root cause as the 1979-front incident.
 - **Closed 2026-09-12 (rate half):** post-anchor-gate the taps are **below** the standing band and the spike is gone — 2026-08 (n=86) 4.65% / 13.95% -> **2026-09 (n=1,916) 0.63% / 1.10%**, as rates against real confirmations (the tab divided by every `confirm_log` row, 458 of which are `gemini_count` bookkeeping). The front's other half — each tap is a labeled training example — is accrual, and that is **C5's** gate. See `SHIPPED_WATCH_REVIEW.md` §3.
-- **Source:** `AUTOMATION_ROADMAP.md` status update 2026-07-09; `log_analysis.md` Logger_18 second pass
+- **Source:** `AUTOMATION_ROADMAP.md` status update 2026-07-09; `log_analysis.md` Logger_18 second pass; **verdict: `tested_hypothesis.md` §13.7**
 
 ### B24 — Coin and round-clutter false positives
 
