@@ -895,6 +895,19 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Standing:** outstanding operator-side ask, unchanged across roadmap refreshes.
 - **Source:** `AUTOMATION_ROADMAP.md` status update "Still waiting on operator-side data"
 
+### C7 — DB-direct's load, and whether excluding it starves the shelf
+
+- **Track:** Reference and data
+- **Status:** OPEN
+- **Stage:** 1
+- **Volume:** 300 — pipeline crops with `det_db_direct` populated, so the rate can be split by lot shape.
+- **Question:** a crop's CLIP board carries ONE row per candidate year, so a slogan with a same-year sibling in the lot is invisible on its own board at every depth, and `db_direct` appends its DB rows to rescue it. How much of the feed depends on that rescue — and does excluding rescued crops from `reference/_staging` entrench the very gap that caused them?
+- **Instrument:** `det_db_direct` (appended 2026-09-12, per crop: 1 rescued, 0 not, blank off-pipeline); `drop_db_direct` in the `>>> PIPELINE STAGE_FUNNEL` line; `chosen_year` crowding per `job_id` in `confirm_log`.
+- **Gate:** two parts. (a) the rate, split by lot shape — measure `det_db_direct` against same-year crowding over >=300 crops, which says whether the rescue is a tail effect or the normal case. (b) the staging question — for slogans that were rescued, check whether they ever acquire a reference photo by another route. If they do, the exclusion is harmless; if they do not, test whether staging them behind the existing human `/reference` review is safe, since the exclusion exists only because `db_direct` has no CLIP corroboration, which human review supplies.
+- **Standing:** found 2026-09-12 on a 13-button lot that logged `DB_DIRECT: appended DB rows for 4/13` with `in_db=True` on every crop — so nothing was missing from the DB; four slogans were shadowed by same-year siblings. **4/13 is LOW for that lot shape, not high:** all 13 buttons were 2018, so up to 12 could have been starved, and for 9 the right slogan still won its own year's slot. The exposure is the finding — pooled over the 2026-09-07 export, **1,316 of 1,416 confirmed buttons (92.9%) share a year with a sibling in their own lot**, and **81 of 118 lots (68.6%) are entirely one year**, leaving 881 buttons sitting behind a year-argmax. These are complete-set lots, the dominant shape in this feed. So `db_direct` is load-bearing, and **its rate was print-only and unlogged until this front** — the third instance in one session of a number computed, printed and discarded. The staging interaction is the live hypothesis: that lot staged 7 of 9 with `db_direct=3` among the drops, so the crops CLIP could not see are systematically the ones not contributing the reference photos that would let it see them next time.
+- **No LIVE block yet:** the deployed workbook has no C7 tab, and one only appears at a full rebuild, which costs the typed PROGRESS LOGs. Read `det_db_direct` from the raw tab until then.
+- **Source:** `SHIPPED_WATCH_REVIEW.md` §8; `ebayscout/main.py` `_gemini_db_direct_enabled` and `pipeline_classify.staging_funnel`
+
 ---
 
 ## D. Built but never graded

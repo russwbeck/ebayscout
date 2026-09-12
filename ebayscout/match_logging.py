@@ -543,6 +543,7 @@ def build_match_record(
     fullres_top=None,
     variant_top=None,
     within_year=None,
+    db_direct=None,
 ):
     """One record per crop, written at detection/match time.
 
@@ -587,6 +588,10 @@ def build_match_record(
         "fullres_top": fullres_top or [],
         "variant_top": variant_top or [],
         "within_year": within_year or {},
+        # Per-CROP, not per-lot: the pipeline's DB_DIRECT print reports n/13 for
+        # the whole lot, which cannot say WHICH crops needed the rescue.  None
+        # on every non-pipeline path, where the tier does not exist.
+        "db_direct": (None if db_direct is None else int(bool(db_direct))),
     }
 
 
@@ -783,6 +788,16 @@ MATCH_HEADER = [
     # was plausible, which is the next reading on the 6.1% residual. ---
     "det_satfb_blue_cov",
     "det_satfb_bright_cov",
+    # --- appended 2026-09-12: per-crop DB-direct rescue (front C7).  A crop's
+    # CLIP board carries ONE row per candidate year, so a slogan with a
+    # same-year sibling in the lot can be invisible on its own board at every
+    # depth; db_direct appends the DB rows so the resolver can see it.  The
+    # mechanism was print-only (">>> PIPELINE DB_DIRECT: ... n/13"), so its
+    # rate across lots was unknowable -- and 92.9% of confirmed buttons share a
+    # year with a sibling in their own lot, so it is load-bearing, not an edge
+    # case.  1 = this crop needed the rescue, 0 = it did not, blank = not a
+    # pipeline crop (the tier exists only there). ---
+    "det_db_direct",
 ]
 
 CONFIRM_HEADER = [
@@ -912,6 +927,10 @@ def flatten_match_record(rec):
         _cell(ni.get("concentric_removed")),
         _cell(d.get("satfb_blue_cov")),
         _cell(d.get("satfb_bright_cov")),
+        # --- appended 2026-09-12: per-crop DB-direct rescue (C7).  LAST, to
+        # match MATCH_HEADER: this cell was briefly emitted ahead of the four
+        # B4/B2 columns, which silently shifted all five by one. ---
+        _cell(rec.get("db_direct")),
     ]
 
 

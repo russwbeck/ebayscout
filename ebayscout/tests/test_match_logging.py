@@ -704,9 +704,9 @@ def test_gem_unmatched_columns_are_the_header_tail():
     # gem_unmatched → reconcile swap → Gemini-anchored A/B shadow → full-res
     # match shadow (Logger_19 A/B) → text-variant match shadow → within-year
     # scoring, the final appended column.
-    # Still one contiguous run in this order, now with the four columns
-    # appended 2026-09-12 behind it (hence [-12:-4], not [-8:]).
-    assert ml.MATCH_HEADER[-12:-4] == ["det_gem_unmatched", "det_gem_unmatched_json",
+    # Still one contiguous run in this order, now with the FIVE columns
+    # appended 2026-09-12 behind it (hence [-13:-5], not [-8:]).
+    assert ml.MATCH_HEADER[-13:-5] == ["det_gem_unmatched", "det_gem_unmatched_json",
                                        "det_n_swapped", "det_reconcile_swaps_json",
                                        "det_gemini_anchored_json", "fullres_top_json",
                                        "variant_top_json", "within_year_json"]
@@ -751,7 +751,7 @@ def test_within_year_column_is_final_and_flattens():
     )
     flat = ml.flatten_match_record(rec)
     assert len(flat) == len(ml.MATCH_HEADER)
-    assert ml.MATCH_HEADER[-5] == "within_year_json"   # four appended behind it
+    assert ml.MATCH_HEADER[-6] == "within_year_json"   # five appended behind it
     got = json.loads(flat[ml.MATCH_HEADER.index("within_year_json")])
     # The losing same-year sibling is recorded even though no leaderboard
     # column can hold it — that is the point of this column.
@@ -996,11 +996,11 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     simply carry the empty value they already carried whenever the shadow did
     not run.
     """
-    # match_log is 91 columns since 2026-09-12 (four appended for B4 and B2),
+    # match_log is 92 columns since 2026-09-12 (five appended: four for B4/B2,
     # with fullres_top_json still exactly where it has always been — an append
     # must never shift a position, which is what these three indices pin.
     # (The workbook's pasted tab pads two helper cells after the header.)
-    assert len(ml.MATCH_HEADER) == 91, len(ml.MATCH_HEADER)
+    assert len(ml.MATCH_HEADER) == 92, len(ml.MATCH_HEADER)
     assert ml.MATCH_HEADER.index("fullres_top_json") == 84   # column CG
     assert ml.MATCH_HEADER.index("variant_top_json") == 85   # column CH
     assert ml.MATCH_HEADER.index("within_year_json") == 86   # column CI
@@ -1053,11 +1053,11 @@ def test_stuck_front_columns_are_appended_and_flatten():
 
     # Appended, in the order hand-added to the Logger's header row (CJ..CM),
     # and nothing was inserted ahead of them.
-    assert ml.MATCH_HEADER[-4:] == [
+    assert ml.MATCH_HEADER[-5:] == [
         "det_unguided_band_removed", "det_unguided_concentric_removed",
-        "det_satfb_blue_cov", "det_satfb_bright_cov"]
-    assert ml.MATCH_HEADER.index("within_year_json") == len(ml.MATCH_HEADER) - 5
-    assert len(ml.MATCH_HEADER) == 91, len(ml.MATCH_HEADER)
+        "det_satfb_blue_cov", "det_satfb_bright_cov", "det_db_direct"]
+    assert ml.MATCH_HEADER.index("within_year_json") == len(ml.MATCH_HEADER) - 6
+    assert len(ml.MATCH_HEADER) == 92, len(ml.MATCH_HEADER)
 
     diag = ml.build_detection_diag(
         h=600, w=800, bg_brightness=170.0, bg_is_white=True,
@@ -1126,4 +1126,39 @@ def test_dedup_zero_is_a_reading_and_unreached_fork_is_blank():
     )
     brow = ml.flatten_match_record(brec)
     assert len(brow) == len(ml.MATCH_HEADER)
-    assert brow[-4:] == ["", "", "", ""]
+    assert brow[-5:] == ["", "", "", "", ""]
+
+
+def test_db_direct_is_per_crop_and_blank_off_the_pipeline(self=None):
+    """Front C7's column. Per CROP, not per lot.
+
+    The mechanism only ever announced itself as `>>> PIPELINE DB_DIRECT:
+    appended DB rows for 4/13 crop(s)` — a lot-level count that cannot say
+    WHICH crops needed the rescue, printed and discarded. 92.9% of confirmed
+    buttons share a year with a sibling in their own lot, which is the
+    population a year-folded board can starve, so this is load-bearing rather
+    than an edge case.
+
+    Three states, all distinct: 1 rescued, 0 not rescued, blank not a pipeline
+    crop.
+    """
+    def _rec(**kw):
+        d = ml.build_detection_diag(
+            h=1, w=1, bg_brightness=1, bg_is_white=False, mask_path="blue_only",
+            hough_pass1_count=0, hough_retry_count=None, final_count_user=1,
+            final_count_noinput=1, user_count=None, detector_used="hough",
+            n_crops=1)
+        return ml.flatten_match_record(ml.build_match_record(
+            service="s", command="/c", mode="pipeline", job_id="j",
+            thread_ts=None, channel_id="c", user_id=None, crop_num=1,
+            check_id="k", detection=d, bank=None, restricted_top=[],
+            shadow_top=[], shadow_enabled=True, **kw))
+
+    i = ml.MATCH_HEADER.index("det_db_direct")
+    assert _rec(db_direct=True)[i] == 1,  "rescued must read 1, not TRUE"
+    assert _rec(db_direct=False)[i] == 0, "not-rescued is a reading, not a blank"
+    assert _rec()[i] == "", "off the pipeline the tier does not exist — blank"
+    # and it is the last column, so nothing shifted when it was appended
+    assert i == len(ml.MATCH_HEADER) - 1
+    for row in (_rec(db_direct=True), _rec()):
+        assert len(row) == len(ml.MATCH_HEADER)

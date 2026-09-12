@@ -547,3 +547,33 @@ PROGRESS LOGs and so is not worth doing for a tab count.
    `test_the_two_detectors_have_not_drifted` now asserts the equivalence by
    AST on every run, 0 MB, no CI needed. Copying 23 MB of fixtures into a repo
    with no CI would have bought the appearance of coverage instead.
+
+9. **New front C7 — `db_direct`'s load, and whether excluding it starves the
+   shelf.** Opened 2026-09-12 off the `/crawl 1` verification lot, which logged
+   `DB_DIRECT: appended DB rows for 4/13` with `in_db=True` on every crop.
+
+   **4/13 is low for that lot shape, not high.** All 13 buttons were 2018, and
+   a crop's CLIP board carries one row per candidate *year*, so up to 12 could
+   have been starved by same-year siblings; for 9 the right slogan still won
+   its own year's slot. Nothing was missing from the DB.
+
+   The exposure is the finding. Pooled over the 2026-09-07 export, **1,316 of
+   1,416 confirmed buttons (92.9%) share a year with a sibling in their own
+   lot**, and **81 of 118 lots (68.6%) are entirely one year**, leaving 881
+   buttons behind a year-argmax. These are complete-set lots — the dominant
+   shape in this feed — so `db_direct` is load-bearing rather than an edge
+   case, and **its rate was print-only until now**: the third number in one
+   session that was computed, printed and discarded.
+
+   `det_db_direct` is appended per crop (1 rescued, 0 not, blank off-pipeline),
+   and it is per *crop* deliberately: the `DB_DIRECT` print is a lot-level
+   `n/13` that cannot say which crops needed the rescue. **Hand-add `CN1 =
+   det_db_direct` to the Logger's `match_log`.**
+
+   The live hypothesis is the staging interaction: that lot staged 7 of 9 with
+   `db_direct=3` among the drops, because `db_direct` has no CLIP corroboration
+   and so never auto-stages. Which means the crops CLIP cannot see are
+   systematically the ones not contributing the reference photos that would let
+   it see them next time. C7's gate tests whether those slogans acquire a
+   reference by another route, and if not, whether human `/reference` review
+   supplies the corroboration the exclusion exists for.
