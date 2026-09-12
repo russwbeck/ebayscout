@@ -525,14 +525,22 @@ PROGRESS LOGs and so is not worth doing for a tab count.
    before they read — no crawl, no spend. Once B4's counters carry data, switch
    its second LIVE cell off the +1-cluster proxy and onto them.
 
-7. **Merge and deploy both repos.** Added after the fact, and it now gates
-   three fronts at once: B4's and B2's four new columns write nothing until
-   the services run the new code, and A26's parity wiring is likewise inert.
-   Do a fresh buttonmatcher hydration first, so the 6 `text_db.json` entries
-   missing from the `text_features.pt` cache are present before A26's first
-   reading (see A26 in `LOGGER_FRONTS.md`) — otherwise a `bowl_year=0` is
-   ambiguous between "no bowl buttons seen" and "the bowl candidates were
-   never scored".
+7. ~~**Merge and deploy both repos.**~~ **Done 2026-09-12**, and verified on
+   one replayed pipeline lot (`/pipeline/notify` against an existing
+   `.response.json` — no eBay call, no Gemini call). All four checks held:
+   ebayscout's own cold start printed `>>> GAME_YEAR: 29 …`, **matching
+   buttonmatcher exactly**; `>>> PIPELINE: label sidecar written for
+   69d84a25…` — the first sidecar ebayscout has ever produced; `bowl_year=0`
+   present on the RESOLVE line (correct, the lot was `Class of 1957`); and
+   `match_log` row 4641 carries `det_unguided_band_removed = 0` and
+   `det_unguided_concentric_removed = 0` at CJ/CK, with both `satfb` columns
+   blank because that mask never saturated. The hand-added headers align with
+   the code's positions — nothing shifted.
+
+   **Still worth doing: a fresh buttonmatcher hydration.** The staleness
+   warning persists (6 `text_db.json` entries absent from the
+   `text_features.pt` cache), and until it clears, a `bowl_year=0` is ambiguous
+   between "no bowl buttons seen" and "the bowl candidates were never scored".
 8. ~~Decide B31.~~ **Done 2026-09-12** — neither option I offered was right.
    The two detectors are logically identical, so buttonmatcher's battery
    already covers ebayscout's logic; the unguarded risk was the files drifting.
