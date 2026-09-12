@@ -348,6 +348,99 @@ def test_the_two_detectors_have_not_drifted():
             "\n  (same function sets means a body changed — diff the two files)")
 
 
+# --- placeholder slogans (buttonmatcher/slogan_search.py is not shared) -------
+
+def test_placeholder_slogan_predicate_matches_buttonmatcher():
+    """`normalize.is_placeholder_slogan` mirrors buttonmatcher's copy.
+
+    buttonmatcher drops 'Slogan Unknown N' rows when it encodes
+    text_features.pt (main.py hydrate_data, via slogan_search).  ebayscout
+    needs the same predicate so its staleness guard doesn't count those rows
+    as a stale cache forever.  slogan_search.py serves the human typed-slogan
+    lane and is buttonmatcher-only, so the rule exists twice; these cases pin
+    it on this side.
+    """
+    for phrase in ("Slogan Unknown", "Slogan Unknown 3", "slogan unknown 12",
+                   "SLOGAN UNKNOWN 5", "  Slogan Unknown 1  "):
+        assert normalize.is_placeholder_slogan(phrase), phrase
+    for phrase in ("Beat Michigan", "Year Unknown", "The Unknown Soldier",
+                   "unknown slogan", "", None):
+        assert not normalize.is_placeholder_slogan(phrase), phrase
+
+
+def test_placeholder_predicate_body_is_byte_identical_to_buttonmatcher():
+    """Same one-line body on both sides, or this is real drift."""
+    here = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    theirs = os.path.join(os.path.dirname(here), "buttonmatcher",
+                          "slogan_search.py")
+    if not os.path.exists(theirs):
+        print("    SKIP: buttonmatcher not checked out alongside")
+        return
+    import ast
+    want = None
+    for node in ast.parse(open(theirs).read()).body:
+        if isinstance(node, ast.FunctionDef) and node.name == "is_placeholder_slogan":
+            want = ast.dump(ast.Module(body=[n for n in node.body
+                                             if not _is_docstring(n)],
+                                       type_ignores=[]))
+    assert want is not None, "buttonmatcher lost is_placeholder_slogan"
+    mine = None
+    src = os.path.join(here, "ebayscout", "normalize.py")
+    for node in ast.parse(open(src).read()).body:
+        if isinstance(node, ast.FunctionDef) and node.name == "is_placeholder_slogan":
+            mine = ast.dump(ast.Module(body=[n for n in node.body
+                                             if not _is_docstring(n)],
+                                       type_ignores=[]))
+    assert mine == want, (
+        "is_placeholder_slogan has DRIFTED between the two repos:\n"
+        f"  ebayscout/normalize.py : {mine}\n"
+        f"  buttonmatcher/slogan_search.py : {want}")
+
+
+def _is_docstring(node):
+    import ast
+    return (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str))
+
+
+def test_the_staleness_guard_ignores_placeholders():
+    """Reproduces the arithmetic of clip_matcher's guard on the live data.
+
+    The live warning read "6 text_db.json entries not found in the cache" for
+    months; `/reference check` said 0 were unencoded.  Both were right — the 6
+    were placeholders.  With them excluded the guard reports clean.
+    """
+    db = {(1985, normalize.normalize_key("Beat Michigan")): "1",
+          (1986, normalize.normalize_key("Slogan Unknown 3")): "755",
+          (1987, normalize.normalize_key("Slogan Unknown 4")): "888"}
+    placeholders = {k for k, _ in db.items()
+                    if k[0] in (1986, 1987)}   # what the loop records
+    cache = {(1985, normalize.normalize_key("Beat Michigan"))}
+    pending = len(set(db) - placeholders - cache)
+    stale = len(cache - (set(db) - placeholders))
+    assert (stale, pending) == (0, 0)
+    # and without the exclusion, the same data warns — the old false positive
+    assert len(set(db) - cache) == 2
+
+
+def test_clip_matcher_actually_excludes_placeholders_in_the_guard():
+    """The fix lives in clip_matcher.py, which needs torch and can't be
+    imported here, so assert on its source: the guard must subtract the
+    placeholder set rather than only mention it in a comment."""
+    here = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    src = open(os.path.join(here, "ebayscout", "clip_matcher.py")).read()
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert "_placeholder_keys = set()" in code
+    assert "_placeholder_keys.add(" in code
+    assert ("_db_keys = set(_slogan_key_to_entry.keys()) - _placeholder_keys"
+            in code), "the staleness guard no longer excludes placeholders"
+    assert "if not normalize.is_placeholder_slogan(_p)" in code, \
+        "the cached side of the guard no longer excludes placeholders"
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_"):

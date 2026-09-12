@@ -983,6 +983,7 @@ def process_pipeline_lot(job_id: str) -> None:
     #     Scenario A/B can match it.  Appended at the END, so cands[0] (and every
     #     CLIP score/gap logged elsewhere) is untouched.  Fail-open.
     _n_dbdirect = 0
+    _dbdirect_crops: set[int] = set()   # WHICH crops, for the per-crop column
     if _gemini_db_direct_enabled():
         try:
             _db_phrases, _db_years, _db_types = _cm.text_db_arrays()
@@ -999,6 +1000,7 @@ def process_pipeline_lot(job_id: str) -> None:
                 if _dbc:
                     crop_candidates[_ci] = list(_pool) + _dbc
                     _n_dbdirect += 1
+                    _dbdirect_crops.add(_ci)
             if _n_dbdirect:
                 print(f">>> PIPELINE DB_DIRECT: appended DB rows for {_n_dbdirect}/"
                       f"{len(crop_to_slogan)} crop(s) whose Gemini slogan CLIP's "
@@ -1246,6 +1248,11 @@ def process_pipeline_lot(job_id: str) -> None:
                     restricted_top=d.get("restricted_top", []),
                     shadow_top=d.get("shadow_top", []),
                     shadow_enabled=bool(d.get("shadow_enabled")),
+                    # Front C7.  `i` is the same index crop_candidates was
+                    # keyed by, so this says WHICH crops the year-folded board
+                    # could not surface — the lot-level DB_DIRECT print never
+                    # could.
+                    db_direct=(i in _dbdirect_crops),
                 )
                 for i, d in enumerate(diagnostics)
             ]
