@@ -421,8 +421,11 @@ since the workbook cannot be more current than the file it is generated from.
 
 ## 7. Order of work
 
-1. Re-run the Apps Script repair so the nine corrected cells in §1 show real
-   numbers. Nothing below is readable from the workbook until this happens.
+1. ~~Re-run the Apps Script repair so the nine corrected cells in §1 show real
+   numbers.~~ **Done 2026-09-12**, three runs: the first applied §1, the
+   second §1b, the third §1c's fixed reporting tail. **23 of 23 predicted
+   values verified against the raw tabs in the deployed workbook.** `INDEX!A4`
+   was clobbered by the second run and restored by hand.
 2. ~~Move the six **CLOSE** verdicts into `tested_hypothesis.md` and set those
    entries to `SETTLED-CONFIRMED` / Stage 6, B14 with them.~~ **Done
    2026-09-12** — `tested_hypothesis.md` **Part XIII**, §13.1-13.7, and the
@@ -432,8 +435,9 @@ since the workbook cannot be more current than the file it is generated from.
    `_cross_sport_blocked()` and `_augment_results_with_nonfootball()`, so
    stopping it would delete the fix rather than the instrument.
 3. Reconcile the two `LOGGER_FRONTS.md` copies (§6).
-4. The two operator checks that cost one command each: A26's boot line, C5's
-   sidecar count.
+4. The two operator checks that cost one command each: ~~A26's boot line~~
+   (**done** — 29 bowl-offset entries indexed, which turned into the parity
+   work in §5), and **C5's sidecar count — still open**.
 5. Decide C4 — fill the shelf deliberately or re-scope the front.
 6. ~~B4's instrumentation, then B2's residual 39.~~ **Done 2026-09-12** —
    four columns appended to `match_log` (CJ-CM), no new compute, since both
@@ -443,3 +447,18 @@ since the workbook cannot be more current than the file it is generated from.
    residual. B4 returns to `SHIPPED-WATCH`. Both need one normal feed cycle
    before they read — no crawl, no spend. Once B4's counters carry data, switch
    its second LIVE cell off the +1-cluster proxy and onto them.
+
+7. **Merge and deploy both repos.** Added after the fact, and it now gates
+   three fronts at once: B4's and B2's four new columns write nothing until
+   the services run the new code, and A26's parity wiring is likewise inert.
+   Do a fresh buttonmatcher hydration first, so the 6 `text_db.json` entries
+   missing from the `text_features.pt` cache are present before A26's first
+   reading (see A26 in `LOGGER_FRONTS.md`) — otherwise a `bowl_year=0` is
+   ambiguous between "no bowl buttons seen" and "the bowl candidates were
+   never scored".
+8. **Decide B31.** The battery's invariant holds on production data, but
+   ebayscout has no copy and neither repo has a CI workflow, so the "covers
+   both detectors" claim rests on a one-time manual check. Either add the
+   fixture runner to ebayscout, or restate the claim as manual with a date.
+   Until one of those, it is the only KEEP whose next step is a decision
+   rather than a reading.
