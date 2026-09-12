@@ -196,3 +196,26 @@ def test_both_registers_parse_and_bold_labels_carry_their_colon():
                     assert re.match(r"^\s*-\s+\*\*[^*]+:\*\*", line), (
                         f"{os.path.basename(path)} {fid}: bold label without a "
                         f"colon will swallow the next field — {line[:70]}")
+
+
+def test_the_repair_falls_back_to_the_front_id_when_a_title_changes():
+    """A tab's name is derived from the front's TITLE, and titles change.
+
+    A25 was renamed "Edition-twin wrong-year picks" -> "Edition-twin
+    resolution" on 2026-09-09. The generated tab name stopped matching the
+    deployed tab, so its two LIVE cells would have been written nowhere —
+    reported under MISSING TABS at best, and silently stale if nobody read the
+    line. A front's ID never changes, so the script matches on the "A25 "
+    prefix as a fallback and names every tab it reached that way, so the
+    operator knows to rename it.
+    """
+    import tempfile
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    assert "byId" in gs, "no front-ID fallback in the emitted script"
+    assert "MATCHED BY FRONT ID" in gs, "the fallback must report itself"
+    # the fallback must not silently replace the MISSING TABS report
+    assert "MISSING TABS" in gs

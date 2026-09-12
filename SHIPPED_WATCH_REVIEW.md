@@ -454,17 +454,39 @@ thereafter.*
 
 ## 6. Also found
 
-**A17 is a `SHIPPED-WATCH` front the workbook does not know about.**
-`LOGGER_FRONTS.md` has drifted between the repos: buttonmatcher's copy carries
-70 fronts (B32 is new) and re-statuses A1, A2, A7, A17, A23, A25 and B6;
+**A17 was a `SHIPPED-WATCH` front the workbook did not know about.**
+`LOGGER_FRONTS.md` had drifted between the repos: buttonmatcher's copy carried
+70 fronts (B32 new) and re-statused A1, A2, A7, A17, A23, A25 and B6, while
 ebayscout's — the copy `build_goal_trackers.py` reads, and therefore the copy
-the workbook was generated from — still has 69 and the old statuses. A17
-("Flip `GAP_ONLY` live") became `SHIPPED-WATCH` in buttonmatcher on 2026-09-07
-and so was outside this review's 17. Its own entry already names its watch
-band (`[0.15,0.20)` reads 99.2% pooled but 94.1% on human truth, n=34).
+the workbook is generated from — still had 69 and the old statuses. A17 ("Flip
+`GAP_ONLY` live") became `SHIPPED-WATCH` on 2026-09-07 and so fell outside this
+review's 17. Its own entry names its watch band (`[0.15,0.20)` reads 99.2%
+pooled but 94.1% on human truth, n=34).
 
-The two registers should be reconciled in one pass before the next rebuild,
-since the workbook cannot be more current than the file it is generated from.
+**Reconciled 2026-09-12.** Every difference was buttonmatcher being newer —
+no ebayscout-only front, no ebayscout-only preamble — so the newer copy became
+both, and the two files are byte-identical again. Three statements the same day
+had made false were corrected rather than imported: the tracker-formula
+parenthetical (the patch is applied and the workbook repaired, and four more
+defective cells turned up since), `match_log`'s width (87 → **91**), and the
+"rebuild of 69 tabs" count.
+
+**It surfaced a coupling worth knowing about.** A tab's name is generated from
+its front's TITLE, and A25's title changed in that newer copy —
+"Edition-twin wrong-year picks" → "Edition-twin resolution". The deployed tab
+still carries the old name, so the repair would have written A25's two LIVE
+cells **nowhere**: reported under `MISSING TABS` at best, silently stale if
+nobody read the line. A front's ID never changes, so `emit_apps_script` now
+falls back to matching the `A25 ` prefix and reports every tab it reached that
+way under `MATCHED BY FRONT ID (rename the tab)`. Pinned by
+`test_the_repair_falls_back_to_the_front_id_when_a_title_changes`.
+
+**Two consequences for the deployed workbook**, neither urgent: it has no
+**B32** tab (B32 has no LIVE block, so the repair neither needs nor touches
+it), and its INDEX/ROLLUP still count **69** fronts — those are static cells
+written at build time, and the repair only rewrites LIVE blocks and
+`derived!A3`. Both resolve at the next full rebuild, which costs the typed
+PROGRESS LOGs and so is not worth doing for a tab count.
 
 ## 7. Order of work
 
@@ -481,7 +503,11 @@ since the workbook cannot be more current than the file it is generated from.
    unrestricted board in particular must keep running — it is read by
    `_cross_sport_blocked()` and `_augment_results_with_nonfootball()`, so
    stopping it would delete the fix rather than the instrument.
-3. Reconcile the two `LOGGER_FRONTS.md` copies (§6).
+3. ~~Reconcile the two `LOGGER_FRONTS.md` copies (§6).~~ **Done 2026-09-12** —
+   buttonmatcher's was newer in every respect, so it became both; the registers
+   are byte-identical again at 70 fronts. It exposed a title-to-tab-name
+   coupling (A25) that would have silently stranded two LIVE cells; the repair
+   now falls back to the front ID and says when it did.
 4. The two operator checks that cost one command each: ~~A26's boot line~~
    (**done** — 29 bowl-offset entries indexed, which turned into the parity
    work in §5), and **C5's sidecar count — still open**.

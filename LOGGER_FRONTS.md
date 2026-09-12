@@ -13,9 +13,31 @@ things you need to know a front's state without opening anything: what is being
 asked, what measures it, what would settle it, where it stands, and which doc
 carries the full write-up. Read the source before acting on any of it.
 
+**Retiring a front never removes its column.** When a front is refuted or
+closed, what stops is the *producer* — the extra pass, matmul or encode — not
+the column. `match_log` is **91** positional columns (87 until 2026-09-12, when
+four were appended for B4 and B2) and `confirm_log` 23; the workbook addresses
+them by letter and every pooled export was pasted under that exact header, so
+removing one is a rebuild of every front tab, not an edit. **Appending at the
+end is the one structural change that is safe** — it shifts no existing
+position, which `tests/test_match_logging.py` now asserts by name rather than
+by negative index. A retired
+instrument keeps its column and writes the empty value it already carries on
+rows where it didn't run. See `LOGGING.md` "Retiring a measurement".
+
 **It drives the Progress Trackers workbook.** `build_goal_trackers.py` parses
 this file and emits one spreadsheet tab per front, so the workbook cannot say
-something this file does not. Add a front here and it gets a tab; change a gate
+something this file does not. (Seventeen of the generated LIVE blocks have
+computed the wrong number at one time or another, in three defect classes:
+empty `[]` cells counted as data, blank ranks counted as improvements, and
+detection facts read per-crop instead of per-image — plus, found 2026-09-12, a
+bare `"<>"` criterion counting a pasted empty STRING as a value. All fixed in
+`build_goal_trackers.py` and pinned by guards in
+`ebayscout/tests/test_goal_tracker_repair.py`; the deployed workbook was
+repaired on 2026-09-12 and **23 of 23 corrected cells were verified against the
+raw tabs**. See `SHADOW_PROMOTION_REVIEW.md` §1.2 and
+`SHIPPED_WATCH_REVIEW.md` §1/§1b for which cells and what they had read.) Add a
+front here and it gets a tab; change a gate
 here and the tab's target changes. Never edit the workbook's structure by hand.
 
 **How the Logger data reaches it.** The workbook carries two raw tabs,
@@ -80,7 +102,7 @@ how far the *evidence* has got.
 Stage 3 → 4 is the §4.2 rule and is where most fronts stall: a result tuned on
 its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 
-**Two standing directives** (from `HYPOTHESES_IN_PROGRESS.md`, do not skip):
+**Three standing directives** (from `HYPOTHESES_IN_PROGRESS.md`, do not skip):
 
 1. **Full-data before any threshold move.** Refresh the pooled band-correctness
    reference across EVERY Logger export before touching
@@ -89,6 +111,12 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
    96.4%.
 2. **Full-data before any full-res / variant call.** Same rule for the match
    shadows (A1, A2) — grade the paired A/B across all Loggers, not one batch.
+3. **Human-confirmed before any threshold move.** `gemini_auto` fires only when
+   CLIP already agreed with Gemini, so grading a band against those rows asks
+   the board whether it agrees with itself — and they are 75% of confirmations.
+   Split A3/A4 by source: on the 2026-09-07 export `[0.82,0.85)` reads 97.4%
+   pooled and **90.3% human-confirmed**, and the `GAP_ONLY` band reads 99.2%
+   pooled and **94.1% human-confirmed**. See `SHADOW_PROMOTION_REVIEW.md` §1.1.
 
 ---
 
@@ -97,24 +125,30 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### A1 — Full-res match shadow
 
 - **Track:** Matching and auto-confirm
-- **Status:** SHADOW
-- **Stage:** 4
+- **Status:** SETTLED-REFUTED
+- **Stage:** 5
 - **Question:** does matching the crop at ≤2200px instead of the ≤800px detection frame produce better #1s or more correct auto-confirms?
 - **Instrument:** `fullres_top_json` paired against `restricted_top_json` on the same row; lever `MATCH_FULLRES_SHADOW`; live path stays off via `MATCH_FULLRES=0`
 - **Gate:** paired A/B across ALL Loggers after the logging-header fix. Promote only if truth@#1 and net-new correct autos beat ≤800px at scale with zero new wrong autos. Standing expectation: no win.
-- **Standing:** leaning REFUTE. Refuted live on Logger_19 (7 lots, same-photo A/B); Logger_21 paired n≈100 — 90/93 identical, −1 truth@#1; headroom ~1 correct auto/run, landing in the same [0.82,0.85) band a threshold drop would reach, so no discrimination.
-- **Source:** `tested_hypothesis.md` §10.1 (verdict) + Part IX (the experiment); `log_analysis.md` "Full-res match SHADOW"
+- **Standing:** REFUTED, third independent read (2026-09-07 export, n=196 paired confirmations of 310 instrumented crops). #1 identical on 195/196; truth@#1 188→189; auto-confirm 6 new correct but **1 new WRONG** — `1994 "Eye Don't Think So"` auto-confirmed as the punctuation twin `1997 "'Eye' Don't Think So"` — plus 2 correct autos lost. The gate names zero new wrong autos. Also unreachable at scale: the shadow only runs on `/sort`, `/inventory`, `/scout`, never on the pipeline path that is 92.5% of volume. Earlier reads: refuted live on Logger_19 (7 lots), Logger_21 paired n≈100.
+- **Done 2026-09-07:** `BUTTONMATCHER_MATCH_FULLRES_SHADOW` now defaults to `0`; the second full-res encode and match no longer run. **`fullres_top_json` keeps its column position and writes `[]`** — what it already carried on the 3,860 rows where the shadow didn't fire. No header change. The `/reference` staging crop is unaffected: `_staging_crop_jpeg` still cuts confirmed crops from the full-res working image, gated on `BUTTONMATCHER_STAGE_CONFIRMS` alone, pinned by `tests/test_reference_staging_crop.py`.
+- **Closed 2026-09-09:** verdict written to `tested_hypothesis.md` §11.1; block removed from `HYPOTHESES_IN_PROGRESS.md`.
+- **Source:** `tested_hypothesis.md` §11.1 (verdict) + Part IX (the experiment); `log_analysis.md` "Full-res match SHADOW"; `SHADOW_PROMOTION_REVIEW.md`
 
 ### A2 — Text-variant match shadow
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
-- **Stage:** 1
+- **Stage:** 3
 - **Question:** do punctuation-normalized variants of hyphen/apostrophe puns (`I-O-Wasn't` → `i o wasnt`) get the off-board `I-O-…` family onto the board or to #1?
 - **Instrument:** `variant_top_json` joined to `restricted_top_json` per crop; lever `VARIANT_SHADOW`; `TEXT_VARIANTS=1` would make it live
-- **Gate:** across a batch — (a) does a confirmed truth that is OFF the restricted board come ON or to #1 with variants, and (b) does it demote ANY correct #1? Promote only if net-positive with zero correct-#1 demotions.
-- **Standing:** NO DATA YET. Built 2026-07-19; needs a batch and the `match_log` tab recreated for the new header. Touches punctuated puns only (`I-O-Was`, `Pitt Isn't It`), not plain-text ones (`'Eers to Penn State`).
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` A2
+- **Gate:** **operator quorum, set 2026-09-09 — ≥250 examples before shipping.** An example is a confirmed truth on a variant-instrumented crop whose slogan is a PUNCTUATED pun: variants only normalize punctuation, so a plain-text slogan is not evidence about them either way, and counting all confirmations would reach 250 on rows the change cannot touch. Then: (a) does a confirmed truth that is OFF the restricted board come ON or to #1 with variants, and (b) does it demote ANY correct #1? Promote only if net-positive with zero correct-#1 demotions. Track with `python tools/shadow_quorum.py a2 --match-log m.csv --confirm-log c.csv [--replay]`.
+- **Volume:** 250 — punctuated-pun confirmations on variant-instrumented crops.
+- **Standing:** GATE MET on its first batch (2026-09-07 export, n=196 confirmed truths, **64 of them punctuated** — real exposure). Zero correct-#1 demotions (195/196 identical #1); truth@#1 188→189; **3 new correct autos, 0 wrong** — `Indi-gestion` gap 0.037→0.131, `Dee-fuse Syracuse` 0.107→0.134, `Eye Don't Think So` slogan-gap 0.117→0.127, all on-target puns. Cost: 5 lost autos across 2 distinct buttons (`Brigham to Their Knees` ×3, `Sleepless In Ann Arbor` ×2) that keep the correct #1 and only lose gap, so they fall to the picker rather than to a wrong answer.
+- **Quorum progress (2026-09-09):** **64 / 250** on-target examples (196 confirmations on variant crops; 42 of the 64 human-confirmed), spread over 47 distinct pun slogans. Accrual is bounded by slash-command traffic, not the feed: **the variant shadow never runs on the Gemini pipeline**, which is ~92% of volume, so an export with no `/sort`, `/inventory` or `/scout` work adds nothing.
+- **On the on-target rows specifically, the reading is clean:** truth@#1 63→64, **0 correct-#1 demotions, 3 new correct autos, 0 wrong, and 0 autos lost**. The 5 lost autos noted on 2026-09-07 were all on *unpunctuated* slogans — variants perturbing scores the change was never aimed at. **If it ships, scope `TEXT_VARIANTS` to punctuated slogans**; that is where the whole effect lives and it removes the only measured cost.
+- **Next:** accrue. Re-run the tracker on each export; ship only when it prints QUORUM MET, keeping `VARIANT_SHADOW` on for one confirming batch afterwards.
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` A2; `SHADOW_PROMOTION_REVIEW.md`
 
 ### A3 — Auto-confirm score-band reference
 
@@ -124,7 +158,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** can the auto-confirm score floor (`AUTO_RESOLVE_THRESHOLD` 0.85) be lowered toward `GREEN_THRESHOLD` (0.82) for more autos?
 - **Instrument:** every `confirm_log` row's `restricted_top_json` — #1's `overall`, graded slogan-aware against `chosen_year`/`chosen_phrase` (NOT via `rank_restricted`, which carries the year-only bug pre-L20)
 - **Gate:** a band is loosenable only when it is clean at pooled scale. This front never closes — it is the standing reference that must be refreshed before ANY threshold move.
-- **Standing:** HOLD 0.85. Pooled L16–L21, 2310 crops: ≥0.90 = 98.5%, [0.85,0.90) = 97.3%, **[0.82,0.85) = 96.4%** with 8 wrong-slogan #1s. `Never Badger A Lion` 2001 sits at 0.832 and was a manual pick 3× — the 0.85 floor is exactly what routed it to a human.
+- **Standing:** HOLD 0.85. Pooled L16–L21, 2310 crops: ≥0.90 = 98.5%, [0.85,0.90) = 97.3%, **[0.82,0.85) = 96.4%** with 8 wrong-slogan #1s. `Never Badger A Lion` 2001 sits at 0.832 and was a manual pick 3× — the 0.85 floor is exactly what routed it to a human. **2026-09-07: the pooled read is circular** — 1506 of 2010 confirmations are `gemini_auto`, which fires only when CLIP already agreed with Gemini. Split on the 2026-09-07 export (n=1416): [0.85,0.90) is 95.5% pooled but **97.6% human-confirmed (n=41)**; [0.82,0.85) is 97.4% pooled but **90.3% human-confirmed (n=31)**. Grade this front on human confirmations only.
 - **Source:** `log_analysis.md` "Auto-confirm threshold REFERENCE"; `HYPOTHESES_IN_PROGRESS.md` A3/A4
 
 ### A4 — Auto-confirm gap-band reference
@@ -135,7 +169,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** can the gap floor (`GAP_ONLY` 0.15) be lowered for more autos?
 - **Instrument:** #1→#2 `overall` gap from `restricted_top_json`, graded slogan-aware against the confirmed answer
 - **Gate:** same as A3 — refresh pooled across every export before moving. Loosen only on a band that is clean at scale.
-- **Standing:** HOLD 0.15. Pooled L16–L21: ≥0.20 = 100.0% (288/288), **[0.15,0.20) = 97.8%** with 8 wrong-slogan, [0.12,0.15) = 95.5%, [0.00,0.05) = 54.9%. The raw gap at 0.15 is not clean either.
+- **Standing:** HOLD 0.15. Pooled L16–L21: ≥0.20 = 100.0% (288/288), **[0.15,0.20) = 97.8%** with 8 wrong-slogan, [0.12,0.15) = 95.5%, [0.00,0.05) = 54.9%. The raw gap at 0.15 is not clean either. **2026-09-07, same circularity as A3:** [0.15,0.20) reads 99.2% pooled and **94.1% on human confirmations (n=34)**; ≥0.20 stays 100% on both (33 human, 128 machine).
 - **Source:** `log_analysis.md` "Auto-confirm threshold REFERENCE"
 
 ### A5 — No-flip auto-unlock
@@ -164,11 +198,15 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
-- **Stage:** 1
+- **Stage:** 3
 - **Question:** every leaderboard is folded to one row per YEAR, so a slogan that loses its own year has no row at all — ~92% of the 498-slogan catalog is off every board on every crop. Score, both gap rules and the visual veto all compare ACROSS years, so all four are structurally blind to a wrong within-year slogan. Can a within-year margin catch that stratum?
 - **Instrument:** `within_year_json` — `{year, image_score, n_slogans, runner_up_margin, winner_is_top1, top[5]}`. `runner_up_margin` is the winner's lead over the runner-up inside its OWN year, the number no other column can show.
-- **Gate:** join `runner_up_margin` to confirmed truth across a batch. Promote "demote when `runner_up_margin` < M" only if some M catches the wrong within-year picks at an acceptable coverage cost — EVERY button has same-year siblings, so measure autos lost per wrong auto prevented before shipping.
-- **Standing:** NO DATA YET; column just added and the operator must extend the `match_log` header by hand. Shipped a wrong AUTO on 2026-09-03 ("'Eers to Penn State" confirmed as same-year "Penn State and Proud of it", margin ~0.001, clearing four gates at once). Control group in hand: a 12-button 1987 board held all four same-year flagged pairs and matched every one correctly, 7 on AUTO — so same-year is not itself predictive; the discriminator looks like SHARED TEXT. Guarded today by a curated allowlist of one pair.
+- **Gate:** **operator quorum, set 2026-09-09 — ≥250 examples before shipping.** An example is a HUMAN-confirmed row carrying a within-year read: the `gemini_auto` rows can show the benefit (CLIP disagreeing with Gemini) but not the cost, because what the rule withholds is a human's click and only a human confirmation prices that. Then promote "demote when `runner_up_margin` < M" only if some M catches the wrong within-year picks at an acceptable coverage cost — EVERY button has same-year siblings, so measure autos lost per wrong auto prevented. Track with `python tools/shadow_quorum.py a7 --match-log m.csv --confirm-log c.csv [--replay]`.
+- **Volume:** 250 — human-confirmed rows carrying a within-year read.
+- **Standing:** GRADED 2026-09-07 — 1424 crops in three days, 953 with a confirmed answer. `runner_up_margin` separates: median 0.2432 where live #1 agrees with the confirmed answer (n=857) vs 0.1240 where it disagrees (n=96, p10 0.0102). Sweeping a demote threshold over the 856 auto-confirmed rows, **M=0.005 withholds 8 wrong autos for 2 correct ones (4:1)**; M=0.01 is 9:3; the knee turns at M=0.02 (16:10) and inverts by M=0.05 (29:46). 32 of the 82 disagreements are A7's own stratum — right year, wrong slogan. Caveat: those rows are `gemini_auto`, so "wrong" means the CLIP board disagreed with Gemini's reading, not human truth; the 97 human-confirmed rows have an empty low-margin band. `winner_is_top1` is `true` on all 1424 rows — drop it from the payload (it is a key inside the `within_year_json` cell, not a column, so nothing shifts).
+- **Quorum progress (2026-09-09):** **97 / 250** human-confirmed rows (plus 856 machine rows, benefit-side only), across 26 distinct years. **The band under test is nearly empty on human rows: 4 below 0.05, none below 0.01.** That is the number to watch, not the total — until it fills, the cost side of the rule stays unmeasured however many rows accrue, and reaching 250 alone would not settle it.
+- **Next:** accrue. Ship the demote at M=0.005, withhold-only (route to the picker, never re-rank), behind a kill switch — but only once the tracker prints QUORUM MET **and** the low-margin band has human rows in it.
+- **Earlier:** column added 2026-09-04; the operator must extend the `match_log` header by hand. Shipped a wrong AUTO on 2026-09-03 ("'Eers to Penn State" confirmed as same-year "Penn State and Proud of it", margin ~0.001, clearing four gates at once). Control group in hand: a 12-button 1987 board held all four same-year flagged pairs and matched every one correctly, 7 on AUTO — so same-year is not itself predictive; the discriminator looks like SHARED TEXT. Guarded today by a curated allowlist of one pair.
 - **Source:** `HYPOTHESES_IN_PROGRESS.md` A7; `confusable_slogans.py`
 
 ### A8 — Low-res auto-confirm guard
@@ -225,8 +263,9 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** slogans carry a de-facto CLIP text advantage independent of the crop (per-phrase background text_score spans 0.34–0.80 across 515 phrases). Does centering each slogan's cosine on its own reference-bank baseline place truths at #1 more often?
 - **Instrument:** `rank_centered` vs `rank_restricted` in `confirm_log`
 - **Gate:** centered must place confirmed truths at #1 at least as often as raw AT SCALE, including truths raw ranking leaves off-board — and only together with a recalibration of every score threshold.
-- **Standing:** REFUTED at n=478 (Logger_18): 19 better / 65 worse, 423→386 truths at #1. The baseline "advantage" encodes a real prior. Logger_16 first read was already negative at n=50. The column keeps logging for the record; the live formula is unchanged. Do not re-propose.
-- **Source:** `AUTOMATION_ROADMAP.md` Phase 4e; `tested_hypothesis.md` Part VI layer 3
+- **Standing:** REFUTED at n=478 (Logger_18): 19 better / 65 worse, 423→386 truths at #1. The baseline "advantage" encodes a real prior. Logger_16 first read was already negative at n=50. **Refreshed 2026-09-07 at n=1416: 29 better / 1177 same / 126 worse** — 4.3× more regressions than improvements. (The tracker's "113 better" counts 84 rows where `rank_restricted` is blank.) Do not re-propose.
+- **Done 2026-09-07:** new `_text_baselines_enabled()` (`BUTTONMATCHER_TEXT_BASELINES`, default `0`) short-circuits `_recompute_text_baselines()` and its three-attempt retry, so the whole-reference-bank matmul no longer runs at boot and the per-crop centered leaderboard is never built. **`rank_centered` keeps its column position and writes blank** — what it already did on the 594 confirmations with no baseline bank. Largest saving in the sweep, and no header change. Set the switch to `1` to re-measure.
+- **Source:** `AUTOMATION_ROADMAP.md` Phase 4e; `tested_hypothesis.md` Part VI layer 3; `SHADOW_PROMOTION_REVIEW.md`
 
 ### A13 — Reference-shelf completion, log-targeted
 
@@ -257,9 +296,9 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Status:** PROPOSED
 - **Stage:** 0
 - **Question:** compressed scores often mean degraded crops (blur, small, glare flatten every sim). Does test-time augmentation widen gaps when targeted at low-GAP crops rather than low-SCORE crops?
-- **Instrument:** existing TTA machinery (`BUTTONMATCHER_TTA`, tight re-crop + rotations), currently aimed at sub-0.65 crops; measure gap change on confirmed rows
-- **Gate:** one export answers it — does it widen gaps on confirmed rows?
-- **Standing:** not run. Distinct from D1, which is the same machinery aimed at its original low-score target.
+- **Instrument:** none today — the TTA machinery this front would have reused was removed with D1 on 2026-09-07. Rebuilding it is ~40 lines: per weak crop, one in-crop Hough pass to re-centre plus ±12° rotations, encode the variants, take the per-reference max, re-score, and keep the result only if the top `overall` strictly improves. Aim the trigger at low GAP, not low score.
+- **Gate:** one export answers it — does it widen gaps on confirmed rows? Build it **shadow-first** this time (log the would-be leaderboard beside the live one), which is exactly what D1 never had and why D1 could not be graded.
+- **Standing:** not run, and now with no code behind it. That is deliberate: D1 proved the low-SCORE trigger is a 2.9%-of-crops target, and carrying an unmeasurable implementation for years was the actual cost. The low-GAP idea is still worth a shadow.
 - **Source:** `AUTOMATION_ROADMAP.md` Gap-widening Track 1 item 3
 
 ### A16 — Confusable-pair registry
@@ -276,13 +315,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### A17 — Flip GAP_ONLY live
 
 - **Track:** Matching and auto-confirm
-- **Status:** OPEN
-- **Stage:** 4
+- **Status:** SHIPPED-WATCH
+- **Stage:** 5
 - **Question:** can `BUTTONMATCHER_GAP_ONLY_LIVE=1` be flipped? It is built, with zero new engineering, for ~3× score-based auto coverage.
 - **Instrument:** the `gap ≥ 0.15` rule graded against confirmed truth
 - **Gate:** one clean shadow batch.
-- **Standing:** 537/537 correct on the validated population; three independent validations totalling 452/452 cumulative (Logger_11 108, Logger_12 122, Logger_14 222). Named as the next-week lead action.
-- **Source:** `AUTOMATION_ROADMAP.md` Gap-widening Track 2 item 5; `log_analysis.md` Logger_14 ladder rung C
+- **Standing:** SHIPPED. `_gap_only_live_enabled()` defaults to `1` and the 2026-09-07 export carries 24 `auto_gap_only` confirmations, so the flip has already happened — this entry said OPEN after the fact. Validation behind it: 537/537 on the validated population; three independent runs totalling 452/452 (Logger_11 108, Logger_12 122, Logger_14 222). Watch band: on the 2026-09-07 export the [0.15,0.20) gap band is 99.2% pooled but **94.1% on human confirmations (n=34)** — see A4.
+- **Source:** `AUTOMATION_ROADMAP.md` Gap-widening Track 2 item 5; `log_analysis.md` Logger_14 ladder rung C; `SHADOW_PROMOTION_REVIEW.md`
 
 ### A18 — The signal ladder
 
@@ -344,12 +383,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHADOW
-- **Stage:** 4
+- **Stage:** 2
 - **Question:** for the typed-pun crops, does image similarity alone rank the truth better than the live blend?
 - **Instrument:** `rank_image_only` vs `rank_restricted` in `confirm_log`
 - **Gate:** grade slogan-aware (the rank columns carry a year-only bug pre-L20) and decide whether an image-weighted rescue is worth shipping.
 - **Standing:** directionally persistent across all five runs — `rank_image_only` places the typed-pun truth at #1 at least as often as the live blend in EVERY run (L16 3·2, L17 5·3, L18 9·7, L19 6·6, L20 11·9). L20's clean slogan-aware read: 6 of 16 typed had image_only strictly better. Real but modest — a candidate lever, shadow-first. Centering (A12) is NOT the lever here.
-- **Source:** `log_analysis.md` Logger_20 class C, cross-log trends
+- **Refresh (2026-09-07):** demoted 4 → 2. Only **11** confirmations in this export are typed rows carrying both ranks (1 better, 4 worse, 6 same) — the front cannot be at Stage 4 on that. Across ALL confirmations image_only is 70 better / 33 worse / 1229 same; the tracker's "152 better" counts 82 rows where `rank_restricted` is blank. Keep the column, wait for typed volume.
+- **Source:** `log_analysis.md` Logger_20 class C, cross-log trends; `SHADOW_PROMOTION_REVIEW.md`
 
 ### A24 — The bank picker's cost
 
@@ -362,16 +402,24 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Standing:** measured across Loggers 16–18 as costing more clicks than it saves.
 - **Source:** `log_analysis.md` Logger_18 "The bank picker"
 
-### A25 — Edition-twin wrong-year picks
+### A25 — Edition-twin resolution
 
 - **Track:** Matching and auto-confirm
-- **Status:** DECIDED-HOLD
-- **Stage:** 6
-- **Question:** 17 `edition_pick` rank>1 rows are same-slogan wrong-year twins. Should the picker be changed?
-- **Instrument:** `source='edition_pick'` rows with `rank_restricted` > 1; `edition_shadow_json`
-- **Gate:** none — operator decision 2026-07-18: the edition-picker interaction is working as intended; the picker exists precisely for these and the click is acceptable.
-- **Standing:** stable at ~1.2–1.9% of confirms, no drift. `printed_year` adoption is eating into the picker cost on its own. Not pursued.
-- **Source:** `log_analysis.md` Logger_20 "Not pursued: D"
+- **Status:** SHADOW
+- **Stage:** 3
+- **Question:** *(reframed 2026-09-07)* the picker itself is working as intended and stays. The question that matters is upstream of it: **how often do we get the right slogan AND edition without the picker having to fire — and can the twin shadow tell us in advance which buttons still need the click?**
+- **Instrument:** `edition_shadow_json` — `{family_key, shadow_year, shadow_type, sims}`. `sims` is the crop's max reference-photo similarity to EACH edition in the family; `shadow_year` is the ref-sim winner. Graded against `source='edition_pick'` rows, which are human ground truth. Lever `TWIN_GUARD`.
+- **Gate:** **operator quorum, set 2026-09-07 — do not ship until BOTH: ≥250 twin resolves, AND ≥5 of every twin pair.** Then the rule must be correct on every would-resolve row of a batch it was NOT tuned on (§4.2), with the picker still catching everything below the threshold. Track with `python tools/twin_quorum.py --confirm-log confirm_log.csv [--replay]`.
+- **Volume:** 250 — twin resolves, counted as DISTINCT BUTTONS (same family + same `sims` = the same crop scored twice; the 2026-09-07 export's 95 rows were only 63 buttons). Plus a per-family floor of 5.
+- **Standing:** **the shadow has been carrying the answer since July.** On the 66 human-confirmed `edition_pick` rows in the 2026-09-07 export: today's ranked #1 has the right slogan on 88.4% of twin buttons but the right slogan AND edition on only **52/66 (78.8%)** — so ~4 in 5 picker clicks confirm what the matcher already had. The ref-sim winner (`shadow_year`) is right on **64/66 (97.0%)**, and of the 14 rows where #1 was wrong it had the correct edition on **13**. Gating on the winner's lead over the runner-up inside the family separates cleanly: every wrong-#1 row has a lead ≤ 0.034, so at **G ≥ 0.05 the rule resolves 31/66 clicks (47%) with ZERO wrong**; G=0.08 gives 24/66, also zero; G=0.02 gives 50/66 with 1 wrong. The `printed_year` resolver already handles a further 51 confirmations with no click and agrees with #1 on 21 of 23.
+- **The 2 failures:** both are single-crop inversions inside families that otherwise resolve correctly, and **neither would have fired the gate** (leads 0.032 and 0.013). `Hammer The Hawkeyes` 1972/1976 on 2026-09-01 is the only row of that family's nine where the ordering came out that way — and it came off an 80-button lot that fell back to **grid** detection with no radius stats, the blind-lattice path a mis-centred crop comes from. `Skin The Cat` 1975/1980 is a 0.013 coin flip whose three sibling rows all put 1975 on top, once by 0.118. Not bad reference shelves — briefly ambiguous crops, which is what the lead gate excludes.
+- **Tested and withdrawn:** constraining the shadow to the ranked #1's sport (mirroring the live cross-sport block, A11) makes it worse — the shadow proposes a different sport on 5 rows and is right on **4**, three times correctly pulling a basketball-ranked #1 back to Football 1973. Crossing sports is a feature here.
+- **Sample size, honestly:** the 66 rows cover 20 families across 41 photos; de-duplicated on (family, sims) they are **42 distinct buttons**, on which the shadow is right on 40 and G=0.05 resolves 20/42 (48%) with zero wrong.
+- **Quorum progress (2026-09-07):** **63 / 250** distinct buttons, and **1 of 27 observed families** at ≥5 (`hammerthehawkeyes`). At the observed 2.9 buttons/day the resolve count lands in ~9 weeks; the per-family floor is the binding half and will take considerably longer, since 6 families sit at 4 and 8 sit at 1. Families never yet seen are invisible to the tracker — cross-check the total against the `>>> TWINS:` registry summary printed at boot.
+- **A shape worth considering when the time comes:** the per-family floor as written blocks every family on the rarest one, and some twins may realistically never reach 5. Gating **per family** — the resolver goes live only for families that have themselves cleared 5, everything else keeps the picker — reaches the same safety with no unreachable dependency. Operator's call; the tracker reports per-family counts either way.
+- **Next:** accrue. Re-run `tools/twin_quorum.py` on each export; ship only when it prints QUORUM MET, then behind a kill switch, ordered `printed_year` → ref-sim lead → picker.
+- **Earlier:** operator decision 2026-07-18 kept the picker interaction as-is (correct, and unchanged); stable at ~1.2–1.9% of confirms, no drift.
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` A25; `log_analysis.md` Logger_20 "Not pursued: D"; `SHADOW_PROMOTION_REVIEW.md` §3
 
 ### A26 — Bowl-year resolution
 
@@ -460,13 +508,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### B6 — Gemini-x/y crop anchoring
 
 - **Track:** Detection
-- **Status:** OPEN
-- **Stage:** 4
+- **Status:** SETTLED-REFUTED
+- **Stage:** 5
 - **Question:** should crops be anchored on Gemini's x/y instead of Hough's centres, fixing the grid-fallback mis-centring?
 - **Instrument:** `det_gemini_anchored_json` — `{n_agree, snap_frac_median, n_gemini_only, n_hough_only}`
 - **Gate:** revisit only gated on low `snap_frac` AND `n_agree ≈ n_gemini` — and there, by definition, there is little left to fix. Otherwise formally drop it.
-- **Standing:** LEANING REFUTE as a blanket anchor, graded 2026-07-19 on 99 Gemini lots pooled L16/17/18/20/21. 70% of lots are already perfect (Hough == Gemini) with `snap_frac_median` 0.072 (92% ≤ 0.25) — safe but nothing to gain. The ~30% where anchoring would move something is dominated by lots where Gemini is UNreliable (agree=0 lots where Gemini read 1 button and Hough 23; frame-distortion lots at snapf 0.764). The outcome join is the tell: of 24 lots where anchoring would ADD a "missed" Gemini button, only 2 had a human `missed_button`. The useful DROP half folds into B7.
-- **Source:** `tested_hypothesis.md` §10.2 (verdict) + §4.8 (the hypothesis)
+- **Standing:** REFUTED — the gate's own drop condition is met. On the 2026-09-07 export, 480 lots with Gemini points: **n_gemini 3132, n_agree 2984 (95.3%)**, `snap_frac_median` median **0.075** (p90 0.310). Low `snap_frac` AND `n_agree ≈ n_gemini` is exactly the case the gate says leaves nothing to fix, so blanket anchoring is dropped. **The logging stays on**, correcting the first pass of this sweep: `gemini_anchored` is a dict over values the reconcile already computes (`covered`, `median_r`, `unmatched_*`), so it costs one `json.dumps` and no extra pass — and `snap_frac_median` is the calibration the LIVE `_anchor_gate_enabled()` cites for its 0.75×radius threshold (docstring: "fleet-wide snap_frac_median ≈ 0.07"; this export reads 0.075, still on target). Retiring it would remove the only running check on a live gate to save nothing. The drop half (`n_hough_only`, 185 unbacked circles) also reaches B7 through `det_gem_unmatched`. Earlier read: LEANING REFUTE as a blanket anchor, graded 2026-07-19 on 99 Gemini lots pooled L16/17/18/20/21. 70% of lots are already perfect (Hough == Gemini) with `snap_frac_median` 0.072 (92% ≤ 0.25) — safe but nothing to gain. The ~30% where anchoring would move something is dominated by lots where Gemini is UNreliable (agree=0 lots where Gemini read 1 button and Hough 23; frame-distortion lots at snapf 0.764). The outcome join is the tell: of 24 lots where anchoring would ADD a "missed" Gemini button, only 2 had a human `missed_button`. The useful DROP half folds into B7.
+- **Source:** `tested_hypothesis.md` §11.2 (verdict) + §4.8 (the hypothesis); `SHADOW_PROMOTION_REVIEW.md`
 
 ### B7 — On-mask phantom dup-drop
 
@@ -648,8 +696,8 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** a count gate cannot see a misplaced circle or a non-button object — the operator's actual dominant error mode. Can it be measured per lot?
 - **Instrument:** `det_gem_unmatched` + `det_gem_unmatched_json` — the Hough-only unmatched circles `plan_reconciliation` already computes and used to discard
 - **Gate:** a passive per-lot placement metric that accrues alongside the Stage-B count gate. Blank means the match could not run (unknown), which is not zero.
-- **Standing:** instrumented. This is the blind spot that must be instrumented **before** Stage B flips.
-- **Source:** `AUTOMATION_ROADMAP.md` Phase 5; `AUTOMATION_VISION.md` §4 Stage B, §6.1
+- **Standing:** instrumented and accruing. This is the blind spot that must be instrumented **before** Stage B flips. **2026-09-07: 65 of 480 images (13.5%) carry an unbacked Hough circle, 185 in total, and 9 of the 16 `not_a_button` confirmations land on such an image** — the strongest join yet between the metric and a human calling a crop a non-button. Keep. (The tracker's "22698 rows where the match could not run" is a column-wide count over empty sheet rows; the corpus is 4170.)
+- **Source:** `AUTOMATION_ROADMAP.md` Phase 5; `AUTOMATION_VISION.md` §4 Stage B, §6.1; `SHADOW_PROMOTION_REVIEW.md`
 
 ### B23 — Per-button review taps
 
@@ -704,7 +752,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** grid fallback spiked in Logger_20 (0%→5%→5%→0%→**19%**, 15 lots, 14 Gemini-backed). Is it becoming a failure driver?
 - **Instrument:** `det_detector_used`, `det_mask_coverage`
 - **Gate:** watch whether the rate keeps climbing, and whether the non-flooded grid lots have a distinct trigger.
-- **Standing:** the spike did NOT worsen outcomes — grid-lot `rank_restricted>3` was 5% vs 6% on Hough lots, and `gemini_auto` covers them. Only 6 of 15 were flooded-mask; the rest fell to grid for other reasons. Likely a workload shift. Not currently a failure driver, so scope any fix as a targeted lot-level rescue rather than a fleet-wide change.
+- **Standing:** the spike did NOT worsen outcomes — grid-lot `rank_restricted>3` was 5% vs 6% on Hough lots, and `gemini_auto` covers them. Only 6 of 15 were flooded-mask; the rest fell to grid for other reasons. Likely a workload shift. Not currently a failure driver, so scope any fix as a targeted lot-level rescue rather than a fleet-wide change. **2026-09-07: the rate is falling, not climbing** — per image (n=637) fallback is 22.6% overall: 24.1% (Jul) → 28.2% (Aug) → **12.9% (Sep)**. Keep watching; no action. Note the tracker reads 27.3% because it counts per-CROP rows; detection facts are per-image (`crop_num = 1`).
 - **Source:** `log_analysis.md` cross-log trends
 
 ### B28 — Whitepass telemetry
@@ -752,6 +800,17 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Standing:** committed in buttonmatcher; `ebayscout/detect_pipeline.py` produces identical counts on all fixtures (parity verified), so the battery covers both detectors.
 - **2026-09-12:** the invariant holds on production data — **215 `gate=auto` images, 215 `scale_first`, zero on a bailed detector.** The battery is **26 lots now, not 9**. The "covers both detectors" claim is now **checked, not dated**: `tests/test_buttonmatcher_parity.py` gained `test_the_two_detectors_have_not_drifted`, which compares the two files' ASTs with docstrings, the env-flag readers and import style normalized away and nothing else. **Zero function bodies differ today**; the only divergence was relative vs flat imports, the package-layout split `CLAUDE.md` notes for `match_logging.py`. Copying the 23 MB battery into ebayscout was the obvious move and the wrong one — it needs `cv2`, neither repo has CI, and it cannot see the risk that matters, which is the two files drifting rather than either one regressing. Verified the guard fires on an injected one-line threshold change in buttonmatcher alone. See `SHIPPED_WATCH_REVIEW.md` §5.
 - **Source:** `tested_hypothesis.md` Part I §5; `AUTOMATION_VISION.md` §3
+
+### B32 — Tiny circle syndrome (sub-button Hough detections)
+
+- **Track:** Detection
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 5
+- **Question:** the multi-scale sweep searches a ~4x radius range, so it also fires on the round printing ON each button — letter bowls, the bank-logo roundel, the year — plus the half-radius accumulator ghost inside a real rim. B4's 0.7-1.3x median band covers the unguided path; the primary Hough set and ebayscout's scan mode (no radius filter at all, on purpose) were uncovered. Do containment plus a looser cohort band close it without costing recall?
+- **Instrument:** `det_overlap_removed`, `det_radius_min`/`_max` (the signature is a radius SPREAD of 3.5-6.4x on the winning pass, against 1.0-1.3x on a healthy one), `det_rej_radius_*`; `tests/test_detect_scale.py` + `ebayscout/tests/test_image_proc_tiny.py`
+- **Gate:** every removed circle must be printing, a duplicate, or a phantom — **zero** real buttons lost on the fixture battery.
+- **Standing:** merged and deployed (buttonmatcher #167). Gate met: 74 circles removed across 26 photos, all enumerated and inspected; recall unchanged at 22 TP / 14 FN on the hand-verified centres, precision 0.579 → 0.595, total |scan crops − truth| 251 → 199. 18 of 26 photos bit-identical; the guided path untouched on all 26. Kill switch `*_TINY_GUARD=0`. Extends B4's rule rather than replacing it — B4 stays the unguided path's band.
+- **Source:** `tested_hypothesis.md` Part XII
 
 ---
 
@@ -844,8 +903,9 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** does re-matching crops whose #1 lands below `RED_THRESHOLD` with test-time augmentation improve them?
 - **Instrument:** `TTA` flag, default off. No shadow column.
 - **Gate:** give it a shadow following the §A pattern, or remove it. Distinct from A15, which points the same machinery at low-GAP rather than low-score crops.
-- **Standing:** never A/B'd.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §D
+- **Standing:** never A/B'd, and never could be — `TTA` defaulted off, changed the live answer when on, and had no shadow column, so no export could grade it without shipping it. Unlike D2 it cannot even be replayed offline: re-cropping and rotating changes the pixels, so a logged leaderboard cannot be re-scored. The prize was small too: the sub-`RED_THRESHOLD` trigger fires on **41 of 1,416 confirmed crops (2.9%)**, of which 32 have a wrong #1.
+- **Done 2026-09-07:** `_tta_enabled`, `_tta_variants` and the weak-crop retry block removed from `main.py`. No column existed, so no schema change. The low-GAP variant of the idea survives as A15, which records the recipe for rebuilding it shadow-first.
+- **Source:** `tested_hypothesis.md` §11.3 (verdict); `SHADOW_PROMOTION_REVIEW.md`
 
 ### D2 — Two-level reference rerank
 
@@ -855,8 +915,11 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** does the two-level reference rerank (`year_score` / `sid_score` / `rerank_delta` per candidate) improve ranks?
 - **Instrument:** `rerank_json` in `match_log`, `rank_rerank` in `confirm_log`; `RERANK` flag, default off "until calibrated"
 - **Gate:** calibrate against confirmed truth, or remove it.
-- **Standing:** never calibrated. The columns log; nothing reads them.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` §D
+- **Standing:** CALIBRATED, not removed — correcting the first pass of this sweep. The columns are still empty (`rerank_json` 0 of 4170, `rank_rerank` 0 of 2010) because `RERANK` defaults to 0, but "cannot be graded without turning it on" was wrong: `tools/calibrate_from_logs.py rerank` replays the ceiling offline from `confirm_log`, no flag flip. Over 1416 confirmations (1297 already at rank 1): at the shipped ±0.10 combined bound a perfect signal rescues **103 of the 119** deep answers, while a maximally wrong one flips **536 of the 1297** correct #1s; at ±0.05 it is 89 vs 251; at ±0.02, **60 vs 76**. **41% of correct #1s sit within 0.10 of their runner-up** — the leaderboard is far tighter than the original seeds assumed, so the shipped weight was ~5× too high.
+- **Why it is worth keeping:** this is the design for replacing the human bank-era pick with a measurement (Year Score — "does this crop look like year Y vs the rest of its era?") and for separating same-wording reissues (SloganID Score — "does it look like THIS button vs look-alike peers in other years?"). That is A24 and the A7/A16 stratum, two of the most valuable open fronts, not dead code.
+- **Done 2026-09-07:** `YEAR_WEIGHT` and `SID_WEIGHT` dropped 0.05 → **0.02** each, with the replay table in the `rerank.py` docstring and a test pinning the bound. Code and both columns kept.
+- **Next:** re-run the replay against the REAL Year/SloganID scores rather than the perfect-signal proxy; if the measured signal accuracy makes ±0.04 favourable, ship it shadow-first behind `RERANK` so `rerank_json` finally fills.
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` D2; `tested_hypothesis.md` §11.4; `SHADOW_PROMOTION_REVIEW.md`
 
 ---
 
@@ -881,8 +944,9 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** can the unguided count become primary on `auto`+`scale_first` lots, with Gemini demoted to a cross-check?
 - **Instrument:** gated unguided count vs `gemini_button_count`, passive accrual on the daily feed
 - **Gate:** **≥98% count agreement with Gemini on gated lots at real volume.** Rollback if gated disagreement exceeds 2% over any 50 lots (`auto_overridden` has no UI affordance, so it cannot be the tripwire). Instrument the placement blind spot (B22) before flipping.
-- **Standing:** 0% gated disagreement on the post-patch organic feed; 8/9 vs human truth (n=9); `scale_first` is ~33% of volume. Volume is the constraint, not accuracy. Collection is passive — no crawls required.
-- **Source:** `AUTOMATION_VISION.md` §4 Stage B; `AUTOMATION_ROADMAP.md` Phase 5
+- **Standing:** **the gate is missed by ~18 points at real volume.** 2026-09-07 export, per image (n=637): the gated stratum (`ni_gate=auto` + `scale_first`) is **n=215**, of which 201 are scored against Gemini and **79.6% agree exactly**, 96.0% within 1 — against a ≥98% gate. (The tracker read "1349 gated lots" because it counted per CROP; fixed by `tools/ebayscout_patches/2026-09-07-tracker-live-formulas.patch`.) Against the user count the same stratum is 90.7% exact / 99.1% within 1, and the gate still ranks correctly (`suggest` 28.3% vs Gemini, `manual` 5.3%), so `ni_gate` works; it is not yet a certificate. The earlier "0% gated disagreement" was n=9. Do not flip the user count off. Cheapest next question, answerable from columns already logged: does a ±1 reconcile against Gemini clear 98%?
+- **Source-note:** unguided detection overall is 60.8% exact / 81.0% within 1 of the user count.
+- **Source:** `AUTOMATION_VISION.md` §4 Stage B; `AUTOMATION_ROADMAP.md` Phase 5; `SHADOW_PROMOTION_REVIEW.md`
 
 ### E3 — Stage C: Gemini becomes an auditor
 
