@@ -991,6 +991,11 @@ def process_pipeline_lot(job_id: str) -> None:
     resolution = gres.resolve_with_gemini_slogans(
         crop_candidates, crop_to_slogan, slogan_years, flagged_indices,
         normalize_fn=normalize.normalize_key,
+        # Bowl-year normalization, at parity with buttonmatcher (front A26).
+        # Omitting this was a silent no-op, not an error: the shared resolver
+        # defaults the map to None and degenerates to season-year-only
+        # matching, so bowl buttons resolved to season+1 on the whole pipeline.
+        game_year_by_key=_cm.game_year_by_key(),
     )
 
     # 6b) Heavy resolve logging.  /crawl is fire-and-forget at scale, so without
@@ -1007,7 +1012,8 @@ def process_pipeline_lot(job_id: str) -> None:
               f"low_conf={_res_telem.get('n_low_confidence')} "
               f"unanchored={_res_telem.get('n_unanchored')} "
               f"db_direct={_n_dbdirect} "
-              f"majority_year={_res_telem.get('majority_year')}", flush=True)
+              f"majority_year={_res_telem.get('majority_year')} "
+              f"bowl_year={_res_telem.get('n_printed_year_gamematch')}", flush=True)
         for _ci in range(len(diagnostics)):
             _assoc = crop_to_slogan.get(_ci) or {}
             _gs = _assoc.get("slogan")

@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from ebayscout import config
 from ebayscout import normalize
 from ebayscout import rerank
+from ebayscout import edition_twins
 from ebayscout import scoring
 
 
@@ -173,6 +174,98 @@ def test_rerank_honours_either_service_flag():
     finally:
         for var in ("EBAYSCOUT_RERANK", "BUTTONMATCHER_RERANK"):
             os.environ.pop(var, None)
+
+
+# --- Bowl-year normalization (front A26) --------------------------------------
+# This is the parity failure this file exists to catch, and it went unnoticed
+# for eight weeks.  GAME_YEAR_BY_KEY was built and passed only in
+# buttonmatcher/main.py; ebayscout carried the shared gemini_resolve.py with
+# its `game_year_by_key` parameter, never built the map, and omitted the kwarg.
+# The shared resolver defaults it to None and falls back to season-year-only
+# matching, so nothing failed — bowl buttons just resolved to season+1 on the
+# whole Gemini pipeline, ~92% of volume, and the 2026-09-07 export carried 51
+# `gemini_printed_year` confirmations from buttonmatcher and none from here.
+#
+# A missing kwarg cannot be pinned by a constant, so these check the SHAPE:
+# the map is keyed the way the shared consumer reads it, the date parser agrees
+# with buttonmatcher's, and main.py actually passes it.
+
+def test_game_date_formats_match_buttonmatcher():
+    """Same tuple, same order — buttonmatcher/main.py _GAME_DATE_FORMATS."""
+    assert edition_twins.GAME_DATE_FORMATS == (
+        "%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y",
+        "%b %d, %Y", "%B %d, %Y", "%d %b %Y", "%d %B %Y", "%Y/%m/%d",
+    )
+
+
+def test_game_year_from_date_matches_buttonmatcher():
+    """A Jan bowl date yields season+1; a regular date yields the season year;
+    anything unparseable is ignored rather than raising."""
+    assert edition_twins.game_year_from_date("1/1/1979") == 1979
+    assert edition_twins.game_year_from_date("1979-01-01") == 1979
+    assert edition_twins.game_year_from_date("11/15/1978") == 1978
+    for junk in ("", None, "not a date", "13/13/1978"):
+        assert edition_twins.game_year_from_date(junk) is None, junk
+
+
+def test_game_year_map_is_keyed_for_the_shared_resolver():
+    """`gemini_resolve._game_year_of` looks up (normkey(slogan), season_year).
+
+    `_slogan_key_to_entry` in the same module is keyed the other way round,
+    (year, normkey), so a copy-paste of that convention would miss every
+    lookup silently — the map would be full and never hit.
+    """
+    # The map's own module pulls in torch, so assert the CONTRACT the shared
+    # resolver relies on: gemini_resolve._game_year_of looks up
+    # (normkey(slogan), season_year), and printed_year_marker_matches is what
+    # consumes the value it finds.
+    nk = normalize.normalize_key("Beat 'Bama")
+    mapping = {(nk, 1978): 1979}
+    assert mapping.get((nk, 1978)) == 1979
+    assert mapping.get((1978, nk)) is None, "the (year, normkey) order misses silently"
+    # a bowl marker resolves to the SEASON year via the mapped game year
+    assert edition_twins.printed_year_marker_matches(1978, mapping.get((nk, 1978)), 1979)
+    # and with no game year known, season-only — the pre-game_date behaviour
+    assert not edition_twins.printed_year_marker_matches(1978, None, 1979)
+    assert edition_twins.printed_year_marker_matches(1978, None, 1978)
+
+
+def test_game_year_map_is_never_none_and_empties_on_the_lever():
+    """The accessor must hand the resolver a dict, not None, before init() —
+    and BUTTONMATCHER_GAME_DATE_YEAR=0 must be the same off-switch here as in
+    buttonmatcher (one env var governs both services)."""
+    saved = os.environ.get("BUTTONMATCHER_GAME_DATE_YEAR")
+    try:
+        for off in ("0", "false", "False", "no", "off"):
+            os.environ["BUTTONMATCHER_GAME_DATE_YEAR"] = off
+            assert not edition_twins.game_date_year_enabled(), off
+        os.environ["BUTTONMATCHER_GAME_DATE_YEAR"] = "1"
+        assert edition_twins.game_date_year_enabled()
+        os.environ.pop("BUTTONMATCHER_GAME_DATE_YEAR")
+        assert edition_twins.game_date_year_enabled(), "must default ON"
+    finally:
+        os.environ.pop("BUTTONMATCHER_GAME_DATE_YEAR", None)
+        if saved is not None:
+            os.environ["BUTTONMATCHER_GAME_DATE_YEAR"] = saved
+
+
+def test_main_actually_passes_the_map_to_the_resolver():
+    """The original defect was a missing kwarg at one call site, which no
+    constant and no unit test of the resolver could have caught."""
+    src = open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "main.py")).read()
+    tail = src.split("gres.resolve_with_gemini_slogans(")[1]
+    # Slice to the call's own closing line, and drop comment lines: splitting
+    # on the first ")" lands inside a comment's parentheses instead.
+    lines = []
+    for ln in tail.splitlines():
+        if ln.strip() == ")":
+            break
+        if not ln.lstrip().startswith("#"):
+            lines.append(ln)
+    call = "\n".join(lines)
+    assert "game_year_by_key=" in call, call
+    assert "game_year_by_key()" in call, "must pass the live map, not a literal"
 
 
 if __name__ == "__main__":

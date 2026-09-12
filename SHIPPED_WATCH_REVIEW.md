@@ -358,8 +358,42 @@ time plus a wiring gap:
 
 So A26 is not one reading away from a verdict; it is two small changes away
 from being *measurable* — wire the map in ebayscout for parity, and surface the
-counter. `tests/test_buttonmatcher_parity.py` pins the scoring constants but
-not this wiring, which is where the guard belongs.
+counter.
+
+**Both done 2026-09-12**, on the operator's call: *"Parity. ebayscout runs
+autonomously and it needs to be running the code that we think works the best
+on buttonmatcher. It's an imperfect solution and we know it can be wrong, but
+that's okay."*
+
+- ebayscout builds the map in `clip_matcher.init()` from the `text_db.json` it
+  was already parsing, and passes it at the resolve call.
+- The parser, its format list and the lever moved into the shared
+  `edition_twins.py`, beside the `printed_year_marker_matches` rule that
+  consumes them. Both services now run **one implementation** instead of two
+  copies asserted equal — which is what would have prevented this in the first
+  place.
+- `BUTTONMATCHER_GAME_DATE_YEAR=0` reverts **both** services, no redeploy.
+- ebayscout prints the same `>>> GAME_YEAR: N …` boot line, and prints it
+  **unconditionally** — annotated `— LEVER OFF` or `— text_db unavailable` —
+  because an absent line cannot be told apart from a genuine zero.
+- `n_printed_year_gamematch` is now on both `>>> PIPELINE RESOLVE:` lines as
+  `bowl_year=`.
+
+**The risk is bounded, not absent.** The change is additive at the `_py`
+filter, so it can either create a printed-year resolution where there was
+none, or make two candidates match where one did — and that second case gives
+`len(_py) != 1`, which falls back to the majority-year/CLIP path rather than
+answering wrongly. A genuinely wrong resolution needs the season-year
+candidate absent from the board while the bowl one is present. Narrow, and
+accepted.
+
+`tests/test_buttonmatcher_parity.py` gains four guards: the map's key order
+(`(normkey, year)`, not the `(year, normkey)` its neighbour in the same module
+uses — a copy-paste of that convention would fill the map and never hit it),
+the date parser, the lever's default and off-values, and the presence of the
+kwarg at the call site. That last one matters most: **the original defect was a
+missing keyword argument, which no constant and no unit test of the resolver
+itself could have caught.**
 
 **C5 — the label harvester.** `pipeline/labels/<job_id>.json` + `.jpg` sidecars
 live in GCS; this session has no GCP access, so "is every pipeline lot leaving

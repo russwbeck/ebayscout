@@ -21,6 +21,48 @@ slogan strings; calling it on a string caused a production outage once.
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
+
+# Date spellings seen in text_db's ``game_date``.  One tuple, one order, both
+# services: this lived as a private copy in buttonmatcher/main.py and had no
+# counterpart in ebayscout at all, which is how bowl matching came to be a
+# no-op on the Gemini pipeline for eight weeks (front A26).  A rule this
+# module's ``printed_year_marker_matches`` depends on belongs beside it.
+GAME_DATE_FORMATS = (
+    "%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y",
+    "%b %d, %Y", "%B %d, %Y", "%d %b %Y", "%d %B %Y", "%Y/%m/%d",
+)
+
+
+def game_year_from_date(raw):
+    """Printed CALENDAR year of a ``game_date`` string (the year on the button),
+    or None if blank/unparseable.  A bowl date '1/1/1979' -> 1979; a regular
+    '11/15/1978' -> 1978.  Fail-open: an unknown format is ignored, never
+    raised, so a malformed row costs one entry rather than the whole map."""
+    s = (str(raw).strip() if raw is not None else "")
+    if not s:
+        return None
+    for fmt in GAME_DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).year
+        except ValueError:
+            continue
+    return None
+
+
+def game_date_year_enabled():
+    """Bowl-year normalization lever, shared by both services.
+
+    Reads buttonmatcher's env name in BOTH services on purpose: this is shared
+    matching behaviour and one setting should govern both, the same way
+    BUTTONMATCHER_TWIN_GUARD and BUTTONMATCHER_ANCHOR_GATE already do. Default
+    ON; BUTTONMATCHER_GAME_DATE_YEAR=0 empties the bowl-offset map and reverts
+    both services to season-year-only matching with no redeploy."""
+    return os.environ.get("BUTTONMATCHER_GAME_DATE_YEAR", "1").strip() not in (
+        "0", "false", "False", "no", "off",
+    )
+
 
 def build_twin_registry(entries, normalize_fn):
     """Group ``entries`` by normalized slogan key, keeping only families with
