@@ -1903,3 +1903,185 @@ dense lots, where `base_r` (derived from a 4×3 grid hint that is wrong for a
 37-button lot) is far too large. The real repair is Layer 1 from Part I: a
 trustworthy radius estimate would let the sweep be one seeded window instead of
 four. Until then the guard is the medication, not the cure.
+
+# Part XIII — the 2026-09 shipped-watch sweep: seven closings (2026-09-12)
+
+*The complement of Part XI. That sweep graded the fronts that were still
+**paying** for an ungraded instrument — the shadows. This one grades the
+fronts that had already **shipped** and were sitting at `SHIPPED-WATCH`,
+which cost nothing to run and everything to leave unread. Seven reached a
+verdict and are closed here; the other ten stay on watch with their next
+reading named in `SHIPPED_WATCH_REVIEW.md`. The register spanning both is
+`LOGGER_FRONTS.md`.*
+
+**Why this pool settles them.** Every fix below shipped on or before
+2026-07-19. The 2026-09-07 export covers 2026-07-19 → 09-07: **4,170
+`match_log` rows over 637 images**, and 2,468 `confirm_log` rows of which
+458 are `gemini_count` bookkeeping and **2,010 are real confirmations**
+(390 human-sourced). So the whole pool is a batch none of these was tuned
+on — the §4.2 condition, met by the calendar rather than by construction.
+
+**Two counting rules every reading below obeys**, both learned the hard way
+in §1 of the review:
+
+- **Detection facts are per image.** `match_log` has one row per crop, so an
+  80-button sheet contributes its one mask path 80 times. Every detection
+  number here is pinned to `crop_num = 1`: **637 images**, not 4,170 rows.
+- **Tap and type rates are per real confirmation** — 2,010, not the 2,468
+  rows that include `gemini_count` bookkeeping.
+
+**Nothing was promoted and nothing was retired.** `SHIPPED-WATCH` already
+means live in production; these fixes have been running since July. No code
+changed in this sweep. What changed is the record: seven fronts move to
+`SETTLED-CONFIRMED` / Stage 6 and stop being watched.
+
+## 13.1 Football pre-filter split (front A11) — CONFIRMED, gate met on a fresh batch
+
+**Closes the 2026-07-02 basketball-lot incident.** That lot auto-confirmed as
+football visual twins — 5 wrong AUTOs — and forced the auto-confirm half of
+the split. The gate: *score-only AUTO is blocked whenever the unrestricted
+(shadow) #1 is a different, non-Football candidate.*
+
+Graded on 1,435 confirmations carrying both leaderboards:
+
+| | reading |
+|---|---|
+| score-only autos in the pool | **63** (`auto_sort` 38, `auto_gap_only` 24, `auto_slogan_gap` 1) |
+| of those, fired against a different non-Football shadow #1 | **0** |
+| boards disagree at #1 | 12 of 1,435 (**0.9%**) |
+| how each disagreement resolved | human pick ×8, `not_a_button` ×3, `missed_button` ×1 — **never an auto** |
+
+Logger_2 read the disagreement rate at 9% on 2,590 crawl rows; at 0.9% on
+confirmations the cross-sport surface is far narrower than feared, and the
+gate covers it completely.
+
+**The unrestricted board is now load-bearing and must keep running.** It is
+no longer a measurement: `_cross_sport_blocked()` reads it to block the auto
+(this front's fix), and `_augment_results_with_nonfootball()` reads it to
+offer the winter-sports answer as a 4th picker option. Switching off
+`shadow_top_json` would delete the fix, not the instrument. It is earning its
+keep in the picker too — the operator took Hockey `Blue & White Chill Thrill`
+0.908 over Football `Southern Cal-amity` 0.660, and Men's Basketball
+`TTIP PITT` 0.794 over 0.626.
+
+**What is NOT closed.** The entry's "unfiltered-suggestions half remains
+open" is **C4's** question — whether the reference shelf fills until the
+football filter dissolves into an ordinary prior. On this export C4 is not
+accruing (five non-football typed confirms in seven weeks against 1,985
+Football), and that is a decision, not a measurement. A11's own gate is met.
+
+## 13.2 Grid-hole force-fill (front B10) — CONFIRMED, no recurrence
+
+**Closes Part VIII.** The finding was that white-on-white detection is
+resolution-fragile but the grid *geometry* is not, so a hole in the lattice
+can be force-filled even when the button is invisible to the mask. Shipped
+2026-07-18 in both repos.
+
+There is no live column that grades this — the front's instrument was the
+Mildcats/Minnesota lot and the `ni_est_rows` / `ni_est_cols` / `ni_layout_conf`
+triple. Across 637 images and eight weeks the failure class did not recur, and
+no reading a further watch could take would say more than that. Closed on
+absence of regression, which is the only evidence this shape of fix can
+produce.
+
+## 13.3 Hole-inversion coverage floor (front B12) — CONFIRMED, with a thin margin recorded
+
+**Closes §4.10.** Slogan-text blocks inside a button read as "button holes" to
+the inversion step and destroyed the mask; the fix was a coverage floor,
+`HOLE_INVERT_MIN_COVERAGE = 0.08`, below which inversion is not trusted.
+
+On 637 images, **8 took the `+holeinvert` path and all 8 reached Hough — none
+fell to the grid.** The inversion is doing the job it was kept for, and the
+floor is not rejecting the lots that need it.
+
+**Record the margin, because it is small.** Four of those eight sat at mask
+coverage **0.085** — five thousandths above the floor. The floor is correctly
+placed on this evidence but it is not roomy. If inversion ever regresses, that
+is the first number to look at, and any change to the floor should be treated
+as a threshold move (clear a set it was not tuned on first — §4.2, and B11's
+warning that this family of gate has overfit its calibration set twice).
+
+## 13.4 Two-signal reconcile swap (front B14) — CONFIRMED and dormant; stop watching
+
+**Closes §4.6.** A Hough phantom was *suppressing* a real Gemini button; the
+fix drops the phantom only when two independent signals agree it is unbacked
+**and** off-mask (`detected_fills < SWAP_OFF_MASK_MAX` 0.50), since the risky
+action is dropping.
+
+Per image, on 637 lots:
+
+| | reading |
+|---|---|
+| lots where the swap fired | **5 (0.8%)** |
+| lots carrying an unbacked circle — the population it exists for | **65 (10.2%)** |
+
+Working exactly as designed and almost never firing. This is the third read in
+a row to say "dormant", and the first to say it per image: **the tracker tab
+showed 51 and 698, both per-crop — a 10× inflation on the one front whose
+entire question is "does this ever fire?"**
+
+**Stop watching it.** A rule this conservative does not drift, and another
+export will report the same thing. Widening the population it can act on is
+B7's question (on-mask phantom dup-drop), not this one's — B14 is the proof
+that the two-signal shape is safe, and B7 is the proposal to spend that safety.
+
+## 13.5 Deficit-fill over-trust (front B15) — CONFIRMED as doctrine
+
+**Closes §4.1/§4.2.** The turf-cross regression: deficit fill trusted a bad
+path and manufactured detections. The fix gated the new path, verified it was
+on-target, and fell back.
+
+The path itself is now nearly inert — **3 of 637 lots** took
+`hough+deficit` — so there is no rate here worth tracking. The front's real
+product was never the path; it was the **reusable rule**: *gate the new path,
+verify it is on-target, fall back.* B2's saturation chooser, B11's flood gate
+and B17's anchor-gated recovery all shipped under it, and §10.2 carries it as
+the general form. A doctrine cannot regress the way a threshold can, and there
+is nothing left to read.
+
+**What stays open, elsewhere.** The entry's remaining item — *the gate
+restores the prior behaviour rather than solving the underlying trust
+question* — is real, and it belongs to B7 and B20 (rim-support union), which
+are the fronts proposing to make the underlying signal trustworthy. It is not
+a reason to keep B15 on watch.
+
+## 13.6 Frame fit (front B18) — CONFIRMED, no recurrence
+
+**Closes the Part VII DUAL incident** ("1987 front", job `efb99c29`), where
+Gemini's coordinate frame stretched and every position derived from it was
+wrong. Shipped 2026-07-17: reconcile the coordinate **frame** before trusting
+any position.
+
+Like B10 this has no gradeable column — the fix is an ordering constraint, and
+the evidence it can produce is the absence of the incident class. Across 637
+images the DUAL shape did not recur. Closed on that basis.
+
+## 13.7 Per-button review taps (front B23) — CONFIRMED, rate half
+
+**Closes the count-exact ≠ button-exact question** (lot `1855dcee`: detection
+finds the right *number* of circles while one is a non-button and one real
+button is missed). The taps `not_a_button` and `missed_button` are what catch
+it.
+
+As rates against **real confirmations**:
+
+| | n | `not_a_button` | `missed_button` |
+|---|---|---|---|
+| 2026-08 | 86 | 4.65% | 13.95% |
+| 2026-09 | 1,916 | **0.63%** | **1.10%** |
+
+The standing was `not_a_button` ~1.5–2.5% with the `missed_button` spike traced
+to the same root cause as the 1979-front incident (Part VII). Post-anchor-gate
+both sit **below** that band and the spike is gone. The August column is the
+tail of the incident; September is the system as it now runs.
+
+**One counting note, since it changes the number.** The tracker divided by
+every `confirm_log` row, but 458 of 2,468 are `gemini_count` bookkeeping that
+no person could have tapped. Pooled it read 0.65% / 1.30%; against real
+confirmations it is 0.80% / 1.59%. Both are inside the verdict, but the rate
+to quote is the second.
+
+**What stays open, elsewhere.** The front's other half — *each tap is also a
+labeled training example for the learned-detection track* — is accrual, not a
+rate, and that gate belongs to **C5** (the label harvester). B23's rate
+question is answered; C5 carries the accrual.

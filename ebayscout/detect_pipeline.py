@@ -593,6 +593,16 @@ def _prepare_detection_image(image_bgr, diag_out=None):
         _fb1, _cov1 = _fb_finish(cv2.inRange(hsv, lower_blue, upper_blue))
         _fb2, _cov2 = _fb_finish(((hsv[:, :, 2] > bg_mean_v + 60)
                                   & (hsv[:, :, 1] < 80)).astype(np.uint8) * 255)
+        # B2: what the two candidate variants actually scored at this fork.
+        # Written on BOTH branches on purpose -- the refusals say why no
+        # variant was plausible on the lots that still fall to the grid (39 of
+        # 637 on the 2026-09-07 export), and the adoptions give the plausible
+        # band its margin on the lots it did rescue.  A blank cell means the
+        # mask never saturated and this fork was never reached, which is the
+        # majority of lots.
+        if diag_out is not None:
+            diag_out["satfb_blue_cov"]   = round(float(_cov1), 4)
+            diag_out["satfb_bright_cov"] = round(float(_cov2), 4)
         # Adopt the first PLAUSIBLE variant: buttons occupy a real fraction of
         # a lot photo, so require >= 8% coverage (the old 2% floor let the
         # text-specks mask through on the white-button lot) and stay below
@@ -1911,11 +1921,20 @@ def _detect_unguided_once(image_bgr):
                 inlier_circles = _band
         _pre_conc = len(inlier_circles)
         inlier_circles = _collapse_concentric(inlier_circles, mask)
+        # B4's gate is "removes >=80% of the spurious extras while removing
+        # ZERO circles on exact-match lots", which needs these two counts per
+        # lot.  They were printed and thrown away: the Sheet's
+        # `det_overlap_removed` belongs to the GUIDED dedup in
+        # `_detect_buttons_once` and reads 0 on every row whatever this path
+        # does, so the front could not be graded at all (2026-09-12 review).
+        # Same numbers, named once, used by both the log line and the Sheet.
+        _band_removed = _pre_band - _pre_conc
+        _conc_removed = _pre_conc - len(inlier_circles)
         if len(inlier_circles) != _pre_band:
             print(f">>> DETECT_UNGUIDED: radius/concentric dedup "
                   f"{_pre_band} -> {len(inlier_circles)} "
-                  f"(band -{_pre_band - _pre_conc}, "
-                  f"concentric -{_pre_conc - len(inlier_circles)})", flush=True)
+                  f"(band -{_band_removed}, "
+                  f"concentric -{_conc_removed})", flush=True)
 
         selected_count = len(inlier_circles)
 
@@ -1956,6 +1975,11 @@ def _detect_unguided_once(image_bgr):
             # ride along in the Sheet's noinput_diag JSON when present)
             "mask_coverage": round(mask_coverage, 3),
             "white_rescue":  _wr_total,
+            # Phase 3 (defect B) dedup counts, for B4's gate.  Always written:
+            # 0 means the dedup ran and removed nothing, which is the reading
+            # the "zero on exact-match lots" half of the gate needs.
+            "band_removed":       _band_removed,
+            "concentric_removed": _conc_removed,
         }
 
         print(

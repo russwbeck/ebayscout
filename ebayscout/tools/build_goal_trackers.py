@@ -192,12 +192,39 @@ def _live():
         """COUNTIFS over IMAGES, not crops."""
         return f'=COUNTIFS({CROP1},' + ",".join(conds) + ")"
 
+    def typed(tab, col):
+        """Cells carrying actual text.
+
+        `COUNTA` counts a pasted empty string as data: `chosen_type` is blank
+        on the 478 confirmations that never resolved a type, and COUNTA scored
+        all of them — A11 read 483 non-football confirms against 5.  `"?*"`
+        matches text of length >= 1, so an empty paste does not count.
+        """
+        return f'COUNTIF({tab}!{col}2:{col},"?*")'
+
     images = f'=COUNTIF({CROP1})'
     # Bare (no leading '=') fragments, for composing into larger formulas.
     _images = f'COUNTIF({CROP1})'
+    _crop1c = f'{m}!{M["crop_num"]}2:{M["crop_num"]}=1'
+
+    def numeric(rng, *extra):
+        """Images where `rng` holds a NUMBER.
+
+        `COUNTIFS(..., "<>")` does NOT mean this.  A pasted export writes a
+        zero-length STRING into an empty field, and a zero-length string is
+        not blank, so the criterion counts it as present.  B22's "lots where
+        the match could not run (blank != zero)" read 0 against 157 that way --
+        the one cell whose entire caption is about blanks -- and E2's gate read
+        74.4% against 79.6% because its denominator counted 215 lots instead of
+        the 201 that carry a Gemini count.  ISNUMBER is the only test that
+        separates a written number from an empty paste.
+        """
+        return (f'SUMPRODUCT(({_crop1c})*ISNUMBER({rng})'
+                + ''.join(f'*({e})' for e in extra) + ')')
+
     _gem = f'{m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]}'
     _gem_lots = f'COUNTIFS({CROP1},{_gem},">0")'
-    _gem_scored = f'COUNTIFS({CROP1},{_gem},"<>")'
+    _gem_scored = numeric(_gem)
 
     # The Stage-B gated stratum, per image.  `ni_gate=auto` is always
     # `scale_first` in practice, but both are named so the gate stays explicit.
@@ -205,11 +232,9 @@ def _live():
     _path = f'{m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}'
     _gcount = f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}'
     _nisel = f'{m}!{M["ni_selected"]}2:{M["ni_selected"]}'
-    _crop1c = f'{m}!{M["crop_num"]}2:{M["crop_num"]}=1'
     _gate_auto = f'COUNTIFS({CROP1},{_gate},"auto")'
     _gated = f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first")'
-    _gated_scored = (f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first",'
-                     f'{_gcount},"<>")')
+    _gated_scored = numeric(_gcount, f'{_gate}="auto"', f'{_path}="scale_first"')
     _agree = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
               f'*({_gcount}<>"")*({_nisel}={_gcount}))')
     _agree1 = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
@@ -304,11 +329,15 @@ def _live():
           f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"correction")'
           f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"skip_correction")'),
          ("Confirms total", crows)],
- "A11": [("Confirms by type — Football share",
+ # Both cells divided by COUNTA, which counts the blank `chosen_type` a
+ # confirmation writes when it resolved no type: the share read 0.804 against
+ # 0.997, and "non-football confirms" read 483 against 5.  `typed` counts only
+ # cells carrying a sport.
+ "A11": [("Football share of TYPED confirms",
           f'=IFERROR(COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")'
-          f'/COUNTA({c}!{C["chosen_type"]}2:{C["chosen_type"]}),"—")'),
-         ("Non-football confirms",
-          f'=COUNTA({c}!{C["chosen_type"]}2:{C["chosen_type"]})'
+          f'/{typed(c, C["chosen_type"])},"—")'),
+         ("Non-football confirms  ← the cross-sport surface",
+          f'={typed(c, C["chosen_type"])}'
           f'-COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")')],
  "A12": [("Centered better than live",
           beats(C["rank_centered"], C["rank_restricted"], "<")),
@@ -322,9 +351,9 @@ def _live():
  # The front is about TYPED rows, so the population comes first — the
  # all-confirms count read 152 against 5 typed rows that actually qualify.
  "A23": [("Typed rows carrying both ranks  ← the actual population",
-          f'=COUNTIFS({c}!{C["source"]}2:{C["source"]},"typed_search",'
-          f'{c}!{C["rank_image_only"]}2:{C["rank_image_only"]},"<>",'
-          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},"<>")'),
+          f'=SUMPRODUCT(({c}!{C["source"]}2:{C["source"]}="typed_search")'
+          f'*ISNUMBER({c}!{C["rank_image_only"]}2:{C["rank_image_only"]})'
+          f'*ISNUMBER({c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))'),
          ("image_only better than live (all confirms)",
           beats(C["rank_image_only"], C["rank_restricted"], "<"))],
  "A24": [("Confirms by source",
@@ -338,13 +367,18 @@ def _live():
          ("edition_pick share of confirms",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"edition_pick")'
           f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")')],
- "B2": [("Saturated lots (coverage > 0.75)",
-         f'=IFERROR(COUNTIF({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},'
-         f'">0.75")/COUNT({m}!{M["det_mask_coverage"]}2:'
-         f'{M["det_mask_coverage"]}),"—")'),
-        ("Grid fallback on saturated lots",
-         f'=COUNTIFS({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75",'
-         f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid")')],
+ # Saturation is a property of the IMAGE — per crop it read 162 saturated rows
+ # and 160 grid-fallback rows against 39 lots and 37.  Note what the column
+ # holds: `det_mask_coverage` is the FINAL adopted mask, so a lot the
+ # `+satfallback_*` chooser rescued records its post-rescue coverage and is no
+ # longer counted here.  Coverage > 0.75 is therefore the UNRESCUED residual —
+ # the lots where neither variant was plausible — not the saturation rate.
+ "B2": [("Unrescued saturated lots (coverage > 0.75, per image)",
+         f'=IFERROR(COUNTIFS({CROP1},{m}!{M["det_mask_coverage"]}2:'
+         f'{M["det_mask_coverage"]},">0.75")/COUNTIF({CROP1}),"—")'),
+        ("Of those, how many fell to the grid  ← the gate",
+         per_image(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75"',
+                   f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"'))],
  "B3": [("Fused lots (components < Gemini count)",
          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
          f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
@@ -359,14 +393,18 @@ def _live():
          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})),"—")'),
         ("Dense lots (7+ buttons) seen",
          f'=COUNTIF({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]},">=7")')],
- "B4": [("Small lots overcounting unguided",
-         f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
-         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<=3)*'
-         f'({m}!{M["ni_selected"]}2:{M["ni_selected"]}>'
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'),
-        ("Mean concentric circles removed",
-         f'=IFERROR(AVERAGE({m}!{M["det_overlap_removed"]}2:'
-         f'{M["det_overlap_removed"]}),"—")')],
+ # Second cell used to average `det_overlap_removed`, which reads 0 on every
+ # row — and would whatever the fix did.  That counter belongs to the GUIDED
+ # dedup in `_detect_buttons_once`; B4 shipped its radius-band + concentric
+ # collapse in `_detect_unguided_once`, which reports only to the
+ # `>>> DETECT_UNGUIDED:` stdout line and writes no column.  Until that is
+ # instrumented, the honest second reading is the defect's own signature: the
+ # exactly-+1 cluster, which is the concentric glare rim the fix targets.
+ "B4": [("Small lots overcounting unguided (per image)",
+         f'=SUMPRODUCT(({_crop1c})*({_gcount}>0)*({_gcount}<=3)*({_nisel}>{_gcount}))'),
+        ("Of those, overcounting by exactly +1  ← the concentric rim",
+         f'=SUMPRODUCT(({_crop1c})*({_gcount}>0)*({_gcount}<=3)*'
+         f'({_nisel}-{_gcount}=1))')],
  "B5": [("Lots at gate=auto (per image)", share(M["ni_gate"], "auto")),
         ("auto AND scale_first  ← the trusted stratum",
          f'=IFERROR({_gated}/{_images},"—")'),
@@ -382,19 +420,26 @@ def _live():
          f'{M["det_mask_path"]} is not null group by {M["det_mask_path"]} '
          f'order by count({M["det_mask_path"]}) desc limit 12 '
          f'label count({M["det_mask_path"]}) \'rows\'",1),"—")')],
- "B11": [("Mean mask coverage",
-          f'=IFERROR(AVERAGE({m}!{M["det_mask_coverage"]}2:'
-          f'{M["det_mask_coverage"]}),"—")'),
-         ("Coverage > 0.75",
-          f'=COUNTIF({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75")')],
- "B14": [("Lots where the swap fired",
-          f'=COUNTIF({m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0")'),
+ # Both per-image: coverage is one fact per photo, and a dense sheet used to
+ # contribute its coverage once per button (read 162 lots against 39).
+ "B11": [("Mean mask coverage (per image)",
+          f'=IFERROR(SUMPRODUCT(({_crop1c})*{m}!{M["det_mask_coverage"]}2:'
+          f'{M["det_mask_coverage"]})/'
+          + numeric(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]}')
+          + ',"—")'),
+         ("Coverage > 0.75 (per image)",
+          per_image(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75"'))],
+ # Read 51 swaps against 5 and a 698-lot population against 65 — a 10x
+ # inflation on the one front whose whole question is "does this ever fire?".
+ "B14": [("Lots where the swap fired (per image)",
+          per_image(f'{m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0"')),
          ("Lots with an unbacked circle (the population it exists for)",
-          f'=COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")')],
- "B7": [("Unbacked-circle lots  ← the population",
-         f'=COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")'),
+          f'={_gem_lots}')],
+ # Per-image, like B14: these are the same two facts and were reading the
+ # same 10x-inflated per-crop counts (698 and 51 against 65 and 5).
+ "B7": [("Unbacked-circle lots  ← the population", f'={_gem_lots}'),
         ("Swap fired on",
-         f'=COUNTIF({m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0")'),
+         per_image(f'{m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0"')),
         ("not_a_button confirmations to grade against",
          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")')],
  "B19": [("scale_first share", share(M["ni_scale_path"], "scale_first")),
@@ -418,12 +463,18 @@ def _live():
          # not just the data — it read 22698 against a 4170-row corpus.
          ("Lots where the match could not run (blank ≠ zero)",
           f'={_images}-{_gem_scored}')],
- "B23": [("not_a_button rate",
+ # Denominator was every confirm_log row, but 458 of 2,468 are `gemini_count`
+ # bookkeeping, not confirmations a person could have tapped.  The taps are
+ # rates against REAL confirmations: 0.65%/1.30% pooled read against
+ # 0.80%/1.59%.
+ "B23": [("not_a_button rate (of real confirmations)",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")'
-          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")'),
-         ("missed_button rate",
+          f'/({typed(c, C["source"])}'
+          f'-COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")),"—")'),
+         ("missed_button rate (of real confirmations)",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"missed_button")'
-          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")')],
+          f'/({typed(c, C["source"])}'
+          f'-COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")),"—")')],
  "B25": [("Fused lots by size — 7+ buttons",
           f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>=7)*'
           f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
@@ -441,10 +492,13 @@ def _live():
          ("Of grid lots, how many were flooded",
           per_image(f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"',
                     f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.6"'))],
- "B28": [("Lots taking the whitepass rescue",
-          f'=COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*whitepass*")'),
-         ("Lots taking a saturation fallback",
-          f'=COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*satfallback*")')],
+ # The worst of the per-crop readings: an 80-button sheet counted its one
+ # mask path 80 times, so "lots taking the whitepass rescue" read 983 against
+ # 54 and the saturation fallback 1184 against 83 — 18x and 14x.
+ "B28": [("Lots taking the whitepass rescue (per image)",
+          per_image(f'{m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*whitepass*"')),
+         ("Lots taking a saturation fallback (per image)",
+          per_image(f'{m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*satfallback*"'))],
  "B29": [("Preprocessing variant distribution",
           f'=IFERROR(QUERY({m}!{M["ni_variant"]}1:{M["ni_variant"]},'
           f'"select {M["ni_variant"]}, count({M["ni_variant"]}) where '
@@ -456,11 +510,14 @@ def _live():
           f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
           f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<=3)*'
           f'({m}!{M["det_hough_pass1"]}2:{M["det_hough_pass1"]}>0))')],
- "C4": [("Confirms by sport",
-         f'=IFERROR(QUERY({c}!{C["chosen_type"]}1:{C["chosen_type"]},'
-         f'"select {C["chosen_type"]}, count({C["chosen_type"]}) where '
-         f'{C["chosen_type"]} is not null group by {C["chosen_type"]} '
-         f'label count({C["chosen_type"]}) \'rows\'",1),"—")')],
+ # A grouped QUERY returns one row per sport and the tab budgets ONE row, so
+ # the spill hit the "Pooled over…" note below it and the cell rendered #REF!
+ # for the whole life of the workbook.  The front's question is accrual on the
+ # winter-sports shelf, and that is a scalar: how many confirms carry a sport
+ # that is not Football.
+ "C4": [("Non-football typed confirms  ← the shelf's accrual",
+         f'={typed(c, C["chosen_type"])}'
+         f'-COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")')],
  "D2": [("Rows carrying a rerank read",
          f'=COUNTIF({c}!{C["rank_rerank"]}2:{C["rank_rerank"]},"?*")'),
         ("Rerank better than live",
@@ -1023,7 +1080,7 @@ def emit_apps_script(fronts, path):
         " */",
         "function repairFormulas() {",
         "  var ss = SpreadsheetApp.getActiveSpreadsheet();",
-        "  var written = 0, missing = [];",
+        "  var written = 0, missing = [], renamed = [];",
         "  var CELLS = [",
     ]
     for tab, cell, formula, label in cells:
@@ -1031,9 +1088,31 @@ def emit_apps_script(fronts, path):
                      f"{json.dumps(formula)}, {json.dumps(label)}],")
     lines += [
         "  ];",
+        "  // Tab names are derived from a front's TITLE, and titles change:",
+        "  // A25 was renamed 'Edition-twin wrong-year picks' ->",
+        "  // 'Edition-twin resolution' on 2026-09-09, so the generated name",
+        "  // stopped matching the deployed tab and its two LIVE cells would",
+        "  // have gone quietly stale.  A front's ID never changes, so fall",
+        "  // back to the 'A25 ...' prefix and say so.",
+        "  var byId = {};",
+        "  var all = ss.getSheets();",
+        "  for (var s = 0; s < all.length; s++) {",
+        "    var m = all[s].getName().match(/^([A-E]\\d+) /);",
+        "    if (m) { byId[m[1]] = all[s]; }",
+        "  }",
         "  for (var i = 0; i < CELLS.length; i++) {",
-        "    var sh = ss.getSheetByName(CELLS[i][0]);",
-        "    if (!sh) { missing.push(CELLS[i][0]); continue; }",
+        "    var want = CELLS[i][0];",
+        "    var sh = ss.getSheetByName(want);",
+        "    if (!sh) {",
+        "      var idm = want.match(/^([A-E]\\d+) /);",
+        "      if (idm && byId[idm[1]]) {",
+        "        sh = byId[idm[1]];",
+        "        if (renamed.indexOf(want) < 0) {",
+        "          renamed.push(want + '  ->  ' + sh.getName());",
+        "        }",
+        "      }",
+        "    }",
+        "    if (!sh) { missing.push(want); continue; }",
         "    sh.getRange(CELLS[i][1]).setFormula(CELLS[i][2]);",
         "    if (CELLS[i][3] !== null) {",
         "      // Keep the caption truthful about what the cell now computes.",
@@ -1050,13 +1129,30 @@ def emit_apps_script(fronts, path):
         "{ return a.indexOf(v) === k; });",
         "    msg += '  MISSING TABS: ' + uniq.join(' | ');",
         "  }",
+        "  if (renamed.length) {",
+        "    // Written, but to a tab whose title has since changed in the",
+        "    // register.  Rename the tab to match and this line goes away.",
+        "    msg += '  MATCHED BY FRONT ID (rename the tab): '",
+        "         + renamed.join(' | ');",
+        "  }",
         "  Logger.log(msg);",
-        "  // getUi() throws when the script is run from the editor rather",
-        "  // than from the sheet, so the result goes somewhere always",
-        "  // visible instead of into a popup that may never appear.",
-        "  var out = ss.getSheetByName('REPAIR') || ss.getSheets()[0];",
-        "  out.getRange('A4').setValue(msg);",
-        "  try { SpreadsheetApp.getUi().alert(msg); } catch (e) {}",
+        "  // Status goes to a tab of its own, CREATED if absent.  It used to",
+        "  // fall back to ss.getSheets()[0] -- which is INDEX -- and wrote the",
+        "  // message over INDEX!A4, the 'Fronts per stage' row label",
+        "  // (2026-09-12: it did exactly that).  Never write a status line",
+        "  // into a tab that carries content.",
+        "  var out = ss.getSheetByName('REPAIR');",
+        "  if (!out) { out = ss.insertSheet('REPAIR'); }",
+        "  out.getRange('A1').setValue('Repair log — written by repairFormulas().');",
+        "  out.getRange('A2').setValue(msg);",
+        "  SpreadsheetApp.flush();",
+        "  // NO getUi().alert() here.  When the script IS container-bound it",
+        "  // does not throw -- it opens a modal and BLOCKS until somebody",
+        "  // clicks, so a run nobody is watching burns the full 6-minute quota",
+        "  // and dies with 'Exceeded maximum execution time' AFTER the writes",
+        "  // have already succeeded (2026-09-12: 87/87 written in 4s, killed at",
+        "  // 5m57s).  The unflushed status write was lost with it.  The log line",
+        "  // above and the REPAIR tab are the report.",
         "  return msg;",
         "}",
     ]
