@@ -134,3 +134,30 @@ def test_b7_and_b14_report_the_same_two_facts_per_image():
     b7_pop = b.LIVE["B7"][0][1]
     b14_pop = b.LIVE["B14"][1][1]
     assert b7_pop == b14_pop, (b7_pop, b14_pop)
+
+
+def test_the_repair_never_writes_into_a_content_tab_and_never_blocks():
+    """Two failure modes from the 2026-09-12 runs, in the reporting tail.
+
+    The status line fell back to `ss.getSheets()[0]` when there was no REPAIR
+    tab — that is INDEX, and it overwrote INDEX!A4, the "Fronts per stage" row
+    label. And `getUi().alert()` does NOT throw when the script is
+    container-bound: it opens a modal and blocks until someone clicks, so a
+    run nobody is watching burns the whole 6-minute quota and dies with
+    "Exceeded maximum execution time" long after the 87 writes succeeded.
+    """
+    import tempfile
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    # Assert on the EMITTED script, not the generator: the generator's own
+    # comments name both hazards, so grepping the source would pass on prose.
+    code = "\n".join(ln for ln in gs.splitlines()
+                     if not ln.lstrip().startswith(("//", "*", "/*")))
+    assert "getSheets()[0]" not in code, "status write can still land on INDEX"
+    assert "getUi" not in code, "a modal in a headless run blocks to timeout"
+    assert "insertSheet('REPAIR')" in code, "REPAIR tab must be created, not fallen back from"
+    assert "SpreadsheetApp.flush();" in code.split("insertSheet('REPAIR')")[1], \
+        "the status write must be flushed, or a kill discards it"

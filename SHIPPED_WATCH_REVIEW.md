@@ -88,6 +88,32 @@ gate, and B7 and B22 are graded elsewhere. Two more guards:
 tabs (A23, B7, B11, B22, E2), regenerated from the same generator; the other
 79 are byte-identical to the run that already happened.
 
+### 1c. The repair script's reporting tail had two bugs of its own
+
+Both runs wrote all 87 cells correctly — verified against the raw tabs,
+**23 of 23 predicted values now match in the deployed workbook**. But the run
+*ended* badly, twice, and neither problem was in the formulas:
+
+- **`getUi().alert(msg)` blocks until the 6-minute quota kills it.** The
+  comment beside it assumed `getUi()` *throws* outside the sheet, and it was
+  wrapped in a try/catch on that basis. When the script is container-bound it
+  does not throw — it opens a modal and waits for a click that never comes.
+  The 09-18 run wrote 87/87 in **four seconds** and then died at **5m57s**
+  with "Exceeded maximum execution time", long after the work was done. The
+  error is real but it is not a failure of the repair.
+- **The status line wrote into INDEX.** `ss.getSheetByName('REPAIR') ||
+  ss.getSheets()[0]` — there is no REPAIR tab, and `getSheets()[0]` is
+  **INDEX**, so `out.getRange('A4').setValue(msg)` put the timestamp over
+  **INDEX!A4**, the `Fronts per stage` row label. It did exactly that on the
+  second run. (On the first it was lost instead, because the write was never
+  flushed before the kill — the same bug, differently unlucky.)
+
+Fixed: the status goes to a **REPAIR** tab, created if absent, and is flushed;
+the alert is gone. `test_the_repair_never_writes_into_a_content_tab_and_never_blocks`
+asserts both against the *emitted* script rather than the generator source —
+the generator's own comments name both hazards, so grepping the source would
+pass on prose. **No formula cell changed** between that version and this one.
+
 ---
 
 ## 2. Verdicts
