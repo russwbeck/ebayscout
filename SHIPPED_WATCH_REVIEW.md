@@ -133,7 +133,7 @@ pass on prose. **No formula cell changed** between that version and this one.
 | B11 | Flood gate's calibration set | **KEEP** | mean coverage 0.423, 39 lots over the bar |
 | B17 | Unanchored associations | **KEEP** | 95.3% of Gemini buttons anchored; 4.7% (148) are the incident class |
 | B28 | Whitepass telemetry | **KEEP** | now gradeable per-image: 54 whitepass / 83 satfallback lots, 117 buttons |
-| A26 | Bowl-year resolution | **KEEP** | 51 `gemini_printed_year` confirms in September — no longer zero-data |
+| A26 | Bowl-year resolution | **KEEP (re-instrument)** | boot half met (29 entries indexed); the bowl counter is unreadable and the map is unwired in ebayscout — §5 |
 | C4 | Winter-sports shelf | **KEEP (decide)** | **5** non-football confirms in seven weeks — §4 |
 | C5 | Label harvester | **KEEP (verify)** | not checkable from a web session — §5 |
 | B4 | Small-lot overcount | **KEEP (re-instrumented)** | was ungradeable as instrumented; the gate's counters are now columns — §4 |
@@ -326,12 +326,40 @@ claims the battery "covers both detectors" and **ebayscout has no copy**: no
 claim rests on was verified once, by hand. *Action: either add the fixture
 runner to ebayscout or restate the claim as a manual check with a date.*
 
-**A26 — bowl-year resolution.** The entry says "Stage 1, instrumented, zero
-data". That is now false: **51 `gemini_printed_year` confirmations landed, all
-in September.** The gate's own signal is a boot line — `>>> GAME_YEAR: N
-bowl-offset entries indexed` — which a web session cannot read. *Action: one
-look at the Cloud Run boot log for that line and its N. If N is non-zero the
-front jumps from Stage 1 to Stage 3 on evidence already collected.*
+**A26 — bowl-year resolution.** The boot half is **met**: the operator read
+the log on 2026-09-12 and it says `>>> GAME_YEAR: 29 bowl-offset entries
+(printed year != season year) indexed`, identically across 10 boots. The dated
+`text_db.json` is deployed; the front is no longer waiting on data. Whether
+**29 ≈ the count of Jan-dated football buttons** is unverified from here — that
+needs `text_db.json` in GCS, and a badly short map would still print a
+plausible non-zero N.
+
+The resolution half is a different story, and it is the B4 pattern a third
+time plus a wiring gap:
+
+- **The counter is thrown away.** `n_printed_year_gamematch` is computed in
+  `gemini_resolve.py`, returned in the telemetry dict, and dropped. Neither
+  service's `>>> PIPELINE RESOLVE:` line prints it; it is not a column. The
+  gate's "non-zero `n_printed_year_gamematch`" cannot be read at all.
+- **The 51 `gemini_printed_year` confirmations do not stand in for it.** I
+  cited them in §2 as "no longer zero-data", and on the front's own gate that
+  was too generous: the source fires whenever a printed year uniquely
+  disambiguates, bowl or not. The bowl subset is only the branch where the
+  resolved candidate's season year differs from the printed marker — which is
+  exactly the counter nobody can see.
+- **ebayscout never passes the map.** `GAME_YEAR_BY_KEY` is built and passed
+  only in `buttonmatcher/main.py`. ebayscout carries the shared
+  `gemini_resolve.py` with the `game_year_by_key` parameter, never builds it,
+  and omits the kwarg at its resolve call — so `_game_year_of()` returns None
+  and bowl matching degenerates to season-only. **The feature is a no-op on
+  the Gemini pipeline, ~92% of volume.** The log agrees: all 51 printed-year
+  confirmations are buttonmatcher, `/inventory` 17 and `/scout` 34, none from
+  ebayscout.
+
+So A26 is not one reading away from a verdict; it is two small changes away
+from being *measurable* — wire the map in ebayscout for parity, and surface the
+counter. `tests/test_buttonmatcher_parity.py` pins the scoring constants but
+not this wiring, which is where the guard belongs.
 
 **C5 — the label harvester.** `pipeline/labels/<job_id>.json` + `.jpg` sidecars
 live in GCS; this session has no GCP access, so "is every pipeline lot leaving
