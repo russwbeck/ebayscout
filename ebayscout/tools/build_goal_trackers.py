@@ -192,6 +192,16 @@ def _live():
         """COUNTIFS over IMAGES, not crops."""
         return f'=COUNTIFS({CROP1},' + ",".join(conds) + ")"
 
+    def typed(tab, col):
+        """Cells carrying actual text.
+
+        `COUNTA` counts a pasted empty string as data: `chosen_type` is blank
+        on the 478 confirmations that never resolved a type, and COUNTA scored
+        all of them — A11 read 483 non-football confirms against 5.  `"?*"`
+        matches text of length >= 1, so an empty paste does not count.
+        """
+        return f'COUNTIF({tab}!{col}2:{col},"?*")'
+
     images = f'=COUNTIF({CROP1})'
     # Bare (no leading '=') fragments, for composing into larger formulas.
     _images = f'COUNTIF({CROP1})'
@@ -304,11 +314,15 @@ def _live():
           f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"correction")'
           f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"skip_correction")'),
          ("Confirms total", crows)],
- "A11": [("Confirms by type — Football share",
+ # Both cells divided by COUNTA, which counts the blank `chosen_type` a
+ # confirmation writes when it resolved no type: the share read 0.804 against
+ # 0.997, and "non-football confirms" read 483 against 5.  `typed` counts only
+ # cells carrying a sport.
+ "A11": [("Football share of TYPED confirms",
           f'=IFERROR(COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")'
-          f'/COUNTA({c}!{C["chosen_type"]}2:{C["chosen_type"]}),"—")'),
-         ("Non-football confirms",
-          f'=COUNTA({c}!{C["chosen_type"]}2:{C["chosen_type"]})'
+          f'/{typed(c, C["chosen_type"])},"—")'),
+         ("Non-football confirms  ← the cross-sport surface",
+          f'={typed(c, C["chosen_type"])}'
           f'-COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")')],
  "A12": [("Centered better than live",
           beats(C["rank_centered"], C["rank_restricted"], "<")),
@@ -338,13 +352,18 @@ def _live():
          ("edition_pick share of confirms",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"edition_pick")'
           f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")')],
- "B2": [("Saturated lots (coverage > 0.75)",
-         f'=IFERROR(COUNTIF({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},'
-         f'">0.75")/COUNT({m}!{M["det_mask_coverage"]}2:'
-         f'{M["det_mask_coverage"]}),"—")'),
-        ("Grid fallback on saturated lots",
-         f'=COUNTIFS({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75",'
-         f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid")')],
+ # Saturation is a property of the IMAGE — per crop it read 162 saturated rows
+ # and 160 grid-fallback rows against 39 lots and 37.  Note what the column
+ # holds: `det_mask_coverage` is the FINAL adopted mask, so a lot the
+ # `+satfallback_*` chooser rescued records its post-rescue coverage and is no
+ # longer counted here.  Coverage > 0.75 is therefore the UNRESCUED residual —
+ # the lots where neither variant was plausible — not the saturation rate.
+ "B2": [("Unrescued saturated lots (coverage > 0.75, per image)",
+         f'=IFERROR(COUNTIFS({CROP1},{m}!{M["det_mask_coverage"]}2:'
+         f'{M["det_mask_coverage"]},">0.75")/COUNTIF({CROP1}),"—")'),
+        ("Of those, how many fell to the grid  ← the gate",
+         per_image(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75"',
+                   f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"'))],
  "B3": [("Fused lots (components < Gemini count)",
          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
          f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
@@ -359,14 +378,18 @@ def _live():
          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})),"—")'),
         ("Dense lots (7+ buttons) seen",
          f'=COUNTIF({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]},">=7")')],
- "B4": [("Small lots overcounting unguided",
-         f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
-         f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<=3)*'
-         f'({m}!{M["ni_selected"]}2:{M["ni_selected"]}>'
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'),
-        ("Mean concentric circles removed",
-         f'=IFERROR(AVERAGE({m}!{M["det_overlap_removed"]}2:'
-         f'{M["det_overlap_removed"]}),"—")')],
+ # Second cell used to average `det_overlap_removed`, which reads 0 on every
+ # row — and would whatever the fix did.  That counter belongs to the GUIDED
+ # dedup in `_detect_buttons_once`; B4 shipped its radius-band + concentric
+ # collapse in `_detect_unguided_once`, which reports only to the
+ # `>>> DETECT_UNGUIDED:` stdout line and writes no column.  Until that is
+ # instrumented, the honest second reading is the defect's own signature: the
+ # exactly-+1 cluster, which is the concentric glare rim the fix targets.
+ "B4": [("Small lots overcounting unguided (per image)",
+         f'=SUMPRODUCT(({_crop1c})*({_gcount}>0)*({_gcount}<=3)*({_nisel}>{_gcount}))'),
+        ("Of those, overcounting by exactly +1  ← the concentric rim",
+         f'=SUMPRODUCT(({_crop1c})*({_gcount}>0)*({_gcount}<=3)*'
+         f'({_nisel}-{_gcount}=1))')],
  "B5": [("Lots at gate=auto (per image)", share(M["ni_gate"], "auto")),
         ("auto AND scale_first  ← the trusted stratum",
          f'=IFERROR({_gated}/{_images},"—")'),
@@ -382,15 +405,20 @@ def _live():
          f'{M["det_mask_path"]} is not null group by {M["det_mask_path"]} '
          f'order by count({M["det_mask_path"]}) desc limit 12 '
          f'label count({M["det_mask_path"]}) \'rows\'",1),"—")')],
- "B11": [("Mean mask coverage",
-          f'=IFERROR(AVERAGE({m}!{M["det_mask_coverage"]}2:'
-          f'{M["det_mask_coverage"]}),"—")'),
-         ("Coverage > 0.75",
-          f'=COUNTIF({m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75")')],
- "B14": [("Lots where the swap fired",
-          f'=COUNTIF({m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0")'),
+ # Both per-image: coverage is one fact per photo, and a dense sheet used to
+ # contribute its coverage once per button (read 162 lots against 39).
+ "B11": [("Mean mask coverage (per image)",
+          f'=IFERROR(SUMPRODUCT(({_crop1c})*{m}!{M["det_mask_coverage"]}2:'
+          f'{M["det_mask_coverage"]})/COUNTIFS({CROP1},'
+          f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},"<>"),"—")'),
+         ("Coverage > 0.75 (per image)",
+          per_image(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75"'))],
+ # Read 51 swaps against 5 and a 698-lot population against 65 — a 10x
+ # inflation on the one front whose whole question is "does this ever fire?".
+ "B14": [("Lots where the swap fired (per image)",
+          per_image(f'{m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0"')),
          ("Lots with an unbacked circle (the population it exists for)",
-          f'=COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")')],
+          f'={_gem_lots}')],
  "B7": [("Unbacked-circle lots  ← the population",
          f'=COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")'),
         ("Swap fired on",
@@ -418,12 +446,18 @@ def _live():
          # not just the data — it read 22698 against a 4170-row corpus.
          ("Lots where the match could not run (blank ≠ zero)",
           f'={_images}-{_gem_scored}')],
- "B23": [("not_a_button rate",
+ # Denominator was every confirm_log row, but 458 of 2,468 are `gemini_count`
+ # bookkeeping, not confirmations a person could have tapped.  The taps are
+ # rates against REAL confirmations: 0.65%/1.30% pooled read against
+ # 0.80%/1.59%.
+ "B23": [("not_a_button rate (of real confirmations)",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")'
-          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")'),
-         ("missed_button rate",
+          f'/({typed(c, C["source"])}'
+          f'-COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")),"—")'),
+         ("missed_button rate (of real confirmations)",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"missed_button")'
-          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")')],
+          f'/({typed(c, C["source"])}'
+          f'-COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")),"—")')],
  "B25": [("Fused lots by size — 7+ buttons",
           f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>=7)*'
           f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
@@ -441,10 +475,13 @@ def _live():
          ("Of grid lots, how many were flooded",
           per_image(f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"',
                     f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.6"'))],
- "B28": [("Lots taking the whitepass rescue",
-          f'=COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*whitepass*")'),
-         ("Lots taking a saturation fallback",
-          f'=COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*satfallback*")')],
+ # The worst of the per-crop readings: an 80-button sheet counted its one
+ # mask path 80 times, so "lots taking the whitepass rescue" read 983 against
+ # 54 and the saturation fallback 1184 against 83 — 18x and 14x.
+ "B28": [("Lots taking the whitepass rescue (per image)",
+          per_image(f'{m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*whitepass*"')),
+         ("Lots taking a saturation fallback (per image)",
+          per_image(f'{m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*satfallback*"'))],
  "B29": [("Preprocessing variant distribution",
           f'=IFERROR(QUERY({m}!{M["ni_variant"]}1:{M["ni_variant"]},'
           f'"select {M["ni_variant"]}, count({M["ni_variant"]}) where '
@@ -456,11 +493,14 @@ def _live():
           f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
           f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<=3)*'
           f'({m}!{M["det_hough_pass1"]}2:{M["det_hough_pass1"]}>0))')],
- "C4": [("Confirms by sport",
-         f'=IFERROR(QUERY({c}!{C["chosen_type"]}1:{C["chosen_type"]},'
-         f'"select {C["chosen_type"]}, count({C["chosen_type"]}) where '
-         f'{C["chosen_type"]} is not null group by {C["chosen_type"]} '
-         f'label count({C["chosen_type"]}) \'rows\'",1),"—")')],
+ # A grouped QUERY returns one row per sport and the tab budgets ONE row, so
+ # the spill hit the "Pooled over…" note below it and the cell rendered #REF!
+ # for the whole life of the workbook.  The front's question is accrual on the
+ # winter-sports shelf, and that is a scalar: how many confirms carry a sport
+ # that is not Football.
+ "C4": [("Non-football typed confirms  ← the shelf's accrual",
+         f'={typed(c, C["chosen_type"])}'
+         f'-COUNTIF({c}!{C["chosen_type"]}2:{C["chosen_type"]},"Football")')],
  "D2": [("Rows carrying a rerank read",
          f'=COUNTIF({c}!{C["rank_rerank"]}2:{C["rank_rerank"]},"?*")'),
         ("Rerank better than live",

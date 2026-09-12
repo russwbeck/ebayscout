@@ -82,9 +82,22 @@ def test_detection_readings_count_images_not_crops():
     """match_log is one row per crop, so an 80-button sheet counts 80 times
     unless the count is pinned to crop_num = 1."""
     crop_col = b.M["crop_num"]
-    for fid in ("B22", "B27", "E2"):
+    # B2/B4/B11/B14/B28 were missed by the 2026-09-07 sweep and stayed
+    # per-crop: B28 read 983 whitepass "lots" against 54, B14 51 swaps
+    # against 5.
+    for fid in ("B2", "B4", "B11", "B14", "B22", "B27", "B28", "E2"):
         for _label, formula in b.LIVE[fid]:
             assert f'match_log!{crop_col}2:{crop_col}' in formula, (fid, formula)
+
+
+def test_confirm_type_counts_ignore_the_untyped_blank():
+    """`chosen_type` is blank on a confirmation that resolved no type, and
+    COUNTA scored those as data — A11 read 483 non-football confirms
+    against 5, and C4 inherited the same denominator."""
+    for fid in ("A11", "C4"):
+        for _label, formula in b.LIVE[fid]:
+            assert "COUNTA" not in formula, (fid, formula)
+            assert '"?*"' in formula, (fid, formula)
 
 
 def test_shadow_columns_do_not_count_their_empty_marker():

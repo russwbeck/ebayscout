@@ -208,12 +208,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### A11 — Football pre-filter split
 
 - **Track:** Matching and auto-confirm
-- **Status:** SHIPPED-WATCH
-- **Stage:** 5
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** should the football restriction be dropped, kept, or split into unfiltered suggestions plus a gated auto-confirm?
 - **Instrument:** `shadow_top_json` vs `restricted_top_json`; `chosen_type`; the shadow #1's sport
 - **Gate:** the auto-confirm half is shipped — score-only AUTO is blocked whenever the shadow #1 is a different, non-Football candidate. If misses persist because the shadow #1 stays football, widen to "any non-football candidate in shadow top-3 outscoring the football top".
 - **Standing:** measured on Logger_2's 2,590 rows — unfiltered shadow #1 agrees with restricted #1 91%; a non-football candidate takes #1 on ~15% of crawl crops but only 0.6% at ≥0.85. Decision to keep-as-is was overtaken the same day by a basketball lot auto-confirming as football twins (5 wrong AUTOs), which forced the auto-confirm half. The unfiltered-suggestions half remains open.
+- **Closed 2026-09-12:** gate MET on a batch it was not tuned on (4,170 rows / 637 images, 2026-07-19 -> 09-07). **63 score-only autos, zero fired against a different non-Football shadow #1.** The two boards now disagree on 12 of 1,435 confirmations (0.9%; Logger_2 read 9%), and every disagreement was resolved by a human or a tap, never by an auto. The unfiltered board is earning its keep in the picker — Hockey `Blue & White Chill Thrill` 0.908 taken over Football `Southern Cal-amity` 0.660. The open unfiltered-suggestions half is **C4's question**, not this one's. See `SHIPPED_WATCH_REVIEW.md` §3.
 - **Source:** `AUTOMATION_ROADMAP.md` Phase 4d; `AUTOMATION_VISION.md` §4 parallel track
 
 ### A12 — Per-slogan text-baseline centering
@@ -291,7 +292,8 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** how much of `gemini_auto`'s coverage can score-side rules take over without a wrong slogan?
 - **Instrument:** cumulative union of the rules graded on 731 rows — `overall ≥ 0.85` → `gap ≥ 0.15` → `slogan_gap ≥ 0.12` → `slogan_gap ≥ 0.05 AND ref_sim ≥ 0.90`
 - **Gate:** each rung must hold 0 wrong slogans on the batch that adopts it, and clear a fresh batch before the next step-down.
-- **Standing:** Logger_14, 0 wrong at every rung — A alone 23.3% of `gemini_auto`, A∪C 43.8%, ∪S 52.6%, ∪R 68.9%. `slogan_gap` 0.12 shipped with a 0.024 cushion; 0.10 held as the step-down after one more clean batch (its margin was 0.004 — one batch of luck).
+- **Standing:** **"0 wrong at every rung" does not reproduce.** Regraded on the 2026-09-07 export, split by source per directive 3. On human picks (truth, n=302) the shipped union fires on 169 (56.0%) with **1 wrong** = 99.4%; on `gemini_auto` rows (agreement, n=1,015) it fires on 663 (65.3%) with **14**. The single miss on truth is a look-alike pair — restricted #1 `1992 "Penn State and Proud of it"` at overall 0.892 / gap 0.162 / `slogan_gap` 0.162 against the human's `1992 "'Eers to Penn State"`, source `confusable_pick` — so **the next move is to gate the ladder behind the confusable check, not to loosen a threshold.** The 0.10 step-down stays held: +39 fires for **+3 wrong**. See `SHIPPED_WATCH_REVIEW.md` §4.
+- **As shipped (Logger_14):** 0 wrong at every rung — A alone 23.3% of `gemini_auto`, A∪C 43.8%, ∪S 52.6%, ∪R 68.9%. `slogan_gap` 0.12 shipped with a 0.024 cushion; 0.10 held as the step-down after one more clean batch (its margin was 0.004 — one batch of luck).
 - **Source:** `log_analysis.md` Logger_14 "the ladder"; `tested_hypothesis.md` Part V
 
 ### A19 — ref_sim as an absolute visual-mismatch veto
@@ -375,11 +377,11 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 
 - **Track:** Matching and auto-confirm
 - **Status:** SHIPPED-WATCH
-- **Stage:** 1
+- **Stage:** 2
 - **Question:** a bowl button prints the game year (season+1). Can its printed marker be resolved to the SEASON year via `game_date`?
 - **Instrument:** telemetry `n_printed_year_gamematch`; `TWIN GUARD … via game_date (bowl offset)`; lever `GAME_DATE_YEAR` (default on)
 - **Gate:** `>>> GAME_YEAR: N bowl-offset entries indexed` on boot, with N ≈ the count of Jan-dated football buttons; then bowl twins resolve to the season year with non-zero `n_printed_year_gamematch` and no new wrong twins.
-- **Standing:** merged 2026-07-19. Data goes live once the dated `text_db.json` is uploaded and deployed.
+- **Standing:** merged 2026-07-19. **No longer zero-data (2026-09-12): 51 `gemini_printed_year` confirmations landed, all in September.** The gate's own signal is a boot line a web session cannot read — one look at the Cloud Run boot log for `>>> GAME_YEAR: N bowl-offset entries indexed` and its N moves this front from Stage 2 to Stage 3 on evidence already collected. See `SHIPPED_WATCH_REVIEW.md` §5.
 - **Source:** `HYPOTHESES_IN_PROGRESS.md` A26
 
 ---
@@ -406,6 +408,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `det_mask_coverage`, `det_mask_path`, `det_detector_used`
 - **Gate:** guided detection engages instead of falling to the grid, on the real failed lots.
 - **Standing:** merged and deployed. Saturation was 19.2% of the Logger_4 pool and devastating inside it — guided exact 19.6% vs 64.5% on normal masks, 62.7% grid-fallback. After the fix: a real 35-lot batch went 35/35 guided (was grid-fallback), a 26-lot batch 23/23 blue, the white-8 lot recovered. The biggest single detection lever.
+- **Held 2026-09-12 (637 images, fresh batch):** saturation incidence is **unchanged at 19.2%** (122 of 637 — Logger_4 read 19.2%); what changed is the outcome. The two-variant chooser **rescues 83 of them (68%)**, which then record their post-rescue coverage (0.09-0.20) and reach Hough 60 of 83. The **39 it cannot rescue** — neither variant lands in the plausible 0.08-0.75 band — keep the flooded mask and fall to the grid: 37 of 39, and 14 of 14 in September. That **6.1% residual is the next detection lever**; the reading it needs is what the two variants score on those 39. Note `det_mask_coverage` logs the FINAL adopted mask, so coverage > 0.75 in the sheet is the unrescued residual, not the saturation rate. See `SHIPPED_WATCH_REVIEW.md` §5.
 - **Source:** `AUTOMATION_ROADMAP.md` Phase 2a
 
 ### B3 — Fused-lot collapse (defect A)
@@ -423,13 +426,14 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### B4 — Small-lot overcount (defect B)
 
 - **Track:** Detection
-- **Status:** SHIPPED-WATCH
+- **Status:** BLOCKED
 - **Stage:** 3
 - **Volume:** 50 — overcounted small lots (~330 single-button lots at the ~15% rate)
 - **Question:** 68% of singles overcount unguided, and the largest cluster is exactly +1 — the concentric glare rim. Does a radius-consistency band plus concentric collapse fix it?
 - **Instrument:** `det_overlap_removed`, `det_radius_*`, `ni_selected` vs truth
 - **Gate:** a dedup rule that removes ≥80% of the spurious extras on the collected overcount set while removing **zero** circles on exact-match lots. Needs ~50 overcounted small lots ≈ ~330 single-button pipeline lots at the ~15% rate — 2–4 weeks of normal feed, no action or cost required.
 - **Standing:** merged and deployed — a 0.7–1.3× median band plus concentric collapse (keep better fill). The defect was 69 of 216 singles and is uncorrelated with saturation (mean coverage ≈0.50 in both groups), so it is an independent defect with its own fix.
+- **Blocked 2026-09-12:** the gate cannot be read as instrumented. `det_overlap_removed` reads 0 on all 3,917 rows carrying it **and would whatever the fix did**: that counter belongs to the *guided* dedup in `_detect_buttons_once`, while B4 shipped in `_detect_unguided_once`, which announces itself on a `>>> DETECT_UNGUIDED: radius/concentric dedup` stdout line and writes no column. The gate's other half (`ni_selected` vs truth) has no truth column either — `det_user_count` is populated on 22 of 637 images, so the workbook's "492% of volume" counts a population the gate cannot read. The defect meanwhile persists: taking Gemini's count as the only truth at volume, **140 of 289 small lots overcount (48.4%), singles 52.5% (44.2% excluding gross Gemini miscounts) against the original 68%, and the +1 concentric cluster is still the mode at 83 of 140.** **No further export moves this front** — it needs the unguided band/concentric counters promoted into `diag`, or a gate written around a truth signal that exists. See `SHIPPED_WATCH_REVIEW.md` §4.
 - **Source:** `AUTOMATION_ROADMAP.md` Phase 3
 
 ### B5 — Tighten the auto gate
@@ -490,12 +494,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### B10 — Grid-hole force-fill
 
 - **Track:** Detection
-- **Status:** SHIPPED-WATCH
-- **Stage:** 5
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** white-on-white detection is resolution-fragile, but is the grid geometry itself resolution-independent — i.e. can a hole in the grid be force-filled even when the button is invisible to the mask?
 - **Instrument:** `ni_est_rows` / `ni_est_cols` / `ni_layout_conf`; the Mildcats/Minnesota lot
 - **Gate:** the grid gap must be a stable signal across resolutions.
 - **Standing:** CONFIRMED and SHIPPED 2026-07-18, both repos. The gap is resolution-independent where detection is not.
+- **Closed 2026-09-12:** no instrument to read and no recurrence across 637 images / eight weeks. Nothing a further watch would learn. See `SHIPPED_WATCH_REVIEW.md` §3.
 - **Source:** `tested_hypothesis.md` Part VIII
 
 ### B11 — The flood gate's own calibration set
@@ -507,17 +512,19 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `det_mask_coverage`, `det_mask_path`
 - **Gate:** an independent on-target check, same §4.2 shape — gate the new path, verify it is on-target, fall back.
 - **Standing:** FIXED 2026-07-15. Note this gate has now overfit its calibration set **twice** (again in §4.11, the projection-strips failure) — treat any new flood threshold as suspect until it clears a set it was not tuned on.
+- **2026-09-12:** nothing drifting — mean mask coverage **0.423 per image**, p90 0.634, 39 of 637 images over 0.75. This front stays open for the warning above, not for a reading; the next one is due only when a flood threshold is proposed.
 - **Source:** `tested_hypothesis.md` §4.9, §4.11
 
 ### B12 — Hole-inversion ate a good mask
 
 - **Track:** Detection
-- **Status:** SHIPPED-WATCH
-- **Stage:** 5
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** slogan-text blocks inside a button read as "button holes" to the hole-inversion step, destroying the mask. Can a coverage floor stop it?
 - **Instrument:** `det_mask_coverage`; `HOLE_INVERT_MIN_COVERAGE = 0.08`
 - **Gate:** the kept mask must clear the floor before inversion is trusted.
 - **Standing:** FIXED and SHIPPED 2026-07-15, both repos.
+- **Closed 2026-09-12:** 8 of 637 images took `+holeinvert` and **all eight reached Hough; none fell to the grid.** The floor works but is not roomy — four of the eight sat at coverage **0.085**, five thousandths above `HOLE_INVERT_MIN_COVERAGE`. If inversion ever regresses, that is the number to look at. See `SHIPPED_WATCH_REVIEW.md` §3.
 - **Source:** `tested_hypothesis.md` §4.10
 
 ### B13 — Gemini coordinate scale
@@ -534,23 +541,25 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### B14 — Two-signal reconcile swap
 
 - **Track:** Detection
-- **Status:** SHIPPED-WATCH
-- **Stage:** 5
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** a Hough phantom was SUPPRESSING a real Gemini button. Can the phantom be dropped without ever dropping a real button Gemini merely missed?
 - **Instrument:** `det_n_swapped`, `det_reconcile_swaps_json`; the two signals are unbacked AND off-mask (`detected_fills < SWAP_OFF_MASK_MAX` 0.50)
 - **Gate:** the risky action is DROPPING, so it needs two independent signals; generalised so the drop does not require a button to recover in its place.
 - **Standing:** FIXED and SHIPPED. Working as designed — but dormant in practice (fires on ~1 of 78 lots), which is exactly what B7 exists to extend.
+- **Stopped 2026-09-12:** dormant confirmed a third time, per image this time — the swap fires on **5 of 637 lots (0.8%)** against a population of **65** lots carrying an unbacked circle. (The tab read 51 and 698; both were per-crop.) Working as designed, nothing to watch. Extending it is B7's question. See `SHIPPED_WATCH_REVIEW.md` §2.
 - **Source:** `tested_hypothesis.md` §4.6
 
 ### B15 — Deficit-fill over-trust
 
 - **Track:** Detection
-- **Status:** SHIPPED-WATCH
-- **Stage:** 5
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** the turf-cross regression — deficit fill trusted a bad path and manufactured detections. Gate it?
 - **Instrument:** the gate + on-target check; `det_detector_used`
 - **Gate:** gate the new path, verify it is on-target, fall back — the reusable lesson from this front, now applied to every subsequent detection fix.
 - **Standing:** CONFIRMED and fixed. One part remains **still open**: the gate restores the prior behaviour rather than solving the underlying trust question.
+- **Closed 2026-09-12:** the front's real product was the doctrine, and B2, B11 and B17 all shipped under it. The path itself fires on **3 of 637 lots**. The underlying trust question is B7's and B20's, not this one's — closed as doctrine. See `SHIPPED_WATCH_REVIEW.md` §3.
 - **Source:** `tested_hypothesis.md` §4.1, §4.2
 
 ### B16 — Carpets
@@ -573,17 +582,19 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** the anchor gate; `det_gemini_anchored_json`; per-crop provenance
 - **Gate:** the association must be backed by a physical anchor before it can auto-confirm.
 - **Standing:** CONFIRMED on the real detector from the raw photo. Anchor-gated recovery SHIPPED 2026-07-17 as the swap's flooded-mask replacement. The incident class is ~14% of pipeline lots and two casualties went unflagged. **Still open** items remain in the write-up.
+- **2026-09-12:** the gate is live and the class is bounded — across 480 images carrying Gemini buttons, **3,132 buttons, 2,984 anchored (95.3%), 148 unanchored (4.7%) across 82 lots.** That 4.7% is the surface where a blank-bag crop can still be associated. Next reading: join those 82 lots to their confirmations and check none auto-confirmed. See `SHIPPED_WATCH_REVIEW.md` §5.
 - **Source:** `tested_hypothesis.md` Part VII; `log_analysis.md` Logger_18 second pass
 
 ### B18 — Frame fit
 
 - **Track:** Detection
-- **Status:** SHIPPED-WATCH
-- **Stage:** 5
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** in the DUAL incident ("1987 front", job `efb99c29`) Gemini's frame stretched. Should the coordinate FRAME be reconciled before any position is trusted?
 - **Instrument:** the frame-fit step ahead of position reconciliation
 - **Gate:** frame agreement before position agreement.
 - **Standing:** SHIPPED 2026-07-17.
+- **Closed 2026-09-12:** no instrument to read and no DUAL-class recurrence across 637 images. See `SHIPPED_WATCH_REVIEW.md` §3.
 - **Source:** `tested_hypothesis.md` Part VII
 
 ### B19 — Layer-1 radius robustness
@@ -633,12 +644,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### B23 — Per-button review taps
 
 - **Track:** Detection
-- **Status:** SHIPPED-WATCH
-- **Stage:** 5
+- **Status:** SETTLED-CONFIRMED
+- **Stage:** 6
 - **Question:** count-exact ≠ button-exact — detection can find the right number of circles while one is a non-button and one button is missed (lot `1855dcee`). What catches that?
 - **Instrument:** `not_a_button` / `missed_button` taps in `confirm_log.source`
 - **Gate:** each tap is also a labeled training example for the learned-detection track, so the front is as much about accrual as about rate.
 - **Standing:** stable and normalised — `not_a_button` ~1.5–2.5%, no drift across L16–L20. `missed_button` exploded in Logger_18 from the same root cause as the 1979-front incident.
+- **Closed 2026-09-12 (rate half):** post-anchor-gate the taps are **below** the standing band and the spike is gone — 2026-08 (n=86) 4.65% / 13.95% -> **2026-09 (n=1,916) 0.63% / 1.10%**, as rates against real confirmations (the tab divided by every `confirm_log` row, 458 of which are `gemini_count` bookkeeping). The front's other half — each tap is a labeled training example — is accrual, and that is **C5's** gate. See `SHIPPED_WATCH_REVIEW.md` §3.
 - **Source:** `AUTOMATION_ROADMAP.md` status update 2026-07-09; `log_analysis.md` Logger_18 second pass
 
 ### B24 — Coin and round-clutter false positives
@@ -694,6 +706,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `det_mask_path += "+whitepass"` and `det_white_recovered` (a trailing column to hand-append)
 - **Gate:** watch `+whitepass` and `+satfallback_*` frequency on the same exports — is the chooser choosing well, and is the rim rescue real?
 - **Standing:** shipped (buttonmatcher #118 / ebayscout #51). The white-on-white rescue is measurable instead of invisible.
+- **2026-09-12 — readable per image at last, and one reading from a verdict:** **54 lots (8.5%) took the whitepass rescue** and **83 (13.0%) a saturation fallback**, recovering **117 buttons, median 1 per lot**. September is up on August on both (12.4% vs 6.5% whitepass; 23.3% vs 6.8% satfallback). (The tab read 983 and 1,184 — per-crop, 18x and 14x.) "Is the chooser choosing well" now needs only those 54 lots' outcomes, which the log supports. See `SHIPPED_WATCH_REVIEW.md` §5.
 - **Source:** `AUTOMATION_ROADMAP.md` status update 2026-07-09; `AUTOMATION_VISION.md` §6.1
 
 ### B29 — The bright-variant fallback
@@ -727,6 +740,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `tests/fixtures/lots/` — 9 real lots at 800px + `manifest.json` + `test_detect_fixtures.py`
 - **Gate:** locks the unguided snapshot, guards the two clean lots at `auto` + exact, and asserts the Layer-1 safety property — *a non-`scale_first` path never reaches `gate=auto`*.
 - **Standing:** committed in buttonmatcher; `ebayscout/detect_pipeline.py` produces identical counts on all fixtures (parity verified), so the battery covers both detectors.
+- **2026-09-12:** the invariant holds on production data — **215 `gate=auto` images, 215 `scale_first`, zero on a bailed detector.** The battery is **25 lots now, not 9**. What stops this closing is coverage, not a reading: **ebayscout has no copy** — no `tests/fixtures/lots/`, no `test_detect_fixtures.py` — and neither repo has a `.github/workflows/`, so nothing runs it unless a person does. The parity the "covers both detectors" claim rests on was verified once, by hand. Action: add the fixture runner to ebayscout, or restate the claim as a manual check with a date. See `SHIPPED_WATCH_REVIEW.md` §5.
 - **Source:** `tested_hypothesis.md` Part I §5; `AUTOMATION_VISION.md` §3
 
 ---
@@ -774,7 +788,8 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Question:** can the winter-sports reference shelf be built by exactly the lots that expose its absence, until the football filter dissolves into an ordinary prior?
 - **Instrument:** `chosen_type` on typed confirms; `shadow_top_json` twins with identical normalized slogans — that set is the cross-sport risk surface
 - **Gate:** references accumulate → `ref_sim` starts arbitrating same-slogan twins ("Plaster Pitt") → the filter becomes a prior rather than a rule.
-- **Standing:** accruing. The unfiltered-suggestions 4th option saved 30 of 35 typed slogans on its first lot.
+- **Standing:** the unfiltered-suggestions 4th option saved 30 of 35 typed slogans on its first lot.
+- **2026-09-12:** "accruing" is not true, and this needs a decision rather than another export. Seven weeks of confirmations: Football 1,985, **Hockey 2, Men's Basketball 2, Women's Basketball 1** (478 more resolved no type at all). **Five.** 99.75% of typed confirms are Football, so the gate — references accumulate until `ref_sim` arbitrates same-slogan twins — is not reachable on this trajectory. Either the shelf gets filled deliberately (upload winter-sports references instead of waiting for lots to expose the gap), or the front is re-scoped to the risk-surface half of its instrument (same-slogan cross-sport twins) and the accrual half is dropped. The workbook hid this behind a `#REF!` cell and A11's inflated 483. See `SHIPPED_WATCH_REVIEW.md` §4.
 - **Source:** `AUTOMATION_VISION.md` §4 parallel track, §5
 
 ### C5 — The label harvester
@@ -786,6 +801,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `pipeline/labels/<job_id>.json` + `.jpg` sidecars — detection-space image, circles with provenance, Gemini reading verbatim; confirms join via `confirm_log.job_id`. Kill switch `BUTTONMATCHER_LABEL_HARVEST=0`.
 - **Gate:** accrual, not a verdict — the learned segmenter has to be earned with data first.
 - **Standing:** shipped in both repos.
+- **2026-09-12:** still unverified, and not verifiable from a web session — the sidecars live in GCS and the container has no GCP access. Code and the `BUTTONMATCHER_LABEL_HARVEST` kill switch are present in both repos. Action: one `gsutil ls | wc -l` against the 637 images in this pool; if the counts match, C5 is accruing as designed and is readable from the sheet thereafter. It is also where B23's accrual half now lives. See `SHIPPED_WATCH_REVIEW.md` §5.
 - **Source:** `AUTOMATION_ROADMAP.md` status update 2026-07-09; `AUTOMATION_VISION.md` §2
 
 ### C6 — The gemini_auto visual audit record
