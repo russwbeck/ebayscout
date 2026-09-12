@@ -1189,6 +1189,8 @@ def process_pipeline_lot(job_id: str) -> None:
                 mask_blobs_raw=_diag.get("mask_blobs_raw"),
                 dt_peaks_total=_diag.get("dt_peaks_total"),
                 mask_coverage=_diag.get("mask_coverage"),
+                satfb_blue_cov=_diag.get("satfb_blue_cov"),
+                satfb_bright_cov=_diag.get("satfb_bright_cov"),
                 white_recovered=_diag.get("white_rescue"),
                 border_removed=_diag.get("border_removed"),
                 fill_removed=_diag.get("fill_removed"),
@@ -1717,6 +1719,8 @@ def _evaluate_listing(
             mask_blobs_raw=det_diag.get("mask_blobs_raw"),
             dt_peaks_total=det_diag.get("dt_peaks_total"),
             mask_coverage=det_diag.get("mask_coverage"),
+            satfb_blue_cov=det_diag.get("satfb_blue_cov"),
+            satfb_bright_cov=det_diag.get("satfb_bright_cov"),
             # Priority 5 (per-stage breakdown) + Priority 4 (whole-image quality)
             border_removed=det_diag.get("border_removed"),
             fill_removed=det_diag.get("fill_removed"),

@@ -704,10 +704,12 @@ def test_gem_unmatched_columns_are_the_header_tail():
     # gem_unmatched → reconcile swap → Gemini-anchored A/B shadow → full-res
     # match shadow (Logger_19 A/B) → text-variant match shadow → within-year
     # scoring, the final appended column.
-    assert ml.MATCH_HEADER[-8:] == ["det_gem_unmatched", "det_gem_unmatched_json",
-                                    "det_n_swapped", "det_reconcile_swaps_json",
-                                    "det_gemini_anchored_json", "fullres_top_json",
-                                    "variant_top_json", "within_year_json"]
+    # Still one contiguous run in this order, now with the four columns
+    # appended 2026-09-12 behind it (hence [-12:-4], not [-8:]).
+    assert ml.MATCH_HEADER[-12:-4] == ["det_gem_unmatched", "det_gem_unmatched_json",
+                                       "det_n_swapped", "det_reconcile_swaps_json",
+                                       "det_gemini_anchored_json", "fullres_top_json",
+                                       "variant_top_json", "within_year_json"]
 
 
 def test_variant_top_column_flattens():
@@ -749,8 +751,8 @@ def test_within_year_column_is_final_and_flattens():
     )
     flat = ml.flatten_match_record(rec)
     assert len(flat) == len(ml.MATCH_HEADER)
-    assert ml.MATCH_HEADER[-1] == "within_year_json"
-    got = json.loads(flat[-1])
+    assert ml.MATCH_HEADER[-5] == "within_year_json"   # four appended behind it
+    got = json.loads(flat[ml.MATCH_HEADER.index("within_year_json")])
     # The losing same-year sibling is recorded even though no leaderboard
     # column can hold it — that is the point of this column.
     assert [r["phrase"] for r in got["top"]] == [
@@ -764,7 +766,8 @@ def test_within_year_defaults_to_empty_object():
         channel_id="c", user_id="u", crop_num=1, check_id="", detection={},
         bank="all", restricted_top=[], shadow_top=[], shadow_enabled=False,
     )
-    assert ml.flatten_match_record(rec)[-1] == "{}"
+    _flat = ml.flatten_match_record(rec)
+    assert _flat[ml.MATCH_HEADER.index("within_year_json")] == "{}"
 
 
 def test_gemini_anchored_shadow_column_flattens():
@@ -993,10 +996,11 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     simply carry the empty value they already carried whenever the shadow did
     not run.
     """
-    # match_log stays 87 columns, with fullres_top_json where it has always been.
-    # (The workbook's pasted tab reads 89 wide — it pads two helper cells after
-    # the header; the Logger schema itself is these 87.)
-    assert len(ml.MATCH_HEADER) == 87, len(ml.MATCH_HEADER)
+    # match_log is 91 columns since 2026-09-12 (four appended for B4 and B2),
+    # with fullres_top_json still exactly where it has always been — an append
+    # must never shift a position, which is what these three indices pin.
+    # (The workbook's pasted tab pads two helper cells after the header.)
+    assert len(ml.MATCH_HEADER) == 91, len(ml.MATCH_HEADER)
     assert ml.MATCH_HEADER.index("fullres_top_json") == 84   # column CG
     assert ml.MATCH_HEADER.index("variant_top_json") == 85   # column CH
     assert ml.MATCH_HEADER.index("within_year_json") == 86   # column CI
@@ -1031,3 +1035,95 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     assert len(cflat) == len(ml.CONFIRM_HEADER)
     assert cflat[ml.CONFIRM_HEADER.index("rank_centered")] == ""
     assert cflat[ml.CONFIRM_HEADER.index("rank_restricted")] == 1
+
+
+def test_stuck_front_columns_are_appended_and_flatten():
+    """The four columns added 2026-09-12 for B4 and B2.
+
+    Both fronts were blocked on their own instrument rather than on data: B4's
+    gate named `det_overlap_removed`, which belongs to the GUIDED dedup and
+    reads 0 however the unguided path behaves, and B2's next reading lived only
+    in a Cloud Run stdout line. Appended at the END — the one structural change
+    the schema allows (LOGGING.md) — so every existing column keeps its
+    position.
+    """
+    for col in ("det_unguided_band_removed", "det_unguided_concentric_removed",
+                "det_satfb_blue_cov", "det_satfb_bright_cov"):
+        assert col in ml.MATCH_HEADER, col
+
+    # Appended, in the order hand-added to the Logger's header row (CJ..CM),
+    # and nothing was inserted ahead of them.
+    assert ml.MATCH_HEADER[-4:] == [
+        "det_unguided_band_removed", "det_unguided_concentric_removed",
+        "det_satfb_blue_cov", "det_satfb_bright_cov"]
+    assert ml.MATCH_HEADER.index("within_year_json") == len(ml.MATCH_HEADER) - 5
+    assert len(ml.MATCH_HEADER) == 91, len(ml.MATCH_HEADER)
+
+    diag = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True,
+        mask_path="blue_or_white", hough_pass1_count=9, hough_retry_count=None,
+        final_count_user=4, final_count_noinput=5, user_count=None,
+        detector_used="hough", n_crops=4,
+        mask_coverage=0.83,
+        satfb_blue_cov=0.041234, satfb_bright_cov=0.9105,
+        noinput_diag={"conservative": 3, "standard": 5, "aggressive": 9,
+                      "selected": 4, "band_removed": 1, "concentric_removed": 2},
+    )
+    assert diag["satfb_blue_cov"] == 0.0412          # 4 dp
+    assert diag["satfb_bright_cov"] == 0.9105
+
+    rec = ml.build_match_record(
+        service="s", command="/c", mode="pipeline", job_id="j", thread_ts=None,
+        channel_id="ch", user_id=None, crop_num=1, check_id="k", detection=diag,
+        bank="mellon", restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert len(row) == len(ml.MATCH_HEADER)
+    assert row[ml.MATCH_HEADER.index("det_unguided_band_removed")] == 1
+    assert row[ml.MATCH_HEADER.index("det_unguided_concentric_removed")] == 2
+    assert row[ml.MATCH_HEADER.index("det_satfb_blue_cov")] == 0.0412
+    assert row[ml.MATCH_HEADER.index("det_satfb_bright_cov")] == 0.9105
+
+
+def test_dedup_zero_is_a_reading_and_unreached_fork_is_blank():
+    """0 removed must not render as blank.
+
+    "Removes ZERO circles on exact-match lots" is half of B4's gate, so a lot
+    where the dedup ran and removed nothing has to be distinguishable from a
+    lot that never reported. Conversely the saturation fork is only reached on
+    a flooded mask, so its two cells stay blank on the majority of lots — blank
+    there means "not saturated", never "zero coverage".
+    """
+    diag = ml.build_detection_diag(
+        h=600, w=800, bg_brightness=170.0, bg_is_white=True,
+        mask_path="blue_only", hough_pass1_count=9, hough_retry_count=None,
+        final_count_user=4, final_count_noinput=4, user_count=None,
+        detector_used="hough", n_crops=4,
+        noinput_diag={"selected": 4, "band_removed": 0, "concentric_removed": 0},
+    )
+    rec = ml.build_match_record(
+        service="s", command="/c", mode="pipeline", job_id="j", thread_ts=None,
+        channel_id="ch", user_id=None, crop_num=1, check_id="k", detection=diag,
+        bank="mellon", restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    row = ml.flatten_match_record(rec)
+    assert row[ml.MATCH_HEADER.index("det_unguided_band_removed")] == 0
+    assert row[ml.MATCH_HEADER.index("det_unguided_concentric_removed")] == 0
+    # the fork was never reached on this lot
+    assert row[ml.MATCH_HEADER.index("det_satfb_blue_cov")] == ""
+    assert row[ml.MATCH_HEADER.index("det_satfb_bright_cov")] == ""
+
+    # and a caller that supplies neither still produces a full, blank-tailed row
+    bare = ml.build_detection_diag(
+        h=1, w=1, bg_brightness=10, bg_is_white=False, mask_path="blue_or_white",
+        hough_pass1_count=0, hough_retry_count=None, final_count_user=1,
+        final_count_noinput=0, user_count=None, detector_used="grid", n_crops=1,
+    )
+    brec = ml.build_match_record(
+        service="s", command="/c", mode="pipeline", job_id="j", thread_ts=None,
+        channel_id="ch", user_id=None, crop_num=1, check_id="k", detection=bare,
+        bank="mellon", restricted_top=[], shadow_top=[], shadow_enabled=True,
+    )
+    brow = ml.flatten_match_record(brec)
+    assert len(brow) == len(ml.MATCH_HEADER)
+    assert brow[-4:] == ["", "", "", ""]

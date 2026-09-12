@@ -348,6 +348,7 @@ def build_detection_diag(
     # White-rescue rim pass: circles recovered on the image gradient after the
     # colour mask missed them (white-on-white). None when the pass didn't fire.
     white_recovered=None, mask_coverage=None,
+    satfb_blue_cov=None, satfb_bright_cov=None,
     # Priority 5: per-stage filter breakdown (how many circles each stage dropped)
     border_removed=None,
     fill_removed=None,
@@ -437,6 +438,13 @@ def build_detection_diag(
         layout_conf   float fraction of selected circles fitting the inferred grid
         outliers      int   circles that didn't fit any inferred row or column
         pass_winner   str   "conservative" | "standard" | "aggressive"
+        band_removed  int   circles dropped by the unguided 0.7-1.3x median
+                            radius band (Phase 3 / defect B)
+        concentric_removed
+                      int   circles collapsed as concentric duplicates of the
+                            same button (Phase 3 / defect B).  Both are 0 when
+                            the dedup ran and removed nothing -- a real reading
+                            for B4's gate, not a missing one.
     """
     def _i(v):
         return None if v is None else int(v)
@@ -493,6 +501,8 @@ def build_detection_diag(
         "mask_blobs_raw": _i(mask_blobs_raw),
         "dt_peaks_total": _i(dt_peaks_total),
         "white_recovered": _i(white_recovered),
+        "satfb_blue_cov": _f(satfb_blue_cov, 4),
+        "satfb_bright_cov": _f(satfb_bright_cov, 4),
         "mask_coverage": _f(mask_coverage, 4),
         # Priority 4: whole-image quality signals.
         "edge_density": _f(edge_density, 4),
@@ -754,6 +764,25 @@ MATCH_HEADER = [
     # Grade runner_up_margin against confirmed truth to calibrate a general
     # within-year demotion margin; until then the guard is a curated list. ---
     "within_year_json",
+    # --- appended 2026-09-12: the numbers the two stuck detection fronts need
+    # (shipped-watch review section 4).  Both were already computed and printed
+    # to Cloud Run stdout, which is neither readable from a web session nor
+    # joinable to an outcome, so each front was blocked on its own instrument
+    # rather than on data.  No new work is done to fill these.
+    #
+    # B4 -- the unguided Phase-3 dedup, per lot.  `det_overlap_removed` belongs
+    # to the GUIDED dedup and reads 0 on every row whatever the unguided path
+    # does, so the gate ("removes >=80% of the spurious extras, ZERO on
+    # exact-match lots") could not be read at all.  0 here is a real reading:
+    # the dedup ran and removed nothing. ---
+    "det_unguided_band_removed",
+    "det_unguided_concentric_removed",
+    # B2 -- what the blue and bright variants scored at the saturation fork.
+    # Blank means the mask never saturated and the fork was not reached; a pair
+    # of values on a lot that still shows coverage > 0.75 says WHY no variant
+    # was plausible, which is the next reading on the 6.1% residual. ---
+    "det_satfb_blue_cov",
+    "det_satfb_bright_cov",
 ]
 
 CONFIRM_HEADER = [
@@ -874,6 +903,15 @@ def flatten_match_record(rec):
         json.dumps(rec.get("variant_top") or [], default=str),
         # --- appended: within-year competition for #1's year ---
         json.dumps(rec.get("within_year") or {}, default=str),
+        # --- appended 2026-09-12: unguided Phase-3 dedup counts (B4) and the
+        # saturation fork's two variant coverages (B2).  The dedup counts come
+        # off the unguided sub-dict; the coverages off the guided prep, which
+        # is the same diag `det_mask_coverage` is read from, so the three are
+        # directly comparable on one row. ---
+        _cell(ni.get("band_removed")),
+        _cell(ni.get("concentric_removed")),
+        _cell(d.get("satfb_blue_cov")),
+        _cell(d.get("satfb_bright_cov")),
     ]
 
 

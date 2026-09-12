@@ -77,10 +77,12 @@ deployed tabs are not, until the Apps Script repair is re-run.
 | A26 | Bowl-year resolution | **KEEP** | 51 `gemini_printed_year` confirms in September — no longer zero-data |
 | C4 | Winter-sports shelf | **KEEP (decide)** | **5** non-football confirms in seven weeks — §4 |
 | C5 | Label harvester | **KEEP (verify)** | not checkable from a web session — §5 |
-| B4 | Small-lot overcount | **KEEP (blocked)** | ungradeable as instrumented, and the defect persists — §4 |
+| B4 | Small-lot overcount | **KEEP (re-instrumented)** | was ungradeable as instrumented; the gate's counters are now columns — §4 |
 
-Six close, one stops and closes with them, one is reclassified `BLOCKED`
-(B4, §4), nine stay. **`SHIPPED-WATCH` 17 → 9.**
+Six close and one stops and closes with them; ten stay.
+**`SHIPPED-WATCH` 17 → 10.** (B4 was reclassified `BLOCKED` on the reading in
+§4, then returned to `SHIPPED-WATCH` the same day once its gate's counters were
+appended to `match_log` — see §7 item 6.)
 
 ---
 
@@ -312,5 +314,11 @@ since the workbook cannot be more current than the file it is generated from.
 4. The two operator checks that cost one command each: A26's boot line, C5's
    sidecar count.
 5. Decide C4 — fill the shelf deliberately or re-scope the front.
-6. B4's instrumentation, then B2's residual 39. Those are the two detection
-   levers with a measured population behind them.
+6. ~~B4's instrumentation, then B2's residual 39.~~ **Done 2026-09-12** —
+   four columns appended to `match_log` (CJ-CM), no new compute, since both
+   fronts were blocked on a number that was already being computed and printed
+   to stdout: `det_unguided_band_removed` + `det_unguided_concentric_removed`
+   for B4's gate, and `det_satfb_blue_cov` + `det_satfb_bright_cov` for B2's
+   residual. B4 returns to `SHIPPED-WATCH`. Both need one normal feed cycle
+   before they read — no crawl, no spend. Once B4's counters carry data, switch
+   its second LIVE cell off the +1-cluster proxy and onto them.

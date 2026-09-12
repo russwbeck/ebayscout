@@ -409,6 +409,7 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Gate:** guided detection engages instead of falling to the grid, on the real failed lots.
 - **Standing:** merged and deployed. Saturation was 19.2% of the Logger_4 pool and devastating inside it — guided exact 19.6% vs 64.5% on normal masks, 62.7% grid-fallback. After the fix: a real 35-lot batch went 35/35 guided (was grid-fallback), a 26-lot batch 23/23 blue, the white-8 lot recovered. The biggest single detection lever.
 - **Held 2026-09-12 (637 images, fresh batch):** saturation incidence is **unchanged at 19.2%** (122 of 637 — Logger_4 read 19.2%); what changed is the outcome. The two-variant chooser **rescues 83 of them (68%)**, which then record their post-rescue coverage (0.09-0.20) and reach Hough 60 of 83. The **39 it cannot rescue** — neither variant lands in the plausible 0.08-0.75 band — keep the flooded mask and fall to the grid: 37 of 39, and 14 of 14 in September. That **6.1% residual is the next detection lever**; the reading it needs is what the two variants score on those 39. Note `det_mask_coverage` logs the FINAL adopted mask, so coverage > 0.75 in the sheet is the unrescued residual, not the saturation rate. See `SHIPPED_WATCH_REVIEW.md` §5.
+- **2026-09-12:** that next reading is now instrumented — `det_satfb_blue_cov` and `det_satfb_bright_cov` record what the two variants scored at the fork, on both branches, so the refusals say why no variant was plausible and the adoptions give the 0.08-0.75 band its margin. One feed cycle and the 39 can be characterised instead of guessed at.
 - **Source:** `AUTOMATION_ROADMAP.md` Phase 2a
 
 ### B3 — Fused-lot collapse (defect A)
@@ -426,14 +427,15 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### B4 — Small-lot overcount (defect B)
 
 - **Track:** Detection
-- **Status:** BLOCKED
+- **Status:** SHIPPED-WATCH
 - **Stage:** 3
 - **Volume:** 50 — overcounted small lots (~330 single-button lots at the ~15% rate)
 - **Question:** 68% of singles overcount unguided, and the largest cluster is exactly +1 — the concentric glare rim. Does a radius-consistency band plus concentric collapse fix it?
-- **Instrument:** `det_overlap_removed`, `det_radius_*`, `ni_selected` vs truth
+- **Instrument:** `det_unguided_band_removed` + `det_unguided_concentric_removed` (appended 2026-09-12; `det_overlap_removed` is the GUIDED dedup and never moves for this front), `det_radius_*`, `ni_selected` vs truth
 - **Gate:** a dedup rule that removes ≥80% of the spurious extras on the collected overcount set while removing **zero** circles on exact-match lots. Needs ~50 overcounted small lots ≈ ~330 single-button pipeline lots at the ~15% rate — 2–4 weeks of normal feed, no action or cost required.
 - **Standing:** merged and deployed — a 0.7–1.3× median band plus concentric collapse (keep better fill). The defect was 69 of 216 singles and is uncorrelated with saturation (mean coverage ≈0.50 in both groups), so it is an independent defect with its own fix.
 - **Blocked 2026-09-12:** the gate cannot be read as instrumented. `det_overlap_removed` reads 0 on all 3,917 rows carrying it **and would whatever the fix did**: that counter belongs to the *guided* dedup in `_detect_buttons_once`, while B4 shipped in `_detect_unguided_once`, which announces itself on a `>>> DETECT_UNGUIDED: radius/concentric dedup` stdout line and writes no column. The gate's other half (`ni_selected` vs truth) has no truth column either — `det_user_count` is populated on 22 of 637 images, so the workbook's "492% of volume" counts a population the gate cannot read. The defect meanwhile persists: taking Gemini's count as the only truth at volume, **140 of 289 small lots overcount (48.4%), singles 52.5% (44.2% excluding gross Gemini miscounts) against the original 68%, and the +1 concentric cluster is still the mode at 83 of 140.** **No further export moves this front** — it needs the unguided band/concentric counters promoted into `diag`, or a gate written around a truth signal that exists. See `SHIPPED_WATCH_REVIEW.md` §4.
+- **Unblocked 2026-09-12:** the two counts the gate actually needs are now columns — the unguided dedup's band and concentric removals, written per lot, with 0 meaning "ran and removed nothing" (the "zero on exact-match lots" half of the gate). No new compute: they were already calculated and printed. Back to SHIPPED-WATCH, waiting on one normal feed cycle for the first reading. The tracker's second LIVE cell still reports the +1 cluster proxy; switch it to the real counters once they carry data.
 - **Source:** `AUTOMATION_ROADMAP.md` Phase 3
 
 ### B5 — Tighten the auto gate
