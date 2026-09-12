@@ -161,3 +161,38 @@ def test_the_repair_never_writes_into_a_content_tab_and_never_blocks():
     assert "insertSheet('REPAIR')" in code, "REPAIR tab must be created, not fallen back from"
     assert "SpreadsheetApp.flush();" in code.split("insertSheet('REPAIR')")[1], \
         "the status write must be flushed, or a kill discards it"
+
+
+def test_both_registers_parse_and_bold_labels_carry_their_colon():
+    """The register is the workbook's source of truth — a bullet that breaks
+    the parser silently eats the field after it.
+
+    `parse_register` reads fields as `- **Name:** value`, non-greedily, with
+    re.S. A bullet whose bold label has NO colon inside the asterisks makes
+    that scan run on until it finds the next `:**` — swallowing whatever field
+    follows. It cost three rounds of "C5: missing Source" while writing this
+    review up, and the failure is invisible until the build runs.
+    """
+    import re
+    here = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    registers = [os.path.join(here, "LOGGER_FRONTS.md")]
+    sibling = os.path.join(os.path.dirname(here), "buttonmatcher",
+                           "LOGGER_FRONTS.md")
+    if os.path.exists(sibling):          # only when both repos are checked out
+        registers.append(sibling)
+
+    for path in registers:
+        fronts = b.parse_register(path)      # SystemExits on a broken field
+        assert len(fronts) >= 69, (path, len(fronts))
+        text = open(path).read()
+        # Inside a front's entry, every bulleted bold label needs its colon.
+        for chunk in re.split(r"\n(?=### )", text):
+            if not chunk.startswith("### "):
+                continue
+            fid = chunk.split(" ", 2)[1]
+            for line in chunk.splitlines():
+                if re.match(r"^\s*-\s+\*\*", line):
+                    assert re.match(r"^\s*-\s+\*\*[^*]+:\*\*", line), (
+                        f"{os.path.basename(path)} {fid}: bold label without a "
+                        f"colon will swallow the next field — {line[:70]}")

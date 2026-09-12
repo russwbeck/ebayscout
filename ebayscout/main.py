@@ -785,6 +785,19 @@ def process_pipeline_lot(job_id: str) -> None:
     title   = ctx.get("title", "(context lost)")
     url     = ctx.get("url", "")
     restrict_years = _restrict_years_from_ctx(ctx, _cm)
+    # Bound HERE, next to the other ctx-derived locals, not at first use.
+    # It used to be assigned ~230 lines below, at step 10, while the label
+    # sidecar at step 4b already read it — and because the name is assigned
+    # somewhere in this function, Python resolves it as a local and that read
+    # raised UnboundLocalError on EVERY lot.  The harvest block is fail-open,
+    # so it logged "!!! PIPELINE: label sidecar failed … cannot access local
+    # variable 'pipeline_command'" and moved on: ebayscout never wrote a single
+    # training label from the day the harvester shipped (2026-07-08) to
+    # 2026-09-12, while buttonmatcher's copy — which passes a literal command —
+    # wrote all 523 that exist.  Front C5's gate is "is EVERY pipeline lot
+    # leaving a labeled example"; the answer was none of ebayscout's, ~75% of
+    # pipeline volume.
+    pipeline_command = f'{ctx.get("command", "/crawl")}-pipeline'
 
     gem_slogans = gemini.get("detected_slogans") or []
     gem_count   = gemini.get("total_button_count") or 0
@@ -932,6 +945,13 @@ def process_pipeline_lot(job_id: str) -> None:
                 unmatched_crop_indices=(_rt or {}).get("unmatched_crop_indices"),
             )
             _lh_jname, _lh_iname = lharv.label_blob_names(job_id)
+            # Function-local import, as every other storage user in this module
+            # does (see _gcs_text / _gcs_download).  `storage` is NOT a
+            # module-level name here, so this line raised NameError — the
+            # SECOND bug stacked in this fail-open block, behind the
+            # UnboundLocalError above.  Fixing only the first would have moved
+            # the failure one line down and kept the sidecar count at zero.
+            from google.cloud import storage
             _lh_bucket = storage.Client().bucket(config.BUCKET_NAME)
             _lh_bucket.blob(_lh_jname).upload_from_string(
                 json.dumps(_lh_rec, default=str),
@@ -1144,7 +1164,9 @@ def process_pipeline_lot(job_id: str) -> None:
 
     # 10) write the research logs NOW — per confirmation, never buffered. Reaching
     #     here means we got a real reading (Gem-empty lots returned earlier).
-    pipeline_command = f'{ctx.get("command", "/crawl")}-pipeline'
+    #     `pipeline_command` is bound near the top, beside the other ctx-derived
+    #     locals — see the note there; re-binding it here is what hid the
+    #     UnboundLocalError at step 4b.
     try:
         record = _scan_log_record(
             listing=listing, photos_processed=1,
