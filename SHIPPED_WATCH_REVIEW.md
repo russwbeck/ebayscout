@@ -134,7 +134,7 @@ pass on prose. **No formula cell changed** between that version and this one.
 | B17 | Unanchored associations | **KEEP** | 95.3% of Gemini buttons anchored; 4.7% (148) are the incident class |
 | B28 | Whitepass telemetry | **KEEP** | now gradeable per-image: 54 whitepass / 83 satfallback lots, 117 buttons |
 | A26 | Bowl-year resolution | **KEEP (re-instrument)** | boot half met (29 entries indexed); the bowl counter is unreadable and the map is unwired in ebayscout — §5 |
-| C4 | Winter-sports shelf | **KEEP (decide)** | **5** non-football confirms in seven weeks — §4 |
+| C4 | Winter-sports shelf | **KEEP** | shelf is built (ref_sim 95-100% bar WBB at 55%); `ref_sim` arbitrates twins 12/13 but on a 0.021 median margin — §4 |
 | C5 | Label harvester | **KEEP (verify)** | not checkable from a web session — §5 |
 | B4 | Small-lot overcount | **KEEP (re-instrumented)** | was ungradeable as instrumented; the gate's counters are now columns — §4 |
 
@@ -260,30 +260,55 @@ band/concentric counters promoted into `diag`, or the gate rewritten around a
 truth signal that exists. Until then the second LIVE cell reports the defect's
 signature (the +1 cluster) rather than a counter that is structurally zero.
 
-### C4 — the accrual premise is not working
+### C4 — the shelf is built; the gate's later clauses are what's open
 
-The winter-sports shelf fills from typed confirms on non-football lots. In
-seven weeks:
+**I got this one wrong first time, and the correction matters.** I counted
+typed confirmations — Football 1,985 against Hockey 2, Men's Basketball 2,
+Women's Basketball 1 — and concluded the shelf "does not fill this decade."
+That measured **one route** to the shelf, the confirm-and-type loop, on a feed
+whose searches are football-oriented. The operator had filled it directly
+through `/reference` instead. Five non-football confirmations means
+non-football **lots** are rare, not that the shelf is empty.
 
-| | count |
-|---|---|
-| Football | 1,985 |
-| Hockey | 2 |
-| Men's Basketball | 2 |
-| Women's Basketball | 1 |
-| (no type resolved) | 478 |
+The log agrees with the operator's own check ("way over 80%"). `ref_sim`
+coverage — a candidate carrying a reference photo — by sport, pooled over
+every shadow board:
 
-**Five.** 99.75% of typed confirms are Football. The gate — *references
-accumulate → `ref_sim` starts arbitrating same-slogan twins → the filter
-becomes a prior* — is not reachable on this trajectory; at five per seven weeks
-the shelf does not fill this decade. The workbook hid this behind `#REF!` and
-A11's 483.
+| sport | with a reference | seen | |
+|---|---|---|---|
+| Wrestling | 1,433 | 1,433 | 100% |
+| Volleyball | 29 | 29 | 100% |
+| Football | 10,001 | 10,054 | 99.5% |
+| Men's Basketball | 1,402 | 1,415 | 99.1% |
+| THON | 606 | 620 | 97.7% |
+| Hockey | 300 | 316 | 94.9% |
+| **Women's Basketball** | **267** | **483** | **55.3%** |
 
-This is a decision, not a measurement: either the shelf gets filled
-deliberately (upload winter-sports references rather than waiting for lots to
-expose the gap), or C4 is re-scoped to the risk-surface half of its
-instrument — same-slogan cross-sport twins — and the accrual half is dropped.
-**It should not sit at `SHIPPED-WATCH` accruing five a quarter.**
+So clause 1 of the gate is met, bar Women's Basketball.
+
+**Clause 2 — does `ref_sim` arbitrate same-slogan twins — is met in direction
+and not in strength.** The whole risk surface in this pool is **40 of 1,435
+boards**, and only **13 gradeable pairs across 3 slogans**: `Plaster Pitt`,
+`Skin The Cat`, `Squeeze The Orange`. On those, the highest `ref_sim` picked
+the human-confirmed sport **12 times out of 13**.
+
+But the margins are hair-thin — min **0.006**, median **0.021**, max 0.118 —
+and `Skin The Cat` **flipped**: `ref_sim` put Football on top for some photos
+of it and Men's Basketball on top for another. Same slogan, same candidate
+pair, opposite verdict depending on the crop.
+
+**Clause 3 — the filter becomes a prior rather than a rule — is therefore not
+met**, and this pool contains the counter-example: on `Plaster Pitt`
+(2026-09-01) the unfiltered `overall` ranked Men's Basketball 0.611 **above**
+Football 0.606. Without the football restriction that lot picks the wrong
+sport on score, and a 0.015 `ref_sim` margin is not what you want standing
+between it and an auto-confirm. That also answers A11's open half in the
+"keep" direction, without reopening A11.
+
+So C4 is not a decision about whether to bother. It is **KEEP**, with two
+named next steps: fill Women's Basketball to match the others, and widen the
+twin set — 3 slogans is not enough to characterise a margin distribution you
+would let arbitrate anything.
 
 ---
 
@@ -438,7 +463,11 @@ since the workbook cannot be more current than the file it is generated from.
 4. The two operator checks that cost one command each: ~~A26's boot line~~
    (**done** — 29 bowl-offset entries indexed, which turned into the parity
    work in §5), and **C5's sidecar count — still open**.
-5. Decide C4 — fill the shelf deliberately or re-scope the front.
+5. C4 needs no decision after all — the shelf is already built (the operator
+   checked `/reference`, and `ref_sim` coverage confirms it). Two concrete
+   steps instead: fill **Women's Basketball** (55% against 95-100% elsewhere),
+   and widen the same-slogan cross-sport twin set beyond the 3 slogans now on
+   it before trusting `ref_sim` to arbitrate.
 6. ~~B4's instrumentation, then B2's residual 39.~~ **Done 2026-09-12** —
    four columns appended to `match_log` (CJ-CM), no new compute, since both
    fronts were blocked on a number that was already being computed and printed
