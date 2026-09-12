@@ -205,9 +205,26 @@ def _live():
     images = f'=COUNTIF({CROP1})'
     # Bare (no leading '=') fragments, for composing into larger formulas.
     _images = f'COUNTIF({CROP1})'
+    _crop1c = f'{m}!{M["crop_num"]}2:{M["crop_num"]}=1'
+
+    def numeric(rng, *extra):
+        """Images where `rng` holds a NUMBER.
+
+        `COUNTIFS(..., "<>")` does NOT mean this.  A pasted export writes a
+        zero-length STRING into an empty field, and a zero-length string is
+        not blank, so the criterion counts it as present.  B22's "lots where
+        the match could not run (blank != zero)" read 0 against 157 that way --
+        the one cell whose entire caption is about blanks -- and E2's gate read
+        74.4% against 79.6% because its denominator counted 215 lots instead of
+        the 201 that carry a Gemini count.  ISNUMBER is the only test that
+        separates a written number from an empty paste.
+        """
+        return (f'SUMPRODUCT(({_crop1c})*ISNUMBER({rng})'
+                + ''.join(f'*({e})' for e in extra) + ')')
+
     _gem = f'{m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]}'
     _gem_lots = f'COUNTIFS({CROP1},{_gem},">0")'
-    _gem_scored = f'COUNTIFS({CROP1},{_gem},"<>")'
+    _gem_scored = numeric(_gem)
 
     # The Stage-B gated stratum, per image.  `ni_gate=auto` is always
     # `scale_first` in practice, but both are named so the gate stays explicit.
@@ -215,11 +232,9 @@ def _live():
     _path = f'{m}!{M["ni_scale_path"]}2:{M["ni_scale_path"]}'
     _gcount = f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}'
     _nisel = f'{m}!{M["ni_selected"]}2:{M["ni_selected"]}'
-    _crop1c = f'{m}!{M["crop_num"]}2:{M["crop_num"]}=1'
     _gate_auto = f'COUNTIFS({CROP1},{_gate},"auto")'
     _gated = f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first")'
-    _gated_scored = (f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first",'
-                     f'{_gcount},"<>")')
+    _gated_scored = numeric(_gcount, f'{_gate}="auto"', f'{_path}="scale_first"')
     _agree = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
               f'*({_gcount}<>"")*({_nisel}={_gcount}))')
     _agree1 = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
@@ -336,9 +351,9 @@ def _live():
  # The front is about TYPED rows, so the population comes first — the
  # all-confirms count read 152 against 5 typed rows that actually qualify.
  "A23": [("Typed rows carrying both ranks  ← the actual population",
-          f'=COUNTIFS({c}!{C["source"]}2:{C["source"]},"typed_search",'
-          f'{c}!{C["rank_image_only"]}2:{C["rank_image_only"]},"<>",'
-          f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},"<>")'),
+          f'=SUMPRODUCT(({c}!{C["source"]}2:{C["source"]}="typed_search")'
+          f'*ISNUMBER({c}!{C["rank_image_only"]}2:{C["rank_image_only"]})'
+          f'*ISNUMBER({c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))'),
          ("image_only better than live (all confirms)",
           beats(C["rank_image_only"], C["rank_restricted"], "<"))],
  "A24": [("Confirms by source",
@@ -409,8 +424,9 @@ def _live():
  # contribute its coverage once per button (read 162 lots against 39).
  "B11": [("Mean mask coverage (per image)",
           f'=IFERROR(SUMPRODUCT(({_crop1c})*{m}!{M["det_mask_coverage"]}2:'
-          f'{M["det_mask_coverage"]})/COUNTIFS({CROP1},'
-          f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},"<>"),"—")'),
+          f'{M["det_mask_coverage"]})/'
+          + numeric(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]}')
+          + ',"—")'),
          ("Coverage > 0.75 (per image)",
           per_image(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75"'))],
  # Read 51 swaps against 5 and a 698-lot population against 65 — a 10x
@@ -419,10 +435,11 @@ def _live():
           per_image(f'{m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0"')),
          ("Lots with an unbacked circle (the population it exists for)",
           f'={_gem_lots}')],
- "B7": [("Unbacked-circle lots  ← the population",
-         f'=COUNTIF({m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]},">0")'),
+ # Per-image, like B14: these are the same two facts and were reading the
+ # same 10x-inflated per-crop counts (698 and 51 against 65 and 5).
+ "B7": [("Unbacked-circle lots  ← the population", f'={_gem_lots}'),
         ("Swap fired on",
-         f'=COUNTIF({m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0")'),
+         per_image(f'{m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0"')),
         ("not_a_button confirmations to grade against",
          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")')],
  "B19": [("scale_first share", share(M["ni_scale_path"], "scale_first")),

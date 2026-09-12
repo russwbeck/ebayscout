@@ -52,8 +52,41 @@ Two guards now pin this: `test_detection_readings_count_images_not_crops`
 covers B2/B4/B11/B14/B28 alongside the three it already had, and
 `test_confirm_type_counts_ignore_the_untyped_blank` covers A11/C4.
 
-**The workbook still shows the old numbers.** The generator is fixed; the
-deployed tabs are not, until the Apps Script repair is re-run.
+### 1b. And a third defect class the first repair exposed
+
+The repair ran on 2026-09-12 (87 of 87 cells). Fourteen of the fifteen cells
+above landed on their predicted value; **B11's mean coverage came back
+0.42270 against a predicted 0.42336**, which turned out to be a defect of its
+own — one I had just introduced, and one that was already in the workbook
+twice over.
+
+`COUNTIFS(range, "<>")` does **not** mean "has a value" on a pasted tab. An
+export writes a zero-length **string** into an empty field, and a zero-length
+string is not blank, so the criterion counts it. B11's mean was dividing by
+637 images instead of the 636 that carry a number.
+
+The same idiom was load-bearing in two cells the 2026-09-07 patch wrote:
+
+| Tab | Cell showed | Actually | Why it matters |
+|---|---|---|---|
+| B22 | "Lots where the match could not run (blank ≠ zero)" **0** | **157** | the denominator counted all 637 as present, so the front's whole question answered itself — on the one cell whose caption is *about* blanks |
+| B22 | "Lots with an unbacked Hough circle" **10.2%** | **13.5%** | 65/637 instead of 65/**480** scored |
+| E2 | "unguided count == Gemini ← the ≥98% gate" **74.4%** | **79.6%** | denominator 215 gated lots instead of the **201** carrying a Gemini count |
+| E2 | "Within ±1 of Gemini" **89.8%** | **96.0%** | same denominator |
+| B7 | population **698** / swap fired **51** | **65** / **5** | never de-cropped by either pass — B7 is B14's sibling and the two tabs disagreed about the size of one population |
+
+`ISNUMBER` is the test that separates a written number from an empty paste,
+and it is now used everywhere the bare criterion was. **E2's corrected
+numbers reproduce `SHADOW_PROMOTION_REVIEW.md` §1.2 exactly** (201 scored,
+79.6%, 96.0% within ±1) — that review's prose had the right figures; only its
+formula was half-fixed. No conclusion moves: E2 was already nowhere near its
+gate, and B7 and B22 are graded elsewhere. Two more guards:
+`test_no_bare_not_blank_criterion_on_a_pasted_column` (every LIVE block) and
+`test_b7_and_b14_report_the_same_two_facts_per_image`.
+
+**This needs a second run of the repair script** — eight cells across five
+tabs (A23, B7, B11, B22, E2), regenerated from the same generator; the other
+79 are byte-identical to the run that already happened.
 
 ---
 

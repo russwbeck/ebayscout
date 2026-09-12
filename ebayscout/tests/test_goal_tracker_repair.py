@@ -105,3 +105,32 @@ def test_shadow_columns_do_not_count_their_empty_marker():
     data read A1 at 4170 rows against 310 real ones."""
     for fid in ("A1", "A2", "A7"):
         assert any('"[]"' in f or '"{}"' in f for _l, f in b.LIVE[fid]), fid
+
+
+def test_no_bare_not_blank_criterion_on_a_pasted_column():
+    """`COUNTIFS(..., "<>")` does not mean "has a value" on a pasted tab.
+
+    An export writes a zero-length STRING into an empty field, and that is not
+    blank, so the criterion counts it. B22's "lots where the match could not
+    run (blank != zero)" read 0 against 157 -- the one cell whose whole caption
+    is about blanks -- and E2's >=98% gate read 74.4% against 79.6% on a
+    denominator of 215 lots instead of the 201 carrying a Gemini count.
+    ISNUMBER is the test that separates a written number from an empty paste.
+    """
+    for fid, block in b.LIVE.items():
+        for label, formula in block:
+            assert '"<>"' not in formula, (fid, label, formula)
+
+
+def test_b7_and_b14_report_the_same_two_facts_per_image():
+    """B7 is B14's sibling -- it proposes widening exactly the population B14
+    acts on -- so the two tabs must not disagree about how big that population
+    is. Both were per-crop (698 and 51 against 65 and 5); B14 was fixed first
+    and B7 was missed, which would have put two different numbers for one fact
+    on two tabs."""
+    crop_col = b.M["crop_num"]
+    for label, formula in b.LIVE["B7"][:2]:
+        assert f'match_log!{crop_col}2:{crop_col}' in formula, (label, formula)
+    b7_pop = b.LIVE["B7"][0][1]
+    b14_pop = b.LIVE["B14"][1][1]
+    assert b7_pop == b14_pop, (b7_pop, b14_pop)
