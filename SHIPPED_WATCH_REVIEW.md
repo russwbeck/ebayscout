@@ -127,7 +127,7 @@ pass on prose. **No formula cell changed** between that version and this one.
 | B18 | Frame fit | **CLOSE** | no DUAL-class recurrence in 637 images |
 | B23 | Per-button review taps | **CLOSE (rate half)** | Sept 0.63% / 1.10%, below the 1.5–2.5% standing; the L18 spike is gone |
 | B14 | Two-signal reconcile swap | **STOP** | 5 of 637 lots (0.8%); third export in a row reading "dormant" |
-| B31 | Fixture regression battery | **KEEP (one action)** | invariant confirmed on 215 production auto lots, but ebayscout has no copy — §5 |
+| B31 | Fixture regression battery | **KEEP** | invariant confirmed on 215 production auto lots; the "covers both detectors" claim is now an AST drift check, not a July memory — §5 |
 | A18 | The signal ladder | **KEEP** | "0 wrong at every rung" does **not** reproduce — §4 |
 | B2 | Mask saturation | **KEEP** | rescues 68% of saturated lots; **6.1% residual, all to grid** |
 | B11 | Flood gate's calibration set | **KEEP** | mean coverage 0.423, 39 lots over the bar |
@@ -343,13 +343,35 @@ supports. Stage 3 → gradeable now.
 
 **B31 — the fixture battery.** The invariant it asserts holds on production
 data: *a non-`scale_first` path never reaches `gate=auto`* — **215 auto lots,
-215 `scale_first`, zero on a bailed detector.** The battery is also **25 lots
+215 `scale_first`, zero on a bailed detector.** The battery is also **26 lots
 now, not the 9 the entry names**. What stops it closing is coverage: the entry
 claims the battery "covers both detectors" and **ebayscout has no copy**: no
-`tests/fixtures/lots/`, no `test_detect_fixtures.py`, and neither repo has a
-`.github/workflows/`, so nothing runs it unless a person does. The parity that
-claim rests on was verified once, by hand. *Action: either add the fixture
-runner to ebayscout or restate the claim as a manual check with a date.*
+`tests/fixtures/lots/`, no `test_detect_fixtures.py`. I first framed that as
+*add the battery to ebayscout, or date the manual check*. **Both were poorly
+aimed.** Copying it means 23 MB of fixtures needing `cv2`, in two repos with
+**no CI** — a test nobody runs, which is worse than no test because it reads
+as coverage. And it measures the wrong thing: the two detectors are
+**logically identical**, so buttonmatcher's battery already exercises
+ebayscout's logic. What no snapshot test can see is the two files **drifting
+apart** — and that is the live risk, found twice in neighbouring code this
+same session (the label harvester raising on every lot for two months; the
+bowl-year map's parameter carried but never filled — both "ebayscout has it
+and it silently does not work").
+
+So the claim is now **checked rather than dated**.
+`test_the_two_detectors_have_not_drifted` compares the two files' ASTs with
+docstrings, the env-flag readers and import style normalized away — the three
+deliberate differences — and nothing else. Result today: **zero function
+bodies differ**; the only divergence was relative vs flat imports, the
+package-layout split `CLAUDE.md` already notes for `match_logging.py`.
+`ast.parse` needs no imports, so it runs in a web session where the battery
+cannot, costs 0 MB, and fires the moment someone edits one detector and not
+the other. Verified against an injected one-line threshold change in
+buttonmatcher only: the guard caught it.
+
+That equivalence is what licenses one battery standing behind two detectors,
+and it is now asserted on every test run instead of resting on a July
+afternoon.
 
 **A26 — bowl-year resolution.** The boot half is **met**: the operator read
 the log on 2026-09-12 and it says `>>> GAME_YEAR: 29 bowl-offset entries
@@ -485,9 +507,9 @@ since the workbook cannot be more current than the file it is generated from.
    reading (see A26 in `LOGGER_FRONTS.md`) — otherwise a `bowl_year=0` is
    ambiguous between "no bowl buttons seen" and "the bowl candidates were
    never scored".
-8. **Decide B31.** The battery's invariant holds on production data, but
-   ebayscout has no copy and neither repo has a CI workflow, so the "covers
-   both detectors" claim rests on a one-time manual check. Either add the
-   fixture runner to ebayscout, or restate the claim as manual with a date.
-   Until one of those, it is the only KEEP whose next step is a decision
-   rather than a reading.
+8. ~~Decide B31.~~ **Done 2026-09-12** — neither option I offered was right.
+   The two detectors are logically identical, so buttonmatcher's battery
+   already covers ebayscout's logic; the unguarded risk was the files drifting.
+   `test_the_two_detectors_have_not_drifted` now asserts the equivalence by
+   AST on every run, 0 MB, no CI needed. Copying 23 MB of fixtures into a repo
+   with no CI would have bought the appearance of coverage instead.

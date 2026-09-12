@@ -268,6 +268,86 @@ def test_main_actually_passes_the_map_to_the_resolver():
     assert "game_year_by_key()" in call, "must pass the live map, not a literal"
 
 
+# --- The two detectors, compared directly (front B31) -------------------------
+# B31's battery runs 26 real lot photos through buttonmatcher's detector and
+# checks the counts against a locked snapshot.  Its register entry claims it
+# "covers both detectors" because ebayscout's detect_pipeline.py was verified
+# by hand, once, in July to produce identical counts.
+#
+# Copying the battery here was the obvious fix and is the wrong one: 23 MB of
+# fixtures, needing cv2, in two repos with no CI — a test nobody runs, which is
+# worse than no test because it looks like coverage.  And it would be measuring
+# the wrong thing.  The two files are LOGICALLY IDENTICAL, so buttonmatcher's
+# battery already exercises ebayscout's logic; what no snapshot test can see is
+# the two files DRIFTING APART.  That is the live risk, and this session found
+# it twice in neighbouring code — the label harvester (present in ebayscout,
+# raising on every lot for two months) and the bowl-year map (parameter
+# carried, never filled).  Both were "ebayscout has it and it silently does
+# not work".
+#
+# Comparing the ASTs catches drift the moment it appears, costs nothing, needs
+# no fixtures and no CI, and runs in a web session where the battery cannot.
+
+_DETECT_FLAG_FNS = {
+    "_flag_on", "_bg_diff_enabled", "_tiny_guard_enabled", "_blob_buster_enabled",
+    "_hole_invert_enabled", "_fill_veto_enabled", "_mask_radius_prior_enabled",
+    "_deficit_fill_enabled", "_reconcile_swap_enabled", "_anchor_recovery_enabled",
+    "_grid_hole_fill_enabled", "_frame_fit_enabled", "_auto_detect_enabled",
+}
+
+
+def _detect_ast(path):
+    """Parsed module with docstrings, flag readers and import STYLE normalized.
+
+    ast.parse needs no imports, so this works without cv2/torch.  Three
+    deliberate differences are normalized away, and nothing else:
+      * docstrings and comments — prose, not behaviour;
+      * the env-flag readers — ebayscout checks EBAYSCOUT_X then BUTTONMATCHER_X
+        through `_flag_on`, buttonmatcher inlines os.environ.get;
+      * relative vs flat imports — ebayscout is a package, buttonmatcher is not
+        (the same layout split CLAUDE.md notes for match_logging.py).
+    """
+    import ast
+    tree = ast.parse(open(path).read())
+    tree.body = [n for n in tree.body
+                 if not (isinstance(n, ast.FunctionDef)
+                         and n.name in _DETECT_FLAG_FNS)]
+    for i, node in enumerate(tree.body):
+        if isinstance(node, ast.ImportFrom) and node.level:
+            tree.body[i] = ast.Import(names=node.names)      # flatten
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            node.body = body[1:]
+    return ast.dump(tree)
+
+
+def test_the_two_detectors_have_not_drifted():
+    """ebayscout/detect_pipeline.py and buttonmatcher/detect.py must stay
+    logically identical — that equivalence is what lets ONE fixture battery,
+    in buttonmatcher, stand behind both detectors."""
+    here = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    mine = os.path.join(here, "ebayscout", "detect_pipeline.py")
+    theirs = os.path.join(os.path.dirname(here), "buttonmatcher", "detect.py")
+    if not os.path.exists(theirs):
+        print("    SKIP: buttonmatcher not checked out alongside")
+        return
+    a, b = _detect_ast(mine), _detect_ast(theirs)
+    if a != b:
+        import ast
+        ta, tb = ast.parse(open(mine).read()), ast.parse(open(theirs).read())
+        fa = {n.name for n in ta.body if isinstance(n, ast.FunctionDef)}
+        fb = {n.name for n in tb.body if isinstance(n, ast.FunctionDef)}
+        raise AssertionError(
+            "the two detectors have DRIFTED — one fixture battery no longer "
+            f"covers both.\n  only in ebayscout: {sorted(fa - fb - _DETECT_FLAG_FNS)}"
+            f"\n  only in buttonmatcher: {sorted(fb - fa - _DETECT_FLAG_FNS)}"
+            "\n  (same function sets means a body changed — diff the two files)")
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_"):
