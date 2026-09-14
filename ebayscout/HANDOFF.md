@@ -14,8 +14,38 @@ newest is at the top, as in buttonmatcher's copy.
 > **2026-09-14 — read `../STRATEGIC_REVIEW_2026-09.md` (repo root) first.** A
 > full review of both repos: verdict, direction check against the automation
 > program, ten ranked defects (SR-01…SR-10) with fix shapes, a 90-day plan,
-> and the records that are stale (this file's title date, the Cloud Scheduler
-> deadline item, `CLAUDE.md`'s `/scout` claim).
+> and the records that were stale (all corrected).
+
+### 2026-09-14 — WS1 of the review is implemented
+
+The review's first workstream, in both repos. **Reviewed by reading and covered
+by tests; nothing here has run against Cloud Run, GCS or Sheets** — no web
+session can. What this repo carries:
+
+| | What changed | Where |
+|---|---|---|
+| **SR-02** | One writer for `seen_items.json`. The legacy CLIP scan loaded the dict once and uploaded it back wholesale, erasing any pipeline confirmation that landed in between — the lot was re-fed and re-alerted. Both writers now reload-apply-save under `_seen_lock`. | `main.py` |
+| **SR-04** | The scan log is partitioned: `ebay_scout/scan_log/YYYY-MM.jsonl`. Every lot used to download and re-upload the entire log to add one line. The month comes from the record's own `ts`. The readers take a file, a directory, or both. | `scan_log.py`, `seen_items.py`, `tools/` |
+| **SR-07** | `ENABLE_UNDERVALUED_ALERTS` is read. It said `False` and nothing consulted it while the alerts fired; it now says what the service does (`True`) and switching it off works. | `config.py`, `main.py` |
+| **SR-08** | The dead `/scout` handlers are gone (230 lines, no caller since PR #17). The legacy CLIP-only scan is **frozen**, not deleted — DECISIONS.md #33. | `main.py` |
+| **SR-11** | GitHub Actions runs every `ebayscout/tests/run_*.py` — `test_buttonmatcher_parity` included — on push and PR. torch stays out. | `.github/workflows/tests.yml` |
+| **SR-12** | This file's title date, the Cloud Scheduler item (now an explicit unverified ask), `CLAUDE.md`'s `/scout` claim, DECISIONS.md's undervalued row, and the shared roadmap/brief corrections. | docs |
+
+buttonmatcher carries SR-01 (the Bot Writes tail flushed in-request), SR-03
+(the confirm loop chunked across requests), SR-06 (the write ledger reseeded
+from Bot Writes) and SR-10.
+
+**Not done, deliberately:** SR-05, the correction affordance the Stage-D gate
+needs. It is WS2 and nothing in WS2–WS4 starts before WS1 merges.
+
+**Watch on the first live feed after deploy:**
+1. `>>> SCAN LOG: Appended 1 records to ebay_scout/scan_log/2026-09.jsonl` —
+   the partition, not the old blob.
+2. `gsutil ls gs://…/ebay_scout/scan_log/` shows one object per month. The old
+   `scan_log.jsonl` is untouched history; `gsutil du` it (review ask #2) and
+   decide whether to split it or leave it.
+3. Deal alerts still post; an undervalued one still posts unless you set
+   `ENABLE_UNDERVALUED_ALERTS=False`.
 
 The dated entries below end at 2026-06-20; the active work stream since then
 is the **detection/matching automation program**, tracked in repo-root docs
