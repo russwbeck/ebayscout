@@ -16,7 +16,7 @@ from datetime import date
 
 from google.cloud import storage
 
-from . import config, pipeline_classify
+from . import config, pipeline_classify, scan_log as scan_log_util
 
 
 def load_seen(bucket_name: str = config.BUCKET_NAME) -> dict[str, str]:
@@ -94,30 +94,46 @@ def append_scan_log(
     bucket_name: str = config.BUCKET_NAME,
 ) -> bool:
     """
-    Append per-listing scan records (one JSON object per line) to the scan-log
-    blob in GCS. GCS has no native append, so we read the existing blob and
-    re-upload it with the new lines added. Called once at the end of a scan.
+    Append per-listing scan records (one JSON object per line) to the scan log
+    in GCS.  GCS has no native append, so each partition is read and re-uploaded
+    with its new lines added — which is why the log is partitioned by month
+    (scan_log.py, config.SCAN_LOG_PREFIX): the read-modify-write then costs one
+    month rather than the whole history, and a year of daily feeds stops making
+    every lot pay for every lot before it.
 
-    This is groundwork data for a future automated undervalued-lot valuer;
-    a failure here is non-fatal to the scan. Returns True on success.
+    An ordinary write is one lot's record and touches exactly one partition.  A
+    checkpointed backfill can span months; each month is written separately, and
+    a month that fails does not stop the others — a partial log is worth more
+    than none.
+
+    This is groundwork data for a future automated undervalued-lot valuer; a
+    failure here is non-fatal to the scan. Returns True only if every partition
+    was written.
     """
     if not records:
         return True
+    ok = True
     try:
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        blob   = bucket.blob(config.SCAN_LOG_BLOB)
-
-        existing = blob.download_as_text() if blob.exists() else ""
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        new_lines = "".join(json.dumps(r) + "\n" for r in records)
-        blob.upload_from_string(existing + new_lines, content_type="application/x-ndjson")
-        print(f">>> SCAN LOG: Appended {len(records)} records to {config.SCAN_LOG_BLOB}.", flush=True)
-        return True
     except Exception as exc:
         print(f"!!! SCAN LOG: Failed to append {len(records)} records: {exc}", flush=True)
         return False
+    for month, month_records in scan_log_util.partition(records).items():
+        name = scan_log_util.blob_name(month, config.SCAN_LOG_PREFIX)
+        try:
+            blob     = bucket.blob(name)
+            existing = blob.download_as_text() if blob.exists() else ""
+            blob.upload_from_string(
+                scan_log_util.appended_text(existing, month_records),
+                content_type="application/x-ndjson")
+            print(f">>> SCAN LOG: Appended {len(month_records)} records to {name}.",
+                  flush=True)
+        except Exception as exc:
+            ok = False
+            print(f"!!! SCAN LOG: Failed to append {len(month_records)} records "
+                  f"to {name}: {exc}", flush=True)
+    return ok
 
 
 def ondemand2_first_run_done(bucket_name: str = config.BUCKET_NAME) -> bool:

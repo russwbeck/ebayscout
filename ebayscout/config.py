@@ -141,8 +141,19 @@ ENCODE_BATCH          = 16       # sub-batch size for CLIP image encoding
 ENABLE_UNDERVALUED_ALERTS = False
 
 # --- Scan log (groundwork for a future automated valuer) ---
-# One JSON line per processed listing, appended to this GCS blob: title, asking
-# price, photos scored, top matches + scores, needed-hit / alerted flags.
+# One JSON line per processed listing: title, asking price, photos scored, top
+# matches + scores, needed-hit / alerted flags.
+#
+# PARTITIONED BY MONTH.  GCS has no append, so a write is a download of the
+# whole object and a re-upload with the line added.  As one blob that cost grew
+# without bound and every lot paid for every lot before it; under
+# ebay_scout/scan_log/YYYY-MM.jsonl it is bounded at one month.  The month comes
+# from the record's own `ts`, so a backfill lands where it belongs.
+SCAN_LOG_PREFIX = "ebay_scout/scan_log/"
+
+# The single log written before the partitioning (2026-09 and earlier).  Still
+# the operator's to keep, move or fold in; nothing writes to it now.  Readers
+# take it as one more file: `--scan-log scan_log.jsonl scan_log/`.
 SCAN_LOG_BLOB = "ebay_scout/scan_log.jsonl"
 
 # --- ID hunt list (rebuild the market DB from known eBay IDs) ---
