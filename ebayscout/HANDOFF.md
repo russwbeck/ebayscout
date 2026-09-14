@@ -1,8 +1,11 @@
-# eBay Scout — Session Handoff (2026-05-29)
+# eBay Scout — Session Handoff (latest entry 2026-09-14)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
-**`ebayscout/DECISIONS.md`** (full rationale, sections #1–#27) first; this file is
+**`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
 the "what we did today + where it stands + what's next" layer on top.
+
+The title used to read 2026-05-29, which was the date of the OLDEST entry; the
+newest is at the top, as in buttonmatcher's copy.
 
 ---
 
@@ -67,11 +70,22 @@ one-off. Key points:
 
 **Operator state / next steps:**
 - Cloud Scheduler job `ebay-scout-daily` (us-east1) was **resumed** (was PAUSED).
-  ⚠️ Its `attemptDeadline` is still **180s** — a large first feed won't finish in
-  3 min and Scheduler will mark it failed + retry (the `_scan_lock` makes retries
-  a 409 no-op, so no double-run, but the logs show failures). Recommend bumping:
-  `gcloud scheduler jobs update http ebay-scout-daily --location=us-east1
-  --attempt-deadline=1800s`.
+  ⚠️ **UNVERIFIABLE FROM HERE, AND STILL OPEN AS AN ASK (review ask #1).** When
+  this was written its `attemptDeadline` was **180s** — a large feed cannot
+  finish in 3 min, so Scheduler marks the run failed and retries (the
+  `_scan_lock` makes a retry a 409 no-op, so no double-run, but the logs show
+  failures). No web session can read Cloud Scheduler, so nobody has been able
+  to confirm whether it was bumped. **Operator: run the check and replace this
+  bullet with the answer either way.**
+  ```
+  gcloud scheduler jobs describe ebay-scout-daily --location=us-east1 \
+      --format='value(attemptDeadline)'
+  # if it is not 1800s:
+  gcloud scheduler jobs update http ebay-scout-daily --location=us-east1 \
+      --attempt-deadline=1800s
+  ```
+  Today's feeds are small (2–32 lots/day) so it has not bitten; a backlog day
+  or a `?limit` chunk run is when it would.
 - First daily run size depends on the shared first-run marker
   (`gs://60d488c5-9c8e-4acc-aac-button-data/ebay_scout/ondemand2_state.json`): if a
   prior `/crawl` already tripped it → small incremental; if unset → feeds up to

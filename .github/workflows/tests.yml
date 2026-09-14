@@ -1,0 +1,54 @@
+# SR-11 — the pure test suites, on every push and pull request.
+#
+# Until this existed, "a test nobody runs" was the norm: 21 runners including
+# test_buttonmatcher_parity, which pins this repo's scoring constants, rerank
+# weights and detector against buttonmatcher's.  Nothing else can catch that
+# drift, because the two copies live in different repositories and a comment
+# promising "mirrors buttonmatcher EXACTLY" cannot fail.
+#
+# torch and CLIP stay OUT.  They are ~2 GB, they are what makes the full suite
+# unrunnable in a web session, and nothing the runners assert needs them — the
+# detector, the geometry, the scoring constants and every pure module are
+# numpy/cv2/Pillow/openpyxl at most.  A suite that needed torch would be a suite that
+# stopped running here, which is the failure this workflow exists to end.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pure-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"      # matches the Cloud Run runtime
+
+      - name: Install the test dependencies
+        # Deliberately not requirements.txt: that file pins torch+CLIP for the
+        # deployed image.  These four are what the pure suites import —
+        # openpyxl for the goal-tracker repair suite, which builds a workbook.
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy opencv-python-headless Pillow openpyxl
+
+      - name: Run every ebayscout/tests/run_*.py
+        # Each runner exits non-zero on a failure AND on an import it cannot
+        # satisfy, so a suite that quietly stops running fails the build rather
+        # than disappearing from it.
+        run: |
+          set -u
+          failed=""
+          for f in ebayscout/tests/run_*.py; do
+            echo "::group::$f"
+            if python "$f"; then :; else failed="$failed $f"; fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "FAILED:$failed"
+            exit 1
+          fi
+          echo "All runners passed."
