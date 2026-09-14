@@ -1,14 +1,26 @@
 # eBay Scout — project background for Claude
 
 Flask + Slack Bolt service on Google Cloud Run (`ebayscout/main.py`). It (1) runs
-a daily eBay/Etsy scan that flags listings likely to contain a **needed** Penn
-State gameday button (`amount_needed > 0`) for human review, (2) serves a
-manual `/scout` mode where a user uploads a photo and gets a CLIP-based lot
-valuation, and (3) runs `/crawl <N>` — an on-demand, seen-aware eBay search that
-feeds up to N (≤1000) lots through the two-worker Gemini→GCS pipeline (see
-`ebayscout/PIPELINE_WATCHER_CONTRACT.md`). Full design history and rationale live
-in `ebayscout/DECISIONS.md` — read it before changing deploy/gunicorn/CPU
-behavior. For the latest status and next steps, start with `ebayscout/HANDOFF.md`.
+a daily scan that feeds the day's unseen eBay lots through the two-worker
+Gemini→GCS pipeline (see `ebayscout/PIPELINE_WATCHER_CONTRACT.md`) and posts
+**deals only** to `#ebay-checker` — a lot containing a **needed** Penn State
+gameday button (`amount_needed > 0`), or one worth more than its asking price —
+and (2) runs `/crawl <N>`, the same pipeline on demand over an on-demand,
+seen-aware eBay search of up to N (≤1000) lots.
+
+There is **no human review lane here and no manual upload**: `/scout` was
+removed in PR #17 (2026-06-03) and lives in buttonmatcher. Nothing in this
+service asks a person about a crop, which is why a look-alike slogan flags the
+alert rather than demoting the match (`pipeline_classify.lookalike_note`).
+
+The legacy CLIP-only scan (`_run_daily_scan` / `_evaluate_listing`) is FROZEN,
+not live: reachable only via `?year_crawl` / `?era_crawl` / `?hunt_ids` and
+`DAILY_PIPELINE_FEED=0`. See DECISIONS.md #33.
+
+Full design history and rationale live in `ebayscout/DECISIONS.md` — read it
+before changing deploy/gunicorn/CPU behavior. For the latest status and next
+steps, start with `ebayscout/HANDOFF.md`; the standing plan is
+`STRATEGIC_REVIEW_2026-09.md`.
 
 ## Hard constraints (do not violate)
 
@@ -75,7 +87,7 @@ Real mistakes from a prior session. Do not repeat them:
 - **Be precise about what each file/artifact IS.** Never hand the user a
   throwaway analysis snapshot as if it were the live data path. Name the
   canonical source of truth (the GCS blobs the service reads/writes:
-  `seen_items.json`, `scan_log.jsonl`, `hunt_ids.json`) explicitly.
+  `seen_items.json`, `scan_log/YYYY-MM.jsonl`, `hunt_ids.json`) explicitly.
 - **Before telling the user to run repo code, confirm it's on the branch they'll
   actually run** (usually `main` via a fresh clone). Tooling stranded on an
   unmerged branch won't exist in their checkout.
