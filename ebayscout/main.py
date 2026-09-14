@@ -1289,6 +1289,41 @@ def _mark_item_seen_now(item_id: str) -> None:
         print(f"!!! PIPELINE: mark_seen({item_id}) failed: {exc}", flush=True)
 
 
+def _flush_seen_marks(marks: list[str], flushed: int) -> tuple[int, bool]:
+    """Persist the seen-marks a scan has made since ``flushed``, without
+    clobbering anyone else's.
+
+    The legacy CLIP scan used to load `seen` once at the top and later upload the
+    whole dict back.  A pipeline result confirming during that window marks its
+    lot seen through _mark_item_seen_now — and the scan's wholesale save then
+    wrote a snapshot that predates it, erasing the mark.  The lot is re-fed and
+    re-alerted on the next run, which is the failure the store exists to stop.
+
+    So both writers now do the same thing: reload from GCS, apply only the marks
+    they own, save — all under _seen_lock, which is what makes the read and the
+    write one operation.  This is not the fast path (the general scan runs at
+    most a few times a day and checkpoints every 50 listings), and correctness
+    here is worth a download.
+
+    Returns (new flushed index, ok).  On failure the index does not advance, so
+    the marks ride along with the next checkpoint rather than being lost.
+    """
+    pending = marks[flushed:]
+    if not pending:
+        return flushed, True
+    try:
+        with _seen_lock:
+            seen = seen_items.load_seen()
+            for _iid in pending:
+                seen_items.mark_seen(_iid, seen)
+            ok = seen_items.save_seen(seen)
+    except Exception as exc:
+        print(f"!!! SCAN: seen checkpoint of {len(pending)} mark(s) failed: {exc}",
+              flush=True)
+        return flushed, False
+    return (len(marks) if ok else flushed), ok
+
+
 def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int,
                         command: str = "/crawl-pipeline") -> None:
     """Log the Gem's button-count estimate as its own confirm_log row
@@ -2335,6 +2370,11 @@ def _run_daily_scan(
     _listings_since_save = 0
     scan_log_records: list[dict] = []   # one record per processed listing (groundwork data)
     _scanlog_flushed = 0                # how many records already appended to GCS
+    # The ids THIS scan marked, in order, and how many of them are already on
+    # GCS.  The local `seen` dict above stays the in-run dedup view; it is no
+    # longer what gets uploaded.  See _flush_seen_marks for why.
+    _marked_here: list[str] = []
+    _seen_flushed = 0
 
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
 
@@ -2439,10 +2479,11 @@ def _run_daily_scan(
             traceback.print_exc()
 
         seen_store.mark_seen(item_id, seen)
+        _marked_here.append(item_id)
         _listings_since_save += 1
         if _listings_since_save >= 50:
             if not dry_run:
-                seen_store.save_seen(seen)
+                _seen_flushed, _ = _flush_seen_marks(_marked_here, _seen_flushed)
             # Checkpoint the scan-log data every 50 too (both modes) so a 30-min
             # timeout on a big run never loses the records collected so far.
             pending = scan_log_records[_scanlog_flushed:]
@@ -2452,9 +2493,11 @@ def _run_daily_scan(
 
     if dry_run:
         print("[DRY RUN] Skipping save_seen().", flush=True)
-    elif not seen_store.save_seen(seen):
-        notifier.send_warning(_slack_token, _channel_id,
-                              "Failed to save seen_items.json — next scan may re-alert.")
+    else:
+        _seen_flushed, _seen_ok = _flush_seen_marks(_marked_here, _seen_flushed)
+        if not _seen_ok:
+            notifier.send_warning(_slack_token, _channel_id,
+                                  "Failed to save seen_items.json — next scan may re-alert.")
 
     # Flush any scan-log records not yet checkpointed (both modes). The bulk is
     # already on GCS from the every-50 checkpoints above — this writes the tail.
