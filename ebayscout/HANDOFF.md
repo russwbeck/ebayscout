@@ -8,6 +8,12 @@ the "what we did today + where it stands + what's next" layer on top.
 
 ## 2026-07-09 — where the live work actually is
 
+> **2026-09-14 — read `../STRATEGIC_REVIEW_2026-09.md` (repo root) first.** A
+> full review of both repos: verdict, direction check against the automation
+> program, ten ranked defects (SR-01…SR-10) with fix shapes, a 90-day plan,
+> and the records that are stale (this file's title date, the Cloud Scheduler
+> deadline item, `CLAUDE.md`'s `/scout` claim).
+
 The dated entries below end at 2026-06-20; the active work stream since then
 is the **detection/matching automation program**, tracked in repo-root docs
 shared byte-identical with buttonmatcher:
