@@ -15,8 +15,10 @@ carries the full write-up. Read the source before acting on any of it.
 
 **Retiring a front never removes its column.** When a front is refuted or
 closed, what stops is the *producer* — the extra pass, matmul or encode — not
-the column. `match_log` is **91** positional columns (87 until 2026-09-12, when
-four were appended for B4 and B2) and `confirm_log` 23; the workbook addresses
+the column. `match_log` is **92** positional columns (87 until 2026-09-12, when
+five were appended for B4, B2 and db_direct) and `confirm_log` 23 — counted
+from `match_logging.MATCH_HEADER` on 2026-09-15, because this line has said 87
+and then 91 while the header moved under it; count it, do not quote it; the workbook addresses
 them by letter and every pooled export was pasted under that exact header, so
 removing one is a rebuild of every front tab, not an edit. **Appending at the
 end is the one structural change that is safe** — it shifts no existing

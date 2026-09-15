@@ -33,7 +33,7 @@ not run here and nothing in GCS or Cloud Run logs was read. See §9.*
    the docs keep asking the operator to use was never built (§3.2). The
    roadmap's "volume is the constraint" line is from July and the September
    data contradicts it.
-4. **The measurement apparatus has become the main cost.** 70 fronts, 91
+4. **The measurement apparatus has become the main cost.** 70 fronts, 92
    positional log columns, ~17,000 lines of overlapping strategy/registry
    docs, and a generated workbook whose formulas have been wrong at least 17
    times. Three "computed, printed, discarded" numbers were found in one
@@ -303,7 +303,9 @@ $130-for-$0.50 lot is ⚪.
   the operator should say which and the line should change.
 - **`ebayscout/CLAUDE.md`:** "(2) serves a manual `/scout` mode" — removed in
   PR #17 (2026-06-03).
-- **`LOGGING.md`:** `match_log` is 91 columns (it says 87); `confirm_log` 23.
+- **`LOGGING.md`:** `match_log` is **92** columns — not the 87 it said, nor
+  the 91 first written here; counted from `match_logging.MATCH_HEADER` on
+  2026-09-15. `confirm_log` 23. Fixed in `LOGGING.md` and `LOGGER_FRONTS.md`.
 - **`AUTOMATION_ROADMAP.md`:** "Phase 5 … volume, not accuracy, is the
   constraint" and "0% gated disagreement" are July readings superseded by E2's
   September numbers (79.6%/96.0%); the fixture battery is 26 lots, not 9.
@@ -429,3 +431,88 @@ register's 2026-09-12 readings, not recomputed here.
 are confident from the code's own structure and the repo's documented
 Cloud Run behavior; SR-05 is a grep result; SR-06 is the repo's own hazard,
 restated with a fix.
+
+---
+
+## 10. Implementation check — WS1 (2026-09-15)
+
+*Checked against `origin/main` (buttonmatcher `3050930`, ebayscout `3a476fc`)
+and the open branch `claude/buttonmatcher-strategic-review-bev1z4`
+(`66a9786`). Both repos' pure suites pass locally on `main` (buttonmatcher
+1,075; ebayscout 560), the new GitHub Actions workflow is green on every run
+so far (8 buttonmatcher, 4 ebayscout), no PR is open, and every shared file is
+still byte-identical across the repos. The work is careful, the commit
+messages are honest about what did not run, and the AST-level wiring tests
+are the right tool for a module that cannot be imported here.*
+
+| Ticket | State | Verdict |
+|---|---|---|
+| SR-01 flush audit tail | main `2ebce12` | **Partly closed** — see 10.1 |
+| SR-02 one seen-file writer | main `83aa1c4` | Closed. Real source executed against a fake store; the race case is the first test. |
+| SR-03 chunked confirm loop | main `d89e125` | Closed, with one residual — 10.2 |
+| SR-04 partitioned scan log | main `faffab2` | Closed. Readers take file and/or directory; legacy blob left as history; operator sizes it (ask #2). |
+| SR-06 ledger reseed | main `dc8eebc` | Closed, two notes — 10.3 |
+| SR-07 undervalued flag | main `4ce0e91` | Closed as a switch; **default flipped to `True`** to match live behaviour. Ask #5 still open — it is now a real decision. |
+| SR-08 dead `/scout` code | main `4ce0e91` | Closed; legacy CLIP scan frozen, not deleted (DECISIONS #33). Ask #6 still open. |
+| SR-10 patch dir | main `102f74d` | Closed. |
+| SR-11 CI | main `ab898cb` / `14119a6` | **Runs, but skips 305 tests** — 10.4 |
+| SR-12 records | main `ab898cb` / `14119a6` | Closed, one leftover — 10.5 |
+| SR-05 correction affordance | not started | Correctly deferred to WS2. |
+
+### 10.1 SR-01: the hook does not reach Slack click handlers
+
+`after_request` fires when the HTTP response is produced. Bolt's `App` is
+constructed without `process_before_response=True` (`main.py` ~750), so a
+listener such as `_handle_confirm` returns the response at `ack()` and runs
+the rest of its body — the sheet write and the audit enqueue — in Bolt's
+listener thread **after** the hook has already run. Rows from a click are
+therefore flushed by the *next* request's hook (fine mid-session) or by the
+throttled timer (the original defect) — the last click of a session is still
+exposed. The pipeline loop and `/internal/match` are covered, which is where
+the bursts are. Fix: call `_flush_audit_tail("listener")` at the end of each
+listener that writes (`_handle_confirm`, the skip / edition-pick / removal
+handlers) or wrap them in one small decorator; a per-click append is
+human-paced and inside quota. Extend `test_audit_flush_wiring.py` to assert
+those listeners call it.
+
+### 10.2 SR-03: the cursor lives in memory
+
+`_pipeline_mode_cursor` dies with the container. A restart between chunks
+means the hand-off arrives as `start=25` against an expected `0` and is
+dropped with only a stdout line; the lot pauses silently at a chunk boundary
+until someone clicks again (which then re-posts review cards for the first
+chunk's non-auto crops — no double count thanks to SR-06, but duplicate
+cards). Fix: write the cursor into `pipeline_jobs/<id>.json` at each hand-off
+and read it back in `_load_pipeline_job`; and post one line to the lot thread
+when a chunk is refused for `start > 0` or a kick fails ("paused at crop N —
+click the mode again to resume").
+
+### 10.3 SR-06: two notes
+
+`_reseed_write_ledger` marks the lot reseeded before the tab read completes,
+so a second concurrent caller for the same lot proceeds unreseeded (narrow:
+two first-writes into one resumed lot at the same instant). And it reads the
+whole Bot Writes tab per new lot; fine today, bound it when the tab is tens of
+thousands of rows (e.g. `findall(thread_ts)` or a tail window).
+
+### 10.4 SR-11: the workflow only runs files that have a `run_*_tests.py`
+
+The loop is `for f in tests/run_*.py`. Modules without a runner never run:
+**56 tests in buttonmatcher** (`test_buy_flow`, `test_deficit_fill_gate`,
+`test_hole_invert`, `test_label_harvest`, `test_reading_order`) and **249 in
+ebayscout** (`test_main` 82, `test_seen_items` 25, `test_etsy_client` 19,
+`test_ebay_client` 18, `test_clip_matcher` 18, `test_sheets_client` 14,
+`test_scoring` 13, `test_notifier` 12, …). Some of those need slack_sdk /
+gspread / torch and would fail to import — which is exactly the "suite that
+quietly stops running" the workflow says it exists to catch. Fix: `pip install
+pytest` and run `pytest tests` (resp. `ebayscout/tests`) with an explicit
+`--ignore` list for the modules that genuinely need the deployed stack, so
+the skipped set is named in the workflow rather than implied by a missing
+file. Keep the runner loop if wanted, but it is not "every suite".
+
+### 10.5 SR-12: one number still disagrees
+
+`LOGGING.md` now says `match_log` is 92 columns (correct:
+`len(MATCH_HEADER) == 92`). `LOGGER_FRONTS.md` (shared) and §5 of this
+document said 91. **Both fixed 2026-09-15**, and each now says to count the
+header rather than quote a number — this line has been wrong twice.
