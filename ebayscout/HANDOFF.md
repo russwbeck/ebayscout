@@ -13,6 +13,10 @@ the "what we did today + where it stands + what's next" layer on top.
 > program, ten ranked defects (SR-01…SR-10) with fix shapes, a 90-day plan,
 > and the records that are stale (this file's title date, the Cloud Scheduler
 > deadline item, `CLAUDE.md`'s `/scout` claim).
+>
+> **2026-09-15 — `../REFERENCE_SCORING_REVIEW.md`:** the reference-library
+> review; ebayscout's items are RS-03 (intake dedup) and RS-04 (lot id in
+> staged crop names).
 
 The dated entries below end at 2026-06-20; the active work stream since then
 is the **detection/matching automation program**, tracked in repo-root docs
