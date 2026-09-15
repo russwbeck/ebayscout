@@ -198,6 +198,50 @@ holds and how much it looks like what the matcher will meet — not its
 standalone quality. That is the term to add (RS-06), and its weight has to
 be fitted on logged decisions (RS-01), not guessed.
 
+### 3.7 Is the score measuring what the process needs? — No (added 2026-09-15)
+
+The composite rates a crop as a *photograph*. The process needs references
+that make CLIP rank the right slogan first on real lot photos. Three
+mismatches:
+
+- **The heaviest term rewards sameness.** "On-slogan" (45%) is the cosine to
+  the mean of the shelf's other references, so a near-duplicate scores 100
+  and a genuinely different view scores lower — the opposite of what a
+  retrieval shelf needs, and consistent with the 20 "replace the sharpest"
+  swaps in §3.1.
+- **Sharpness is mostly invisible to the matcher.** CLIP sees a 224-px crop;
+  Laplacian variance above that rewards detail the model never gets (25% of
+  the score). Exposure, which does move the embedding, is 20%.
+- **There is no outcome term.** The logs show references cut both ways:
+  "Stuck in a Rut" went rank 31 → 1 from staged references (Logger_12), and
+  the C1 attractors ("Happy 125th Penn State", "Penn State and Proud of it",
+  "Never Badger A Lion") pull wrong crops to #1 at image 0.90–0.98. Those are
+  almost certainly crisp, well-exposed, high-composite images — the score's
+  best, the process's worst.
+
+**The measure that is aimed at the process, computable today from
+`vectors.pt` alone (3,259 labelled crops, one matrix multiply, the same pass
+`/reference reindex` already runs):** hold each reference out and match it
+against the rest of the library.
+
+1. *Typicality* — does the held-out reference retrieve its own slogan at #1?
+2. *Usefulness* — with it removed, how many shelf-mates stop retrieving
+   correctly, or by how much does their margin over the runner-up shrink?
+   Duplicates contribute ~0; a distinct view contributes a lot.
+3. *Attractor risk* — how many other slogans' references now retrieve this
+   one at #1 or #2? (C1's sticky-attractor list for every reference.)
+
+Rank by usefulness − attractor risk; keep the composite only as the junk
+filter (its exposure / on-slogan floors correctly caught all ten broken
+references in §3.3). Check the new ranking against the 57 decisions before it
+decides anything — if it recovers the §3.1 swaps, §7 question 1 is answered.
+
+Caveat: within-library retrieval tests references against references, not
+against feed crops, which are lower-quality and cluttered. Confirmed feed
+crops would be the better test set; they are not stored today except as
+staged crops, so the proxy is what is available now. This is folded into
+RS-06 as its first step.
+
 ---
 
 ## 4. Answers to the three questions
@@ -341,7 +385,7 @@ own record:
 | RS-03 | both | M | intake dedup: cosine ≥ 0.99 + dHash confirm against shelf and staging queue at stage time; `STAGE_SKIP duplicate` (§4.2.1) | `/reference dedup` finds 0 on a fresh week; a relisted eBay photo is skipped with the reason logged |
 | RS-04 | ebayscout | S | `__lot-<job_id>` in staged names (§4.2.2) | the "+N more from this lot" note appears on pipeline-sourced entries |
 | RS-05 | buttonmatcher | S | margins +3 / 0, per-component junk floors (§4.1.2, 4.1.3) | replaying the 57 decisions: ≥ 19/19 swaps and 4/4 discards reproduced; a unit test pins the replay |
-| RS-06 | buttonmatcher | M | marginal-value scoring: novelty term, redundant-first replace target, intake gate on cosine ≥ 0.97 (§4.2.3, 4.3.3) — **shadow first**: log what it would do beside what the composite does, for two sessions | agreement with typed decisions ≥ the composite's; then flip |
+| RS-06 | buttonmatcher | M | marginal-value scoring: first the leave-one-out retrieval value per reference (§3.7), then the novelty term, redundant-first replace target, intake gate on cosine ≥ 0.97 (§4.2.3, 4.3.3) — **shadow first**: log what it would do beside what the composite does, for two sessions | agreement with typed decisions ≥ the composite's; then flip |
 | RS-07 | buttonmatcher | S | intake-time scoring and at-cap gate (§4.1.1) | review queue per session halves at equal shelf quality (spot-audit 20 shelves) |
 | RS-08 | buttonmatcher | S | auto-stop finished shelves, announced in the header (§4.1.4) | the stop list grows without typing; `unstop` unchanged |
 
