@@ -29,11 +29,14 @@ jobs:
 
       - name: Install the test dependencies
         # Deliberately not requirements.txt: that file pins torch+CLIP for the
-        # deployed image.  These four are what the pure suites import —
-        # openpyxl for the goal-tracker repair suite, which builds a workbook.
+        # deployed image.  This is the set the suites actually import, measured
+        # in a clean venv rather than assumed — openpyxl for the goal-tracker
+        # repair suite, requests for the eBay/Etsy clients, slack_sdk for the
+        # alert renderer, gspread for the buy-rules parser.
         run: |
           python -m pip install --upgrade pip
-          pip install pytest numpy opencv-python-headless Pillow openpyxl
+          pip install pytest numpy opencv-python-headless Pillow openpyxl \
+                      requests slack_sdk gspread
 
       - name: Run the test suite
         # pytest over the whole tests/ tree, NOT the run_*.py loop this used to
@@ -43,21 +46,23 @@ jobs:
         # exists to catch.  It was catching it for the modules it knew about and
         # silent about the rest.
         #
-        # The four ignores are the modules that genuinely need the deployed
-        # stack.  They are named here rather than implied by a missing runner,
-        # so the skipped set is visible and has to be argued for:
+        # requests, slack_sdk and gspread are in the install list rather than in
+        # the ignore list: together they are ~5 s and 26 real tests — the eBay
+        # and Etsy clients, the deal-alert renderer and the buy-rules parser —
+        # and "keep the deployed stack out" is about torch and the GCP clients,
+        # not about every third-party import.
+        #
+        # The two ignores are the modules that genuinely need the heavy stack.
+        # They are named here rather than implied by a missing runner, so the
+        # skipped set is visible and has to be argued for:
         #   test_clip_matcher   torch + CLIP (~2 GB)
         #   test_seen_items     google-cloud-storage
-        #   test_sheets_client  gspread
-        #   test_notifier       slack_sdk
         # -rs prints the reason for every skip, so a test that stops running
         # inside a collected module is visible too.
         run: |
           python -m pytest ebayscout/tests -q -rs \
             --ignore=ebayscout/tests/test_clip_matcher.py \
-            --ignore=ebayscout/tests/test_notifier.py \
-            --ignore=ebayscout/tests/test_seen_items.py \
-            --ignore=ebayscout/tests/test_sheets_client.py
+            --ignore=ebayscout/tests/test_seen_items.py
 
       - name: Run the standalone runners
         # The same tests again through the no-pytest path, because that is how
