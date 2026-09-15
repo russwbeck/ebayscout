@@ -33,22 +33,40 @@ jobs:
         # openpyxl for the goal-tracker repair suite, which builds a workbook.
         run: |
           python -m pip install --upgrade pip
-          pip install numpy opencv-python-headless Pillow openpyxl
+          pip install pytest numpy opencv-python-headless Pillow openpyxl
 
-      - name: Run every ebayscout/tests/run_*.py
-        # Each runner exits non-zero on a failure AND on an import it cannot
-        # satisfy, so a suite that quietly stops running fails the build rather
-        # than disappearing from it.
+      - name: Run the test suite
+        # pytest over the whole tests/ tree, NOT the run_*.py loop this used to
+        # be.  That loop only ran modules somebody had written a runner for, so
+        # 249 tests here — test_main's 82 among them — never ran at all, which
+        # is precisely the "suite that quietly stops running" this workflow
+        # exists to catch.  It was catching it for the modules it knew about and
+        # silent about the rest.
+        #
+        # The four ignores are the modules that genuinely need the deployed
+        # stack.  They are named here rather than implied by a missing runner,
+        # so the skipped set is visible and has to be argued for:
+        #   test_clip_matcher   torch + CLIP (~2 GB)
+        #   test_seen_items     google-cloud-storage
+        #   test_sheets_client  gspread
+        #   test_notifier       slack_sdk
+        # -rs prints the reason for every skip, so a test that stops running
+        # inside a collected module is visible too.
+        run: |
+          python -m pytest ebayscout/tests -q -rs \
+            --ignore=ebayscout/tests/test_clip_matcher.py \
+            --ignore=ebayscout/tests/test_notifier.py \
+            --ignore=ebayscout/tests/test_seen_items.py \
+            --ignore=ebayscout/tests/test_sheets_client.py
+
+      - name: Run the standalone runners
+        # The same tests again through the no-pytest path, because that is how
+        # they are run in a web session and the runners must keep working.
         run: |
           set -u
           failed=""
           for f in ebayscout/tests/run_*.py; do
-            echo "::group::$f"
-            if python "$f"; then :; else failed="$failed $f"; fi
-            echo "::endgroup::"
+            if python "$f" >/dev/null; then :; else failed="$failed $f"; fi
           done
-          if [ -n "$failed" ]; then
-            echo "FAILED:$failed"
-            exit 1
-          fi
+          if [ -n "$failed" ]; then echo "FAILED:$failed"; exit 1; fi
           echo "All runners passed."
