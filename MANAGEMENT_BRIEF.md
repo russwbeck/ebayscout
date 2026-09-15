@@ -5,6 +5,12 @@ engineering record behind every number here is in `AUTOMATION_ROADMAP.md`,
 `tested_hypothesis.md`, and the analysis logs. Alternatives considered but
 not recommended are in Appendix A, deliberately outside the main plan.*
 
+> **Updated 2026-09-14 — §3 and §6 carried July numbers that September's data
+> has overturned, and both were headline claims. They are corrected in place
+> below and marked where they changed. Nothing else in this document has been
+> re-verified against current data; if it is shown to anyone, read
+> `STRATEGIC_REVIEW_2026-09.md` §3 first.**
+
 ---
 
 ## 1. What the product is
@@ -39,7 +45,7 @@ catch the rare mistake.
 | Capability | Status |
 |---|---|
 | **Naming buttons (slogan/year/sport)** | Auto-confirmed identifications were manually audited: **759 of 759 correct**. Identification is no longer the bottleneck. |
-| **Counting/finding buttons with no human input** | The system now *knows when to trust itself*: on the ~1/3 of photos it certifies, it is **96% exactly right and 100% within one button** (measured across 329 photos). On the live feed since the last fix: **zero disagreements**. |
+| **Counting/finding buttons with no human input** | **Corrected 2026-09-14.** On the ~1/3 of photos it certifies it is **79.6% exactly right and 96.0% within one button** (n=201 scored photos, September export), against a bar of 98%. The "96% / 100% within one" this row used to claim was an earlier, smaller reading taken before a per-photo correction; the "zero disagreements on the live feed" was nine photos. The system's judgement of *when* to trust itself still ranks correctly — certified photos are far better than uncertified — but it is not yet a certificate. |
 | **Reviewer workload** | Falling by design. One recent feature alone (offering the best cross-sport suggestion instead of forcing typed entry) eliminated 30 of 35 manual typings on its first real lot. |
 | **Measurement** | Every decision the system makes writes a structured log row. Every claim in this document traces to those logs, not to impressions. |
 
@@ -103,12 +109,20 @@ skip steps, and no stage requires new spending — the evidence accumulates
 passively from the daily feed.
 
 **Stage B — trust the system's own count on photos it certifies (~1/3 of
-volume).** Enter when its count agrees with the independent AI reading on
-≥98% of certified photos at meaningful volume (currently 100% since the last
-fix; volume accruing daily). Roll back automatically if disagreement exceeds
-2% in any 50-photo window. Before flipping: finish instrumenting the one
-error type counting can't see (right count, wrong object) — that
-instrumentation shipped this week.
+volume). The gate is MISSED, by about 18 points (corrected 2026-09-14).**
+Entry needs its count to agree with the independent AI reading on ≥98% of
+certified photos at meaningful volume; the September export has the volume and
+reads **79.6% exact, 96.0% within one** (n=201). Relaxing the bar to
+"within one button" — the obvious next move — does not clear it either.
+
+We are not recommending more work on this stage. The measurement it is graded
+against is itself unverified where most of the volume is: the bar compares our
+count to the AI's, which is only checked by a person on the reviewed lots, not
+on the automated feed. The next step is a human-verified set of a few hundred
+lots (we now have the raw material for one) to find out whether the AI's count
+is even the right ruler, and then either to re-set this bar honestly or to
+park Stage B and spend the quarter on the operator's own workload instead —
+which is where the measured time actually goes.
 
 **Stage C — the external AI becomes an auditor, not a crutch.** Once Stage B
 holds, the external AI service is consulted only on disagreement or
@@ -140,9 +154,12 @@ nothing until the data justifies training.
 
 ## 8. Honest risks
 
-- **Volume, not accuracy, is the current constraint** on advancing Stage B —
-  the trusted slice is performing, but we certify at volume, not on small
-  samples (we were burned once; see §4).
+- **Accuracy, not volume, is the constraint** on advancing Stage B
+  (corrected 2026-09-14 — this said the opposite, on a nine-photo reading).
+  The volume arrived and the gate is missed by ~18 points. The risk this
+  creates is a planning one: Stage C and Stage D were both sequenced behind
+  Stage B, so nothing downstream of it moves until the bar is re-set against
+  verified human truth or the stage is formally parked.
 - **The remaining two-thirds of photos** stay human/AI-assisted until the
   learned detector earns its way in. We are explicit that hand-built methods
   have hit their ceiling there.

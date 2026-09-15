@@ -175,7 +175,14 @@ to identify which image conditions still require the human count input.
 
 ### confirm_log — new source values
 
-The `source` column now accepts these additional values from ebayscout:
+> **Historical (2026-09-14).** The three sources below were removed from
+> ebayscout with `/scout` (PR #17, 2026-06-03) and their handlers deleted in the
+> SR-08 cleanup: nothing in this service posted the cards that produced them, so
+> no row with these sources can exist after that date. The section is left as
+> the record of what they meant, because rows written BEFORE it are still in
+> confirm_log. ebayscout has no human review lane; buttonmatcher owns `/scout`.
+
+The `source` column accepted these additional values from ebayscout:
 
 | Source | Written by | Meaning |
 |---|---|---|
@@ -191,7 +198,14 @@ how close the automated count comes to what a human sees.
 
 ---
 
-## ebayscout — /crawl person-in-the-loop
+## ebayscout — /crawl person-in-the-loop — **removed**
+
+> **Historical (2026-09-14).** There is no person in ebayscout's loop. `/scout`
+> went in PR #17 and the yellow-review posting was never wired to anything after
+> it; `_post_yellow_review` and the `scout_*` handlers were deleted in the SR-08
+> cleanup (DECISIONS.md #33). `_evaluate_listing` still builds a `yellow` dict
+> and still returns it unread, inside the frozen legacy scan. Kept below as the
+> record of what the flow was.
 
 **File:** `main__4_.py`
 

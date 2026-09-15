@@ -133,16 +133,33 @@ HOUGH_RADIUS_SCALES   = (1.0, 0.66, 0.45, 0.30)  # multi-scale sweep, large→sm
 HOUGH_MIN_RADIUS_PX   = 9        # floor so we don't chase speckle
 ENCODE_BATCH          = 16       # sub-batch size for CLIP image encoding
 
-# --- Undervalued-lot alerts (deferred / opt-in) ---
-# Precise auto-valuation of a whole lot is unreliable without per-button
-# segmentation, so the undervalued/margin alert is OFF by default. The
-# needed-button path above is the headline. Flip to True once the scan-log data
-# (SCAN_LOG_BLOB) shows valuation is trustworthy.
-ENABLE_UNDERVALUED_ALERTS = False
+# --- Undervalued-lot alerts ---
+# Post a deal alert when the confirmed buttons in a lot are worth more than the
+# asking price, whether or not any of them is NEEDED.
+#
+# This constant read False for months and nothing consulted it: the pipeline
+# posted the alert whenever lot_value > asking, and the deferral note that used
+# to sit here described a state the code was never in.  It is read now, and set
+# to the behaviour that has actually been live — a flag is only worth having if
+# it says what the service does.  Setting it False silences those alerts (the
+# needed-button path is unaffected) and is the one line to change if the
+# valuation proves noisy; the review's ask #5 is the operator's decision on it.
+ENABLE_UNDERVALUED_ALERTS = True
 
 # --- Scan log (groundwork for a future automated valuer) ---
-# One JSON line per processed listing, appended to this GCS blob: title, asking
-# price, photos scored, top matches + scores, needed-hit / alerted flags.
+# One JSON line per processed listing: title, asking price, photos scored, top
+# matches + scores, needed-hit / alerted flags.
+#
+# PARTITIONED BY MONTH.  GCS has no append, so a write is a download of the
+# whole object and a re-upload with the line added.  As one blob that cost grew
+# without bound and every lot paid for every lot before it; under
+# ebay_scout/scan_log/YYYY-MM.jsonl it is bounded at one month.  The month comes
+# from the record's own `ts`, so a backfill lands where it belongs.
+SCAN_LOG_PREFIX = "ebay_scout/scan_log/"
+
+# The single log written before the partitioning (2026-09 and earlier).  Still
+# the operator's to keep, move or fold in; nothing writes to it now.  Readers
+# take it as one more file: `--scan-log scan_log.jsonl scan_log/`.
 SCAN_LOG_BLOB = "ebay_scout/scan_log.jsonl"
 
 # --- ID hunt list (rebuild the market DB from known eBay IDs) ---

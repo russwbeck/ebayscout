@@ -26,7 +26,7 @@ master — it's derived, not appended, so it never drifts.
 
 Usage:
     python -m ebayscout.tools.build_master_dataset \
-        --sources scan_log.jsonl backfill_scan_log.jsonl \
+        --sources scan_log/ scan_log.jsonl backfill_scan_log.jsonl \
         --out-jsonl master.jsonl --out-csv master.csv
 """
 
@@ -36,6 +36,7 @@ import json
 import re
 from collections import defaultdict
 
+from ebayscout import scan_log
 from ebayscout.utils import extract_years, extract_lot_count
 
 # Stable column order for the master CSV / sheet.
@@ -165,21 +166,19 @@ def to_csv_row(r: dict) -> dict:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _load(path: str) -> list:
-    out = []
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
+def _load(path) -> list:
+    """One source: a JSONL file, or a directory of them (the scan log's monthly
+    partitions pulled whole from SCAN_LOG_PREFIX)."""
+    return scan_log.load(path)
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sources", nargs="+", required=True,
-                    help="One or more JSONL source files to consolidate.")
+                    help="One or more JSONL source files (or directories of "
+                         "them, e.g. the scan log's monthly partitions) to "
+                         "consolidate.")
     ap.add_argument("--out-jsonl", help="Write the canonical master JSONL here.")
     ap.add_argument("--out-csv", help="Write the flat master CSV (sheet) here.")
     args = ap.parse_args(argv)

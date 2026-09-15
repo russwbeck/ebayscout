@@ -17,7 +17,6 @@ import ipaddress
 import os
 import time
 import threading
-import re
 import json
 import traceback
 import uuid
@@ -1076,6 +1075,10 @@ def process_pipeline_lot(job_id: str) -> None:
     # or not) + undervalued-deal flag (pure helper)
     lot_value, undervalued, margin = pipeline_classify.lot_value_and_deal(
         auto_confirmed, _price_of, asking)
+    # The kill switch is applied HERE, at the one place the flag is decided, so
+    # the alert and the scan_log's `alerted` column can never disagree about
+    # whether this lot was reported.
+    undervalued = undervalued and config.ENABLE_UNDERVALUED_ALERTS
 
     # 8) AUTO-STAGE the surest crops (real Hough detection + Gemini-confirmed +
     #    overall >= STAGE_CONF) straight into reference/_staging for buttonmatcher's
@@ -1287,6 +1290,41 @@ def _mark_item_seen_now(item_id: str) -> None:
             seen_items.save_seen(seen)
     except Exception as exc:
         print(f"!!! PIPELINE: mark_seen({item_id}) failed: {exc}", flush=True)
+
+
+def _flush_seen_marks(marks: list[str], flushed: int) -> tuple[int, bool]:
+    """Persist the seen-marks a scan has made since ``flushed``, without
+    clobbering anyone else's.
+
+    The legacy CLIP scan used to load `seen` once at the top and later upload the
+    whole dict back.  A pipeline result confirming during that window marks its
+    lot seen through _mark_item_seen_now — and the scan's wholesale save then
+    wrote a snapshot that predates it, erasing the mark.  The lot is re-fed and
+    re-alerted on the next run, which is the failure the store exists to stop.
+
+    So both writers now do the same thing: reload from GCS, apply only the marks
+    they own, save — all under _seen_lock, which is what makes the read and the
+    write one operation.  This is not the fast path (the general scan runs at
+    most a few times a day and checkpoints every 50 listings), and correctness
+    here is worth a download.
+
+    Returns (new flushed index, ok).  On failure the index does not advance, so
+    the marks ride along with the next checkpoint rather than being lost.
+    """
+    pending = marks[flushed:]
+    if not pending:
+        return flushed, True
+    try:
+        with _seen_lock:
+            seen = seen_items.load_seen()
+            for _iid in pending:
+                seen_items.mark_seen(_iid, seen)
+            ok = seen_items.save_seen(seen)
+    except Exception as exc:
+        print(f"!!! SCAN: seen checkpoint of {len(pending)} mark(s) failed: {exc}",
+              flush=True)
+        return flushed, False
+    return (len(marks) if ok else flushed), ok
 
 
 def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int,
@@ -1875,238 +1913,6 @@ def _evaluate_listing(
     }
 
 
-def _post_yellow_review(listing: dict, yellow_buttons: list, job_id: str,
-                        confirmed_buttons: list,
-                        gemini_summary: str | None = None) -> None:
-    """Post a stripped-down human-review block for yellow-confidence buttons.
-
-    Two-step interaction:
-      Step 1 — "How many buttons do you see in this lot?"
-               Quick-select buttons (1-5, 6-10, 11-20, 21-30, 30+).
-               Answer logged as a special confirm_log row (source='user_count').
-
-      Step 2 — For each yellow button: "Do you see [year] — [slogan]?"
-               ✅ Yes / ❌ No buttons posted as a single compact message.
-               Each answer logged to confirm_log (source='human_verify_yes'
-               or 'human_verify_no').
-
-    gemini_summary, if provided (set by /crawl10's Gemini triage step), is
-    prepended to the header as an informational line — it does NOT skip or
-    replace the human Yes/No review for whatever remains in yellow_buttons.
-
-    Fail-open: any Slack API error is caught and printed, never raised.
-    """
-    try:
-        item_id = listing.get("item_id", "?")
-        title   = listing.get("title", "?")[:60]
-        url     = listing.get("url") or listing.get("listing_url") or ""
-        asking  = listing.get("current_price")
-        price_str = f" · ${asking:.2f}" if asking else ""
-
-        # ── Header ───────────────────────────────────────────────────────────
-        header_text = (
-            f"*Scout review* · <{url}|{title}>{price_str}\n"
-            f"✅ Auto-confirmed: {len(confirmed_buttons)} button(s)\n"
-            f"🟡 Yellow (needs your eye): {len(yellow_buttons)} candidate(s)"
-        )
-        if gemini_summary:
-            header_text = f"{gemini_summary}\n\n{header_text}"
-
-        # ── Step 1: how many buttons? ─────────────────────────────────────────
-        count_meta = json.dumps({"job_id": job_id, "item_id": item_id})
-        count_elements = [
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": label},
-                "action_id": f"scout_count_{label.replace('+', 'plus')}",
-                "value": json.dumps({"job_id": job_id, "item_id": item_id,
-                                     "bucket": label}),
-            }
-            for label in ["1-5", "6-10", "11-20", "21-30", "30+"]
-        ]
-
-        # ── Step 2: yes/no for each yellow button ────────────────────────────
-        yellow_blocks = []
-        for btn in yellow_buttons[:8]:   # cap at 8 to stay within Slack block limits
-            yr    = btn.get("year",   "?")
-            sl    = btn.get("slogan", "?")
-            score = btn.get("overall", 0)
-            gap   = btn.get("gap")
-            gap_str = f" · gap {gap:.2f}" if gap is not None else ""
-            verify_val = json.dumps({
-                "job_id":   job_id,
-                "item_id":  item_id,
-                "check_id": btn.get("check_id"),
-                "year":     yr,
-                "slogan":   sl,
-                "overall":  round(score, 4),
-            })
-            yellow_blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"🟡 *{yr}* — _{sl}_ ({int(score*100)}%{gap_str})",
-                },
-                "accessory": {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "✅ Yes"},
-                    "style": "primary",
-                    "action_id": "scout_verify_yes",
-                    "value": verify_val,
-                },
-            })
-            yellow_blocks.append({
-                "type": "actions",
-                "elements": [{
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "❌ No — not in lot"},
-                    "style": "danger",
-                    "action_id": "scout_verify_no",
-                    "value": verify_val,
-                }],
-            })
-
-        blocks = [
-            {"type": "section",
-             "text": {"type": "mrkdwn", "text": header_text}},
-            {"type": "section",
-             "text": {"type": "mrkdwn",
-                      "text": "📦 *How many buttons do you see in this lot?*"}},
-            {"type": "actions", "elements": count_elements},
-            {"type": "divider"},
-        ] + yellow_blocks
-
-        app.client.chat_postMessage(
-            token=_slack_token,
-            channel=_channel_id,
-            blocks=blocks,
-            text=f"Scout review: {len(yellow_buttons)} yellow button(s) — {title}",
-        )
-        print(
-            f">>> SCOUT_REVIEW: posted {len(yellow_buttons)} yellow button(s) "
-            f"for item {item_id}.",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"!!! SCOUT_REVIEW: post failed for {listing.get('item_id','?')}: {exc}",
-              flush=True)
-
-
-# --- SLACK ACTIONS: scout human-review responses ----------------------------
-
-@app.action("scout_verify_yes")
-def handle_scout_verify_yes(ack, body):
-    ack()
-    _handle_scout_verify(body, verified=True)
-
-
-@app.action("scout_verify_no")
-def handle_scout_verify_no(ack, body):
-    ack()
-    _handle_scout_verify(body, verified=False)
-
-
-def _handle_scout_verify(body, *, verified: bool) -> None:
-    """Log a Yes/No human-verification answer to confirm_log."""
-    try:
-        val      = json.loads(body["actions"][0]["value"])
-        job_id   = val.get("job_id")
-        check_id = val.get("check_id")
-        year     = val.get("year")
-        slogan   = val.get("slogan")
-        overall  = val.get("overall")
-        source   = "human_verify_yes" if verified else "human_verify_no"
-
-        rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl",
-            job_id=job_id, thread_ts=None,
-            crop_num=None, check_id=check_id,
-            user_id=(body.get("user") or {}).get("id", ""),
-            chosen_year=year, chosen_phrase=slogan,
-            chosen_type="Football", source=source,
-            rank_restricted=None, rank_shadow=None,
-            shadow_leaderboard_size=None,
-        )
-        if match_logger is not None:
-            match_logger.log_confirmation(check_id or f"verify:{job_id}", rec)
-
-        # Update the button in-place to show it's been answered
-        emoji = "✅" if verified else "❌"
-        try:
-            app.client.chat_update(
-                token=_slack_token,
-                channel=body["channel"]["id"],
-                ts=body["message"]["ts"],
-                text=f"{emoji} {year} — {slogan} ({source})",
-                blocks=[{
-                    "type": "section",
-                    "text": {"type": "mrkdwn",
-                             "text": f"{emoji} *{year}* — _{slogan}_ · logged"},
-                }],
-            )
-        except Exception:
-            pass   # UI update is cosmetic — don't let it break logging
-
-        print(
-            f">>> SCOUT_VERIFY: {source} for {year} / {slogan[:30]} "
-            f"(overall={overall}, job={job_id})",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"!!! SCOUT_VERIFY: failed: {exc}", flush=True)
-
-
-@app.action(re.compile(r"^scout_count_"))
-def handle_scout_count(ack, body):
-    """Log the user's button-count estimate for a lot."""
-    ack()
-    try:
-        val     = json.loads(body["actions"][0]["value"])
-        job_id  = val.get("job_id")
-        item_id = val.get("item_id")
-        bucket  = val.get("bucket", "?")
-
-        # Log as a synthetic confirm_log row so it's queryable alongside
-        # det_count_noinput.  chosen_phrase carries the bucket string;
-        # source='user_count' identifies the row type.
-        rec = mlog.build_confirm_record(
-            service="ebayscout", command="/crawl",
-            job_id=job_id, thread_ts=None,
-            crop_num=None, check_id=f"count:{item_id}",
-            user_id=(body.get("user") or {}).get("id", ""),
-            chosen_year=None, chosen_phrase=bucket,
-            chosen_type=None, source="user_count",
-            rank_restricted=None, rank_shadow=None,
-            shadow_leaderboard_size=None,
-        )
-        if match_logger is not None:
-            match_logger.log_confirmation(f"count:{item_id}", rec)
-
-        # Replace the count buttons with a confirmation so the user knows it landed
-        try:
-            app.client.chat_update(
-                token=_slack_token,
-                channel=body["channel"]["id"],
-                ts=body["message"]["ts"],
-                text=f"📦 Button count logged: {bucket}",
-                blocks=[{
-                    "type": "section",
-                    "text": {"type": "mrkdwn",
-                             "text": f"📦 Button count logged: *{bucket}*"},
-                }],
-            )
-        except Exception:
-            pass
-
-        print(
-            f">>> SCOUT_COUNT: logged bucket={bucket} "
-            f"for item={item_id} job={job_id}",
-            flush=True,
-        )
-    except Exception as exc:
-        print(f"!!! SCOUT_COUNT: failed: {exc}", flush=True)
-
-
 def _run_daily_scan(
     ignore_seen: bool = False,
     dry_run: bool | None = None,
@@ -2335,6 +2141,11 @@ def _run_daily_scan(
     _listings_since_save = 0
     scan_log_records: list[dict] = []   # one record per processed listing (groundwork data)
     _scanlog_flushed = 0                # how many records already appended to GCS
+    # The ids THIS scan marked, in order, and how many of them are already on
+    # GCS.  The local `seen` dict above stays the in-run dedup view; it is no
+    # longer what gets uploaded.  See _flush_seen_marks for why.
+    _marked_here: list[str] = []
+    _seen_flushed = 0
 
     from . import clip_matcher as _cm  # lazy — torch/clip imported here if not yet
 
@@ -2439,10 +2250,11 @@ def _run_daily_scan(
             traceback.print_exc()
 
         seen_store.mark_seen(item_id, seen)
+        _marked_here.append(item_id)
         _listings_since_save += 1
         if _listings_since_save >= 50:
             if not dry_run:
-                seen_store.save_seen(seen)
+                _seen_flushed, _ = _flush_seen_marks(_marked_here, _seen_flushed)
             # Checkpoint the scan-log data every 50 too (both modes) so a 30-min
             # timeout on a big run never loses the records collected so far.
             pending = scan_log_records[_scanlog_flushed:]
@@ -2452,9 +2264,11 @@ def _run_daily_scan(
 
     if dry_run:
         print("[DRY RUN] Skipping save_seen().", flush=True)
-    elif not seen_store.save_seen(seen):
-        notifier.send_warning(_slack_token, _channel_id,
-                              "Failed to save seen_items.json — next scan may re-alert.")
+    else:
+        _seen_flushed, _seen_ok = _flush_seen_marks(_marked_here, _seen_flushed)
+        if not _seen_ok:
+            notifier.send_warning(_slack_token, _channel_id,
+                                  "Failed to save seen_items.json — next scan may re-alert.")
 
     # Flush any scan-log records not yet checkpointed (both modes). The bulk is
     # already on GCS from the every-50 checkpoints above — this writes the tail.

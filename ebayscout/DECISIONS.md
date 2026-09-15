@@ -474,13 +474,14 @@ segmentation. Changes:
 - **Title-year corroboration.** `utils.extract_years()` pulls years from the
   title; if a needed button's year is in the title, the bar drops to
   `REJECTION_THRESHOLD`.
-- **Undervalued/margin alerts are now opt-in** (`ENABLE_UNDERVALUED_ALERTS`,
-  default False) and only fire on strict 0.72 matches. Auto-valuation is
-  deferred until we trust it.
+- **Undervalued/margin alerts.** This said "opt-in, default False" and that was
+  never true of the code — the flag existed and nothing read it. Corrected in
+  #33: it is read now, and set to the behaviour that has been live all along.
 - **Scan log groundwork.** Every processed listing is appended as a JSON line to
-  `SCAN_LOG_BLOB` (title, asking, photos scored, top matches + scores, needed/
+  the scan log (title, asking, photos scored, top matches + scores, needed/
   alerted flags). This is the dataset to later judge whether automated
-  undervalued-lot detection is achievable.
+  undervalued-lot detection is achievable. Partitioned by month since #33
+  (`SCAN_LOG_PREFIX`); the single `SCAN_LOG_BLOB` is the history before that.
 
 Next lever if recall proves insufficient: replace Hough with a learned,
 count-free region proposer (e.g. Segment Anything) + CLIP filtering. Deliberately
@@ -777,8 +778,8 @@ treat like `?year_crawl=1`.
 | CLIP accuracy on multi-button photos | Mitigated (#21, #22, #26) | Scan flags *needed-button candidates* (recall-biased, multi-photo) for `/scout` review. Year-aware matching (#22) removes most year-confusion; the 12-crop cap is gone and detection is multi-scale (#26). Tune `NEEDED_MATCH_THRESHOLD` from `SCAN_LOG_BLOB` data. |
 | Dense-lot detection of small buttons | Open (improved #26) | Multi-scale Hough + 1400px resize catch far more than the old 12 cap, but truly tiny buttons in a 100+ photo may still be missed; the radius sweep / `IMAGE_MAX_DIM` can be pushed further if logs show misses. |
 | kling24toys seller filter | Open | Listed in `EXCLUDED_SELLERS` but need to confirm actual eBay username matches after new scan logs show seller names in brackets. |
-| Manual upload "still loading" loop | Fixed (#20) | `/scout` slash command + self-healing `handle_file_shared`. Needs the `/scout` command registered in Slack and validated in production. |
-| Automated undervalued-lot valuation | Deferred (#21) | `ENABLE_UNDERVALUED_ALERTS=False`. Revisit once `scan_log.jsonl` shows whether per-lot valuation from photos is trustworthy. |
+| Manual upload "still loading" loop | Gone with `/scout` (PR #17, 2026-06-03) | ebayscout has no manual upload mode; every lot arrives through the Gem pipeline. buttonmatcher owns `/scout` now. |
+| Automated undervalued-lot valuation | **Live, not deferred** (#33) | The alert has been firing whenever `lot_value > asking` since the pipeline shipped; `ENABLE_UNDERVALUED_ALERTS` now says so and can switch it off. Whether it is wanted at all is the operator's call. |
 
 
 ```
@@ -965,3 +966,48 @@ closed costs a few crops that recur on the next lot. Cheaper mistake wins.
 Net: ebayscout's staging now has exactly two gates — the two-independent-signal
 bar (#31) and the operator's STOP list. Nothing else in either service decides on
 its own that a slogan has had enough.
+
+
+## 33. SR-07/08: a flag that said nothing, and a mode that no longer exists
+
+From the 2026-09 strategic review (`STRATEGIC_REVIEW_2026-09.md` §4).
+
+**`ENABLE_UNDERVALUED_ALERTS` was fiction.** It read `False`, this document
+called the feature "deferred", and `process_pipeline_lot` posted an undervalued
+alert every time a lot's confirmed buttons out-valued its asking price. Nothing
+anywhere consulted the constant. A flag nobody reads is worse than no flag: it
+tells the next reader the service does something it does not do, and that reader
+was this review.
+
+It is read now, at the one place the deal decision is made, so the alert and the
+scan log's `alerted` column cannot disagree. Its default is `True` — the
+behaviour that has actually been live — rather than `False`, because silently
+turning off alerts the operator has been receiving for months is a product
+change, not a cleanup. Whether the alerts are wanted at all is the operator's
+decision (review ask #5); this only makes the switch real.
+
+**`/scout` left, its buttons didn't.** PR #17 removed ebayscout's manual mode on
+2026-06-03. `_post_yellow_review` and the `scout_verify_yes/no` and
+`scout_count_*` action handlers stayed behind — 230 lines with no caller, no
+message posting their cards, and a dedicated confirm_log source
+(`user_count` / `human_verify_*`) that could not accrue a row. Their presence
+made `main.py` read as though this service has a human review lane. It does not,
+and that misreading is what led an earlier session to recommend porting
+buttonmatcher's confusable guard here rather than flagging the alert
+(`pipeline_classify.lookalike_note`). Deleted.
+
+`_evaluate_listing` still builds its `yellow` dict and still returns it, unread.
+That is inside the legacy scan, frozen below rather than rewritten.
+
+**The legacy CLIP-only scan is FROZEN, not deleted.** `_run_daily_scan` +
+`_evaluate_listing` (~650 lines) are reachable only through
+`?year_crawl` / `?era_crawl` / `?hunt_ids` and `DAILY_PIPELINE_FEED=0`. The
+review offers a choice — port those query builders onto `_run_crawl` so there is
+one feed path, or freeze them (SR-22, review ask #6). Freezing is the default
+until the operator decides, because the crawls cost real eBay-API and CPU money
+to exercise and deleting an escape hatch on a service with no CI is not a change
+to make on a reading.
+
+Frozen means: it keeps working, its defects get fixed (SR-02's seen-file
+clobber was one of them), and nothing new is built on it. If a future change
+needs to touch both feed paths, that is the signal to do SR-22 instead.

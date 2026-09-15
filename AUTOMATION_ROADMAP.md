@@ -293,8 +293,12 @@ n=329), and keep Gemini guiding everything else.
   is a valid ruler in the reviewed flow: the operator visually confirms
   every Gemini decision and overwrites errors; the earlier "74% per-lot"
   objection measured pipeline cleanliness (Hough-misplaced circles,
-  non-button objects), not Gemini count error. Standing: 0% gated
-  disagreement post-patch; 8/9 vs human (n=9).
+  non-button objects), not Gemini count error. **Standing (2026-09-12 export,
+  n=201 scored of 215 gated images): 79.6% exact, 96.0% within 1 — the gate is
+  missed by ~18 points.** The "0% gated disagreement" that stood here was the
+  July reading at n=9; see `LOGGER_FRONTS.md` E2. Against human truth the
+  gated stratum is 8/9 (n=9) and 90.7% exact over the 22 lots carrying a typed
+  count — there is still no human-truth detection set of meaningful size.
 - **Rollback:** gated count disagreement vs Gemini >2% over any 50 lots.
 - **Blind spot to instrument before flipping:** a count gate can't see
   misplaced circles or non-button objects — log the Hough-only unmatched
@@ -382,15 +386,23 @@ instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
   `det_white_recovered` (one trailing Sheet column to hand-append) — the
   white-on-white rescue becomes measurable instead of invisible.
 - Real-lot regression fixtures (`tests/fixtures/lots/` +
-  `test_detect_fixtures.py`, 9 lots incl. the quilt-35 / batting-26 /
-  basketball-35 / white-8 photos) pin the mask-fallback behavior.
+  `test_detect_fixtures.py`, **26** photos incl. the quilt-35 / batting-26 /
+  basketball-35 / white-8 ones) pin the mask-fallback behavior. It was 9 when
+  this line was written. Since 2026-09-14 the battery runs in CI on every push
+  and pull request (SR-11), instead of when somebody remembers to run it.
 
 **Stage-B rollout position (gate-scoped Phase 5):**
 
 - Entry gate: **≥98% exact vs human review truth on auto+scale_first lots**,
   measured over enough volume to mean something. Current standing: 8/9 vs
-  human (n=9), 100% vs Gemini on the post-patch organic gated slice.
-  `scale_first` share of the feed is ~33% — volume is the constraint.
+  human (n=9); **79.6% exact / 96.0% ±1 vs Gemini at n=201** (2026-09-12).
+- **Volume is no longer the constraint — accuracy is.** That line stood here
+  from July on a 9-lot reading. September's export has the volume and the gate
+  is missed by ~18 points, and the ±1 relaxation this doc called "the cheapest
+  next question" is already answered in the same table at 96.0%. What is
+  actually missing is a human-truth detection set (SR-17); the strategic
+  review's recommendation is to park Stage B/C rather than keep grinding at it
+  (SR-20). See `STRATEGIC_REVIEW_2026-09.md` §3.
 - Rollback monitor once flipped: gated shadow-vs-truth disagreement **>2%
   over any 50-lot window** reverts the flip (chosen because
   `auto_overridden` has no UI affordance yet, so per-lot override rates

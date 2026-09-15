@@ -1,12 +1,55 @@
-# eBay Scout — Session Handoff (2026-05-29)
+# eBay Scout — Session Handoff (latest entry 2026-09-14)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
-**`ebayscout/DECISIONS.md`** (full rationale, sections #1–#27) first; this file is
+**`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
 the "what we did today + where it stands + what's next" layer on top.
+
+The title used to read 2026-05-29, which was the date of the OLDEST entry; the
+newest is at the top, as in buttonmatcher's copy.
 
 ---
 
 ## 2026-07-09 — where the live work actually is
+
+> **2026-09-14 — read `../STRATEGIC_REVIEW_2026-09.md` (repo root) first.** A
+> full review of both repos: verdict, direction check against the automation
+> program, ten ranked defects (SR-01…SR-10) with fix shapes, a 90-day plan,
+> and the records that were stale (all corrected).
+
+> **2026-09-15 — `../REFERENCE_SCORING_REVIEW.md`:** the reference-library
+> review; ebayscout's items are RS-03 (intake dedup) and RS-04 (lot id in
+> staged crop names).
+
+### 2026-09-14 — WS1 of the review is implemented
+
+The review's first workstream, in both repos. **Reviewed by reading and covered
+by tests; nothing here has run against Cloud Run, GCS or Sheets** — no web
+session can. What this repo carries:
+
+| | What changed | Where |
+|---|---|---|
+| **SR-02** | One writer for `seen_items.json`. The legacy CLIP scan loaded the dict once and uploaded it back wholesale, erasing any pipeline confirmation that landed in between — the lot was re-fed and re-alerted. Both writers now reload-apply-save under `_seen_lock`. | `main.py` |
+| **SR-04** | The scan log is partitioned: `ebay_scout/scan_log/YYYY-MM.jsonl`. Every lot used to download and re-upload the entire log to add one line. The month comes from the record's own `ts`. The readers take a file, a directory, or both. | `scan_log.py`, `seen_items.py`, `tools/` |
+| **SR-07** | `ENABLE_UNDERVALUED_ALERTS` is read. It said `False` and nothing consulted it while the alerts fired; it now says what the service does (`True`) and switching it off works. | `config.py`, `main.py` |
+| **SR-08** | The dead `/scout` handlers are gone (230 lines, no caller since PR #17). The legacy CLIP-only scan is **frozen**, not deleted — DECISIONS.md #33. | `main.py` |
+| **SR-11** | GitHub Actions runs every `ebayscout/tests/run_*.py` — `test_buttonmatcher_parity` included — on push and PR. torch stays out. | `.github/workflows/tests.yml` |
+| **SR-12** | This file's title date, the Cloud Scheduler item (now an explicit unverified ask), `CLAUDE.md`'s `/scout` claim, DECISIONS.md's undervalued row, and the shared roadmap/brief corrections. | docs |
+
+buttonmatcher carries SR-01 (the Bot Writes tail flushed in-request), SR-03
+(the confirm loop chunked across requests), SR-06 (the write ledger reseeded
+from Bot Writes) and SR-10.
+
+**Not done, deliberately:** SR-05, the correction affordance the Stage-D gate
+needs. It is WS2 and nothing in WS2–WS4 starts before WS1 merges.
+
+**Watch on the first live feed after deploy:**
+1. `>>> SCAN LOG: Appended 1 records to ebay_scout/scan_log/2026-09.jsonl` —
+   the partition, not the old blob.
+2. `gsutil ls gs://…/ebay_scout/scan_log/` shows one object per month. The old
+   `scan_log.jsonl` is untouched history; `gsutil du` it (review ask #2) and
+   decide whether to split it or leave it.
+3. Deal alerts still post; an undervalued one still posts unless you set
+   `ENABLE_UNDERVALUED_ALERTS=False`.
 
 The dated entries below end at 2026-06-20; the active work stream since then
 is the **detection/matching automation program**, tracked in repo-root docs
@@ -61,11 +104,22 @@ one-off. Key points:
 
 **Operator state / next steps:**
 - Cloud Scheduler job `ebay-scout-daily` (us-east1) was **resumed** (was PAUSED).
-  ⚠️ Its `attemptDeadline` is still **180s** — a large first feed won't finish in
-  3 min and Scheduler will mark it failed + retry (the `_scan_lock` makes retries
-  a 409 no-op, so no double-run, but the logs show failures). Recommend bumping:
-  `gcloud scheduler jobs update http ebay-scout-daily --location=us-east1
-  --attempt-deadline=1800s`.
+  ⚠️ **UNVERIFIABLE FROM HERE, AND STILL OPEN AS AN ASK (review ask #1).** When
+  this was written its `attemptDeadline` was **180s** — a large feed cannot
+  finish in 3 min, so Scheduler marks the run failed and retries (the
+  `_scan_lock` makes a retry a 409 no-op, so no double-run, but the logs show
+  failures). No web session can read Cloud Scheduler, so nobody has been able
+  to confirm whether it was bumped. **Operator: run the check and replace this
+  bullet with the answer either way.**
+  ```
+  gcloud scheduler jobs describe ebay-scout-daily --location=us-east1 \
+      --format='value(attemptDeadline)'
+  # if it is not 1800s:
+  gcloud scheduler jobs update http ebay-scout-daily --location=us-east1 \
+      --attempt-deadline=1800s
+  ```
+  Today's feeds are small (2–32 lots/day) so it has not bitten; a backlog day
+  or a `?limit` chunk run is when it would.
 - First daily run size depends on the shared first-run marker
   (`gs://60d488c5-9c8e-4acc-aac-button-data/ebay_scout/ondemand2_state.json`): if a
   prior `/crawl` already tripped it → small incremental; if unset → feeds up to

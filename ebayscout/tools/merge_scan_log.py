@@ -1,9 +1,14 @@
 """
 ebayscout/tools/merge_scan_log.py
 
-One-time seed: fold recovered/historical records INTO the bot's live
-scan_log.jsonl so its single growing log is complete from day one — then the
-bot keeps appending to that same file on every run, no further steps.
+One-time seed: fold recovered/historical records INTO the bot's scan log so it
+is complete from day one.
+
+The live log is PARTITIONED BY MONTH now (config.SCAN_LOG_PREFIX,
+scan_log/YYYY-MM.jsonl), so a merged result is pushed back as the month it
+belongs to, not as one file.  Fold one month at a time, or fold into the legacy
+single log the operator is keeping as history — this tool does not care which,
+it merges the records it is given.
 
 Safe + idempotent:
   - the base log is preserved exactly (the bot's own observations are never
@@ -14,10 +19,13 @@ Safe + idempotent:
 Operate on a COPY pulled from GCS, then push the result back:
 
     BUCKET=gs://60d488c5-9c8e-4acc-aac-button-data/ebay_scout
-    gsutil cp $BUCKET/scan_log.jsonl ./scan_log.jsonl                 # current live log
+    gsutil cp $BUCKET/scan_log/2026-05.jsonl ./2026-05.jsonl          # one live partition
     python -m ebayscout.tools.merge_scan_log \
-        --base scan_log.jsonl --add backfill_scan_log.jsonl --out scan_log.merged.jsonl
-    gsutil cp ./scan_log.merged.jsonl $BUCKET/scan_log.jsonl          # complete log back
+        --base 2026-05.jsonl --add backfill_scan_log.jsonl --out 2026-05.merged.jsonl
+    gsutil cp ./2026-05.merged.jsonl $BUCKET/scan_log/2026-05.jsonl   # complete month back
+
+Do this while no scan is running: the bot appends to the same partition, and a
+push of a copy pulled before that append would drop it.
 """
 
 import argparse
@@ -49,7 +57,8 @@ def _load(path: str) -> list[dict]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--base", required=True, help="The live scan_log.jsonl (kept intact).")
+    ap.add_argument("--base", required=True,
+                    help="The live log or partition to fold into (kept intact).")
     ap.add_argument("--add", nargs="+", required=True,
                     help="Historical JSONL file(s) to fold in (e.g. backfill_scan_log.jsonl).")
     ap.add_argument("--out", required=True, help="Where to write the merged log.")

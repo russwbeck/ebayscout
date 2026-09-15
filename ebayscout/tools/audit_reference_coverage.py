@@ -25,7 +25,7 @@ already-extracted data so they are unit-testable without the ML stack; the CLI
 wrappers do the heavy, environment-dependent loading.
 
 Usage:
-    python -m ebayscout.tools.audit_reference_coverage --scan-log scan_log.jsonl
+    python -m ebayscout.tools.audit_reference_coverage --scan-log scan_log/
     python -m ebayscout.tools.audit_reference_coverage --coverage           # Cloud/CI
     python -m ebayscout.tools.audit_reference_coverage --coverage \
         --vectors vectors.pt --text text_features.pt --needed-file needed.json
@@ -36,6 +36,8 @@ import json
 import re
 import sys
 from collections import Counter
+
+from ebayscout import scan_log
 
 
 # ---------------------------------------------------------------------------
@@ -131,14 +133,9 @@ def analyze_scan_log(records) -> dict:
 # CLI glue (heavy / environment-dependent loading)
 # ---------------------------------------------------------------------------
 
-def _load_scan_log(path: str) -> list[dict]:
-    out = []
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
+def _load_scan_log(paths) -> list[dict]:
+    """The scan log, from files and/or a partition directory (scan_log.py)."""
+    return scan_log.load(paths)
 
 
 def _load_reference(vectors_path, text_path):
@@ -210,7 +207,9 @@ def _print_scanlog(rep: dict) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scan-log", help="Path to a scan_log.jsonl to analyze (pure-Python).")
+    ap.add_argument("--scan-log", nargs="+",
+                    help="Scan-log file(s) and/or the directory of monthly "
+                         "partitions to analyze (pure-Python).")
     ap.add_argument("--coverage", action="store_true",
                     help="Cross needed rows vs reference embeddings (needs torch/GCS/Sheets).")
     ap.add_argument("--vectors", help="Local vectors.pt (else GCS).")

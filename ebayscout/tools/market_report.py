@@ -20,8 +20,9 @@ here is an ASKING price, not a sold/realized price. Read it as "what sellers are
 asking per button for year Y," a listing-comp guide — not a guaranteed value.
 
 Usage:
-    python -m ebayscout.tools.market_report --scan-log scan_log.jsonl
-    python -m ebayscout.tools.market_report --scan-log scan_log.jsonl --min-comps 3
+    gsutil -m cp -r $BUCKET/scan_log ./scan_log            # the monthly partitions
+    python -m ebayscout.tools.market_report --scan-log scan_log/
+    python -m ebayscout.tools.market_report --scan-log scan_log.jsonl scan_log/ --min-comps 3
 """
 
 import argparse
@@ -29,6 +30,7 @@ import json
 from collections import Counter, defaultdict
 from statistics import median, quantiles
 
+from ebayscout import scan_log
 from ebayscout.utils import extract_years, extract_lot_count
 
 
@@ -166,14 +168,9 @@ def supply_summary(records) -> dict:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _load(path: str) -> list:
-    out = []
-    with open(path) as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
+def _load(paths) -> list:
+    """The scan log, from files and/or a partition directory (scan_log.py)."""
+    return scan_log.load(paths)
 
 
 def _print(records, min_comps: int) -> None:
@@ -205,7 +202,9 @@ def _print(records, min_comps: int) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scan-log", required=True, help="Path to scan_log.jsonl")
+    ap.add_argument("--scan-log", required=True, nargs="+",
+                    help="Scan-log file(s), and/or the directory of monthly "
+                         "partitions pulled from SCAN_LOG_PREFIX.")
     ap.add_argument("--min-comps", type=int, default=1,
                     help="Min single-year comps before a year is reported (default 1).")
     args = ap.parse_args(argv)
