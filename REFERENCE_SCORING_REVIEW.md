@@ -420,3 +420,51 @@ bot printed it in Slack. The pixel-floor explanation in §3.4 is a reading of
 measurement. The 57 decisions are two sessions and one reviewer; the margins
 in §4.1.2 are a fit to them and should be re-fitted once RS-01 has a few
 hundred rows.
+
+---
+
+## 9. Implementation check — RS-01 / RS-02 (2026-09-15)
+
+*Branch `claude/buttonmatcher-strategic-review-bev1z4`, commit `66a9786`, not
+yet merged. CI green on the branch; 1,132 pure tests pass locally. This is
+good work and it found two things the review did not.*
+
+**RS-02 — closed, and the diagnosis is better than the ticket's.** The size
+floor was on *area* (50,000 px), which refuses a 200×200 crop; it is now a
+160 px short-side floor, and the nine §3.3 shelves replay as 7 of 9
+auto-swaps (the other two are the +7/+8 cases that belong to RS-05). The
+second finding is the important one: the auto pass scored incumbents
+against a mean they were **part of** while candidates were scored against a
+mean they were not, worth up to 18–27 composite points on a varied shelf —
+so the pass was defending the status quo hardest on exactly the shelves the
+library wants. The numbers you saw in the Slack table were always
+leave-one-out; the pass's were not. One definition now. Refusal reasons are
+counted per session and printed in the header, and the tables show each
+crop's size. **Watch the first `/reference` after deploy:** the header's
+`left for you:` line names the cause — "too small" means the floor was it
+and is fixed; "within the margin" means RS-05 is next.
+
+**RS-01 — closed.** `reference_log/YYYY-MM.jsonl`, one row per decision,
+carrying every image on screen with components, size, nearest-sibling cosine
+and source lot; automatic decisions logged too; `next` logged before the
+discard. Removed references now go to `reference/_retired/<entry_id>/`
+rather than being deleted, from swaps, `del` and dedup alike.
+
+Three follow-ups, none blocking merge:
+
+1. **Exclude `_retired` from the no-cache hydration listing.** `hydrate_data`
+   lists `reference/` and excludes only `_staging` (`main.py` ~1651). A cold
+   start with no `vectors.pt` will download every retired blob and then log
+   `!!! HYDRATION: reference folder '_retired' is neither a year nor a
+   text_db entry id — skipped`. Nothing is encoded wrongly (the folder holds
+   sub-folders, not images), but it is wasted download and a false alarm.
+   Add `_retired` next to `_staging` in both the listing filter and
+   `ref_folders`.
+2. **Operator: add a 30-day lifecycle rule on `reference/_retired/`** (the
+   review asked for it; the commit does not mention it). Without it the
+   prefix grows one image per swap forever.
+3. **RS-05's gate needs the 57 decisions in machine-readable form.** The
+   commit says so. They exist only as the tables in §3 of this document; a
+   JSON fixture of them (entry id, ref scores, candidate scores, chosen
+   indices, action) would let the margin re-fit be a unit test on day one
+   rather than wait for `reference_log` to accrue.
