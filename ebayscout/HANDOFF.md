@@ -16,6 +16,10 @@ newest is at the top, as in buttonmatcher's copy.
 > program, ten ranked defects (SR-01…SR-10) with fix shapes, a 90-day plan,
 > and the records that were stale (all corrected).
 
+> **2026-09-15 — `../REFERENCE_SCORING_REVIEW.md`:** the reference-library
+> review; ebayscout's items are RS-03 (intake dedup) and RS-04 (lot id in
+> staged crop names).
+
 ### 2026-09-14 — WS1 of the review is implemented
 
 The review's first workstream, in both repos. **Reviewed by reading and covered
