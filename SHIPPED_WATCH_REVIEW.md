@@ -446,8 +446,8 @@ itself could have caught.**
 live in GCS; this session has no GCP access, so "is every pipeline lot leaving
 a labeled example" cannot be answered from here. The code and the
 `BUTTONMATCHER_LABEL_HARVEST` kill switch are present in both repos.
-*Action: one `gsutil ls | wc -l` against the 637 images in this pool. If the
-counts match, C5 is accruing as designed and can be read from the sheet
+*Action: one `gcloud storage ls | wc -l` against the 637 images in this pool.
+If the counts match, C5 is accruing as designed and can be read from the sheet
 thereafter.*
 
 ---

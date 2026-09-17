@@ -123,8 +123,8 @@ Fix both in the next shared-doc commit.
 ### IC-07 (Operator) — lifecycle rule on `reference/_retired/`
 RS-01 retires references instead of deleting them; the review asked for a
 30-day lifecycle rule on that prefix and the commit does not add or mention
-one. Without it the prefix grows one image per swap forever. One `gsutil
-lifecycle set` on the bucket.
+one. Without it the prefix grows one image per swap forever. One `gcloud
+storage buckets update --lifecycle-file` on the bucket.
 
 ### IC-08 (Note) — flag default flipped
 `ENABLE_UNDERVALUED_ALERTS` was dead and read `False`; it is now read and

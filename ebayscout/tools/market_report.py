@@ -20,7 +20,7 @@ here is an ASKING price, not a sold/realized price. Read it as "what sellers are
 asking per button for year Y," a listing-comp guide — not a guaranteed value.
 
 Usage:
-    gsutil -m cp -r $BUCKET/scan_log ./scan_log            # the monthly partitions
+    gcloud storage cp -r $BUCKET/scan_log ./scan_log       # the monthly partitions
     python -m ebayscout.tools.market_report --scan-log scan_log/
     python -m ebayscout.tools.market_report --scan-log scan_log.jsonl scan_log/ --min-comps 3
 """

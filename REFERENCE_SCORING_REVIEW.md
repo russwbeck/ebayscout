@@ -407,8 +407,9 @@ only real research item and must run as a shadow against RS-01's log.
    weakest by a wide margin still get through? (§4.1.4.)
 3. **Were the 27 June reference-audit findings (797 slogans) acted on?** If not,
    they are the ground truth for the redundancy threshold.
-4. **What size are the staged crops from the 6 Sep sweep?** One `gsutil ls -l`
-   on `reference/_staging/` or the `pixels` column from RS-02 settles §3.4.
+4. **What size are the staged crops from the 6 Sep sweep?** One
+   `gcloud storage ls -l` on `reference/_staging/` or the `pixels` column from
+   RS-02 settles §3.4.
 
 ---
 

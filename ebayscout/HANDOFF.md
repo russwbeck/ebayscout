@@ -45,9 +45,9 @@ needs. It is WS2 and nothing in WS2–WS4 starts before WS1 merges.
 **Watch on the first live feed after deploy:**
 1. `>>> SCAN LOG: Appended 1 records to ebay_scout/scan_log/2026-09.jsonl` —
    the partition, not the old blob.
-2. `gsutil ls gs://…/ebay_scout/scan_log/` shows one object per month. The old
-   `scan_log.jsonl` is untouched history; `gsutil du` it (review ask #2) and
-   decide whether to split it or leave it.
+2. `gcloud storage ls gs://…/ebay_scout/scan_log/` shows one object per month.
+   The old `scan_log.jsonl` is untouched history; `gcloud storage du` it
+   (review ask #2) and decide whether to split it or leave it.
 3. Deal alerts still post; an undervalued one still posts unless you set
    `ENABLE_UNDERVALUED_ALERTS=False`.
 
