@@ -210,9 +210,71 @@ Two more levers now have numbers behind them:
   embedding temperature, which centering removes by construction. It can
   be logged as a `text_centered` key on the same row shadow as 4.1.
 
-Pending from match_log: `det_db_direct` on the 322 `gemini_auto` rows
-(expected near 1 on all of them), and `within_year.runner_up_margin` on the
-119 rank-1 usurper rows, which is the un-fold rescue rate at each margin.
+**match_log joined (4,308 rows, 2026-09-04 to 09-18; 2,964 of the 2,989
+September confirmations join on `job_id` + `crop_num`).**
+
+*`det_db_direct` cannot answer its question yet: buttonmatcher never writes
+it.* All 169 populated rows are ebayscout pipeline rows; the 2,098
+buttonmatcher pipeline rows since 09-12 are blank on every one. ebayscout
+`main.py` passes `db_direct=` into its match record (line 1258);
+buttonmatcher `main.py` computes the candidates and never logs the flag. So
+C7's only instrument is blind on the service that carries all 322 off-board
+gemini autos. The inference that those rows resolved through DB-direct
+rests on the mechanism in §2.4, not on a measurement. **One-line fix, do it
+in the next buttonmatcher PR:** pass `db_direct` per crop into
+`build_match_record` the way ebayscout does; the column already exists.
+
+*The un-fold rescue rate, measured on the 96 rank-1-usurper rows since
+09-04 (94 with a within-year read):*
+
+| truth's position inside the usurped year | rows |
+|---|---|
+| runner-up (position 1) | 53 |
+| positions 2 to 4 | 18 |
+| deeper than the logged top 5 | 20 |
+| it IS the year's text winner (non-football usurper on the all-sport board) | 3 |
+
+Winner-minus-truth text margin on the 74 rows in the top 5: p10 0.001,
+median 0.028, p90 0.098, max 0.181. Years involved hold 13 to 47 slogans
+(median 16), which is why a K=2 cap saturates:
+
+| M_UNFOLD | rescued with K=2 (runner-up only) | rescued at any position within M |
+|---|---|---|
+| 0.02 | 23 / 96 | 27 / 96 |
+| 0.05 | 39 / 96 | 47 / 96 |
+| 0.10 | 51 / 96 | 68 / 96 |
+| 0.15 | 53 / 96 | 73 / 96 |
+| 0.20 | 53 / 96 | 74 / 96 |
+
+*The cost, on the only autos a same-year #2 can touch.* `gemini_auto`
+resolves by slogan match and has no gap guard (`gemini_resolve.py` never
+reads a gap), so it is unaffected. The gap rules drive `auto_sort`,
+`auto_gap_only` and `auto_slogan_gap`: 187 correct rows with a read since
+09-04, current #1-to-#2 gap p10 0.090 and median 0.163 against
+`GAP_ONLY` 0.15 and `GREEN_GAP` 0.12. An un-folded same-year #2 sits at an
+overall gap of about half the text margin, so every un-folded row fails
+both gap rules and is withheld to the card:
+
+| M_UNFOLD | correct gap-rule autos withheld |
+|---|---|
+| 0.05 | 1 / 187 |
+| 0.10 | 4 / 187 (2.1%) |
+| 0.15 | 13 / 187 (7.0%) |
+| 0.20 | 35 / 187 (18.7%) |
+
+For scale, across all 2,182 correct autos with a read, 12.3% have a
+same-year sibling within 0.10; the un-fold puts that sibling on the card
+and in the agreement pool on those rows and changes nothing else about
+them.
+
+**The gate, set from these numbers:** `M_UNFOLD = 0.10`, cap K = 4 rows per
+year (winner plus up to three siblings within M). Expected on this corpus:
+64 to 68 of the 96 rank-1-usurper rows become visible, at the price of 4 of
+187 gap-rule autos going to the card instead. The 53 taken rows whose
+usurper sat at rank 2 to 10 have no within-year read (the column covers #1's
+year only), which is what the row-key shadow in §4.1 exists to measure; the
+20 "deeper than top 5" truths sit in the largest years and are C1's and the
+centered-text shadow's to recover, not the cap's.
 
 ## 4. The plan: un-fold the board, with a cap
 
