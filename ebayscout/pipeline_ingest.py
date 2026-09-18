@@ -329,22 +329,64 @@ def parse_gemini_response(json_text):
     # (gemini_geometry.pct_to_px) divides by 100, so a 0-1000 set lands ~10x off
     # the frame — every point falls outside, gemini_led_crops/reconcile recover
     # nothing, and the lot collapses to a blind projection grid (the navy-8
-    # "complete fail"; overlaying the coords ÷1000 lands dead on all 8 buttons).
-    # A percent value can't exceed 100, so if the response's MAX coordinate does,
-    # the set is 0-1000 → rescale it (÷10) back to percent, leaving everything
-    # downstream unchanged.  ``coord_scale`` records which convention the Gem used
-    # so we can measure how often it ignores the percent instruction.
-    coord_scale = None
-    _coords = [v for sl in slogans
-               for v in (sl["x"], sl["y"], sl["edge_x"], sl["edge_y"])
-               if v is not None]
-    if _coords:
-        coord_scale = "permille" if max(_coords) > 100 else "percent"
-        if coord_scale == "permille":
-            for sl in slogans:
-                for _k in ("x", "y", "edge_x", "edge_y", "size"):
-                    if sl[_k] is not None:
-                        sl[_k] = sl[_k] / 10.0
+    # "complete fail"; overlaying the coords / 1000 lands dead on all 8 buttons).
+    # A percent value can't exceed 100, so if the MAX coordinate does, that set is
+    # 0-1000 -> rescale it (/10) back to percent, leaving downstream unchanged.
+    #
+    # PER AXIS, because Gemini mixes the two conventions WITHIN ONE RESPONSE.
+    # Measured on the 2008 Citizens lot (2026-09-16, job posted 17:28 EDT):
+    # x came back as percent (18-69) and y as permille (64-693) in the same
+    # object.  A whole-response max() called the set permille and divided BOTH
+    # axes by 10: y landed correctly (6.4/21/39.3/69.3%) and x was crushed into
+    # 1.8-6.9%, i.e. an 11-41px strip down the left edge of a 600px-wide frame.
+    # Every one of the 12 Hough circles then read as unanchored (nearest Gemini
+    # point 81-399px away against a 0.75*r = 37.5px gate), so AUTO was refused
+    # for all 12 real buttons; anchor recovery then synthesized a crop at each
+    # of the 10 mis-placed points, and those ARE anchored by construction
+    # (dist ~ 0 to the point that created them), so all 10 phantoms
+    # auto-confirmed.  Posted: "22 buttons (Hough 12, +10 recovered) - 10
+    # Gemini-confirmed - 12 need review".  Had the operator clicked Inventory,
+    # 10 phantom counts would have written to the sheet with no click.
+    # tests/test_pipeline_ingest.py carries that response verbatim as a fixture.
+    #
+    # ``size`` is a length, not a coordinate on either axis, so it is only
+    # rescaled when BOTH axes agree it is a permille response.  On a mixed
+    # response its scale is unknowable, so it is dropped to None and the
+    # callers' median-detected-radius fallback takes over rather than guessing
+    # a radius that is 10x off in one direction or the other.
+    def _axis_scale(keys):
+        vals = [v for sl in slogans for k in keys
+                if (v := sl[k]) is not None]
+        if not vals:
+            return None
+        return "permille" if max(vals) > 100 else "percent"
+
+    coord_scale_x = _axis_scale(("x", "edge_x"))
+    coord_scale_y = _axis_scale(("y", "edge_y"))
+    # Summary for the label sidecar / telemetry: the shared convention when the
+    # axes agree, else "mixed" — the one value that says this response needed
+    # per-axis handling, and the signal to look for if a lot goes wrong.
+    # An axis with no coordinates at all has no opinion (None) — that is not a
+    # disagreement, so it defers to the axis that does.
+    if coord_scale_x is None or coord_scale_y is None:
+        coord_scale = coord_scale_x or coord_scale_y
+    elif coord_scale_x == coord_scale_y:
+        coord_scale = coord_scale_x
+    else:
+        coord_scale = "mixed"
+    _axis_keys = (("x", "edge_x", coord_scale_x), ("y", "edge_y", coord_scale_y))
+    for sl in slogans:
+        for _kx, _ke, _sc in _axis_keys:
+            if _sc != "permille":
+                continue
+            for _k in (_kx, _ke):
+                if sl[_k] is not None:
+                    sl[_k] = sl[_k] / 10.0
+        if sl["size"] is not None:
+            if coord_scale == "permille":
+                sl["size"] = sl["size"] / 10.0
+            elif coord_scale == "mixed":
+                sl["size"] = None
 
     flagged = resp.get("flagged_problem_slogans") or []
     if not isinstance(flagged, list):
@@ -357,4 +399,6 @@ def parse_gemini_response(json_text):
         "detected_slogans": slogans,
         "flagged_problem_slogans": flagged,
         "coord_scale": coord_scale,
+        "coord_scale_x": coord_scale_x,
+        "coord_scale_y": coord_scale_y,
     }

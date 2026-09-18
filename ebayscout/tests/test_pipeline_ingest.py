@@ -295,6 +295,108 @@ def test_coord_scale_permille_rescaled_to_percent():
     assert round(s0["x"] / 100 * 449) == 109
 
 
+def test_coord_scale_mixed_axes_2008_citizens_lot():
+    """The real response that broke the 2026-09-16 2008 Citizens lot.
+
+    Gemini answered with x in PERCENT (18-69) and y in PERMILLE (64-693) in the
+    SAME object.  The old whole-response max() saw 693, called the set permille
+    and divided both axes by 10 — y landed right, x was crushed into a 1.8-6.9%
+    strip down the left edge.  Every real circle went unanchored, anchor
+    recovery synthesized 10 crops at the mis-placed points, and because a
+    synthesized crop is anchored to the point that created it, all 10 phantoms
+    auto-confirmed while all 12 real buttons were demoted to manual cards
+    ("22 buttons (Hough 12, +10 recovered) - 10 Gemini-confirmed - 12 need
+    review").  Verbatim, so a regression reproduces the live failure exactly.
+    """
+    blob = {"response": {
+        "total_button_count": 10,
+        "blue_background_count": 9,
+        "white_background_count": 1,
+        "detected_slogans": [
+            {"index": 1, "slogan": "Defeaticus Sparticus", "x": 19, "y": 64,
+             "edge_x": 19, "edge_y": 50, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 2, "slogan": "U Hoose U Lose", "x": 42, "y": 64,
+             "edge_x": 42, "edge_y": 50, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 3, "slogan": "Cheese Puffs", "x": 68, "y": 64,
+             "edge_x": 68, "edge_y": 50, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 4, "slogan": "Owl Shook Up", "x": 19, "y": 210,
+             "edge_x": 19, "edge_y": 196, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 5, "slogan": "Rule The Rooster", "x": 42, "y": 210,
+             "edge_x": 42, "edge_y": 196, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 6, "slogan": "I-O-Wasn't", "x": 68, "y": 210,
+             "edge_x": 68, "edge_y": 196, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 7, "slogan": "It's Fruitless, Orange", "x": 19, "y": 393,
+             "edge_x": 19, "edge_y": 379, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 8, "slogan": "In Our House Now", "x": 44, "y": 393,
+             "edge_x": 44, "edge_y": 379, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 9, "slogan": "Gee Wiz Wally", "x": 69, "y": 393,
+             "edge_x": 69, "edge_y": 379, "size": "medium",
+             "printed_year": 2008, "confidence": "high"},
+            {"index": 10, "slogan": "USC-U-Later", "x": 18, "y": 693,
+             "edge_x": 18, "edge_y": 679, "size": "medium",
+             "printed_year": 2009, "confidence": "high"},
+        ],
+        "flagged_problem_slogans": [],
+    }}
+    a = pi.parse_gemini_response(blob)
+    assert a["coord_scale"] == "mixed"
+    assert a["coord_scale_x"] == "percent"
+    assert a["coord_scale_y"] == "permille"
+
+    s = a["detected_slogans"]
+    # x is ALREADY percent and must survive untouched — this is the whole bug.
+    assert [sl["x"] for sl in s] == [19, 42, 68, 19, 42, 68, 19, 44, 69, 18]
+    assert [sl["edge_x"] for sl in s] == [19, 42, 68, 19, 42, 68, 19, 44, 69, 18]
+    # y is permille and is rescaled to percent.
+    assert [sl["y"] for sl in s] == [6.4, 6.4, 6.4, 21.0, 21.0, 21.0,
+                                     39.3, 39.3, 39.3, 69.3]
+    assert s[0]["edge_y"] == 5.0 and s[9]["edge_y"] == 67.9
+
+    # In the 600x800 detection frame the points now land ON the buttons: three
+    # columns near 114/252/408px (real centres ~122/265/410) instead of the
+    # 11-41px left-edge strip the old code produced.
+    xs = sorted({round(sl["x"] / 100 * 600) for sl in s})
+    assert xs == [108, 114, 252, 264, 408, 414]
+    # USC-U-Later — the white button Hough cannot find, and the one this bug
+    # actually cost: right row, and now the right column too.
+    assert round(s[9]["x"] / 100 * 600) == 108
+    assert round(s[9]["y"] / 100 * 800) == 554
+
+
+def test_coord_scale_mixed_drops_ambiguous_size():
+    """A numeric ``size`` on a mixed-axis response is unknowable, so it is
+    dropped and callers fall back to the median detected radius.  Guessing
+    would put the synthesized crop 10x off in one direction or the other."""
+    blob = {"response": {"detected_slogans": [
+        {"slogan": "Mixed", "x": 40, "y": 400, "size": 6.0},
+    ]}}
+    s = pi.parse_gemini_response(blob)["detected_slogans"][0]
+    assert s["x"] == 40 and s["y"] == 40.0
+    assert s["size"] is None
+    assert s["size_class"] is None          # 6.0 is not small/medium/large
+
+
+def test_coord_scale_axis_with_no_coords_does_not_force_mixed():
+    """y absent is silence, not disagreement — it must not flip the response to
+    "mixed" and drop the size."""
+    blob = {"response": {"detected_slogans": [
+        {"slogan": "X only", "x": 240.0, "size": 50.0},
+    ]}}
+    a = pi.parse_gemini_response(blob)
+    assert a["coord_scale"] == "permille"
+    assert a["coord_scale_y"] is None
+    assert a["detected_slogans"][0]["x"] == 24.0
+    assert a["detected_slogans"][0]["size"] == 5.0
+
+
 def test_coord_scale_none_when_no_coords():
     blob = {"response": {"total_button_count": 3, "detected_slogans": []}}
     assert pi.parse_gemini_response(blob)["coord_scale"] is None
