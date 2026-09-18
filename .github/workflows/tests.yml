@@ -32,11 +32,15 @@ jobs:
         # deployed image.  This is the set the suites actually import, measured
         # in a clean venv rather than assumed — openpyxl for the goal-tracker
         # repair suite, requests for the eBay/Etsy clients, slack_sdk for the
-        # alert renderer, gspread for the buy-rules parser.
+        # alert renderer, gspread for the buy-rules parser, pyflakes for
+        # test_no_unbound_names.  That last one SKIPS itself when pyflakes is
+        # absent, so until this line it was a guard that never ran — the exact
+        # failure this workflow exists to end, and the guard whose absence cost
+        # this service two months of label sidecars.
         run: |
           python -m pip install --upgrade pip
           pip install pytest numpy opencv-python-headless Pillow openpyxl \
-                      requests slack_sdk gspread
+                      requests slack_sdk gspread pyflakes
 
       - name: Run the test suite
         # pytest over the whole tests/ tree, NOT the run_*.py loop this used to
