@@ -1,0 +1,225 @@
+# Off-board misses: verification and plan (2026-09-18)
+
+Answers `OFF_BOARD_MISSES_2026-09-18.md` (buttonmatcher branch
+`claude/buttonmatcher-strategic-review-bev1z4`, commit b550325). Synced to both
+repos because the mechanism lives in a shared file and the fix lands in both.
+
+Read: `score_slogans` and the match-time board build in buttonmatcher
+`main.py`; `build_leaderboard`, `trim_top`, `CONFIRM_HEADER` and the match_log
+columns in `match_logging.py`; `_deep_candidates`, `_gemini_db_candidates` and
+the pipeline agreement pool; `_augment_results_with_nonfootball` and
+`_match_blocks`; ebayscout `clip_matcher._crop_leaderboard` and
+`pipeline_classify.gemini_db_candidates`; fronts A6, A7, C1, C7, C8;
+`tools/shadow_quorum.py`; the branch's `tools/eval_logic.py` and its tests.
+Not run: anything against the confirm_log export, GCS, Sheets or Cloud Run.
+Every number below that comes from the corpus is the document's, not
+re-derived; every claim about mechanism is from the code on `main`.
+
+## 1. Verdict
+
+**The issue is real, and it is not new: it is fronts A7 and C7 measured on
+outcomes for the first time.** The document's one open worry, that the 63% is
+an artefact of the unrestricted shadow board, is settled by the code without
+running the diff: the fold is the same function on both boards, so a
+football-vs-football same-year collision is off the production board exactly
+as it is off the shadow board.
+
+What the number means in production is the part the document could not see,
+and it is answerable from the export the document already has. §3 below is
+that run. It decides which of two costs the 364 rows carry, and the plan in §4
+is the same either way; only its priority order changes.
+
+## 2. What is verified in the code
+
+**2.1 The fold.** `score_slogans` iterates `year_scores` and keeps one
+phrase per year, the text-similarity argmax inside that year
+(`main.py` 1841–1926). `build_leaderboard.best_by_year` does the same
+(`match_logging.py` 139–210). The image term is per YEAR (max over that
+year's reference photos), the text term is per SLOGAN, and the argmax is on
+text alone. So a slogan that is not its year's best text match has no row on
+any board at any depth, with any image evidence. A7 stated this; the code
+confirms it.
+
+**2.2 Both boards fold identically inside a year.** `restricted_top` and
+`shadow_top` are the same `build_leaderboard` call with different
+`allowed_years` / `allowed_types` (`main.py` 2950–3035). Era and type filters
+remove YEARS and TYPES; they never change which slogan wins inside a year that
+survives. Two consequences:
+
+- On the pipeline path (`allowed_types=None`, every `gemini_*` row) a truth
+  that is "year taken" on `shadow_top` is "year taken" on `restricted_top`.
+  Reading 1 in the document's §5 is wrong for this path, which is the bulk of
+  the corpus.
+- On the slash paths (Football-only) the boards can differ only when the
+  usurper is a non-football slogan. That slice is small and is the only thing
+  the restricted/unrestricted diff will move.
+
+**2.3 The operator sees three rows, one per year.** The live candidate list is
+`score_slogans(..., limit=10)` over at most 8 merged years, cut to
+`results[:3]` before the card is built (`main.py` 2689, 2850–2860); the
+winter-sports augment can add a fourth (`_augment_results_with_nonfootball`).
+Every option is a different year. On a human-lane crop whose truth lost its
+own year, no click resolves it: the routes are typed entry, Dussellbot
+suggest, or the twin/confusable picker when the pair is curated. Reading 2 is
+therefore correct for human-lane rows, and it is worse than the document
+says, because the production board is 3 deep, not 10.
+
+**2.4 The pipeline already has a rescue, and it is the one C7 is worried
+about.** `_gemini_db_candidates` (`main.py` 2005–2070; ebayscout
+`pipeline_classify.gemini_db_candidates`) exists for exactly this case: when
+Gemini's read is a known DB slogan at confidence ≥ 0.85 on an anchored crop,
+its DB rows are appended to the agreement pool with `overall=None`,
+`db_direct=True`. The resolver can then auto-confirm it, and the row is logged
+as `gemini_auto` with `det_db_direct=1` in match_log. So a large share of the
+364 are probably NOT misses the operator ever saw; they are rescued crops.
+Their cost is C7's: no CLIP corroboration, therefore excluded from
+`reference/_staging`, therefore never acquiring the photos that would let CLIP
+see them next time. C7 already measured the exposure: 92.9% of confirmed
+buttons share a year with a lot sibling, 68.6% of lots are single-year.
+
+**2.5 The rescue fails in three known ways**, and those are the rows that
+become manual: Gemini confidence below 0.85, an unanchored association
+(the 1979-front rule), or a flagged index. None of those is logged as a
+distinct reason in confirm_log; `det_db_direct` is blank on them like on any
+un-rescued crop.
+
+**2.6 ebayscout shares the fold.** `clip_matcher._crop_leaderboard` calls
+`match_logging.build_leaderboard` directly and `_score_slogans` folds the
+same way; `pipeline_classify.gemini_db_candidates` names it as "the dominant
+reason a big `/crawl` yields a handful of reference crops out of hundreds of
+buttons". Any fix goes into the shared file and both live scorers.
+
+**2.7 The instrument's known false positives.** `confirm_outcomes` keys on
+(`_basic_norm(phrase)`, `_year4(year)`). An edition-twin confirmation carries
+the edition's year while the board row carries the same phrase under whichever
+year won the fold, so `source ∈ {edition_pick, edition_pick_unknown}` rows can
+read as off-board when the phrase is on the board. They must be excluded or
+matched on phrase alone before the 364 is quoted again.
+
+## 3. The run that decides it (no code, one afternoon, the same export)
+
+Three splits of the 364, all from columns that already exist. `source` is in
+confirm_log; `det_db_direct` and `within_year_json` are in match_log and join
+on (`job_id`, `crop_num`), the pairing `tools/shadow_quorum.py` already does.
+
+1. **By `source`**, twins excluded first. Machine (`gemini_*`, `auto*`) vs
+   human (`pick`, `suggest`, `dussellbot_invoke`, `user`, typed). The human
+   count is the operator's actual typing cost today. The machine count is
+   C7's rescue load.
+2. **Machine rows by `det_db_direct`.** `1` = rescued through DB-direct, the
+   C7 cost. Blank on a `gemini_*` row = resolved some other way (majority,
+   printed-year rung); worth a look, small.
+3. **`offboard_diagnosis` as written** (year taken vs year absent), then for
+   the year-taken rows where the usurper sat at rank 1: is the truth in
+   `within_year_json.top[5]`, and at what `runner_up_margin`? That is the
+   **rescue rate of un-folding** on today's data, with no new logging. Rank-1
+   usurpers should be most of the mass (the usurper inherits the year's image
+   score, which is why it won); if they are, the whole shadow in §4.2 is
+   already measurable.
+
+Also run `--board restricted_top_json` once, for the record; §2.2 says it will
+move only the non-football slice.
+
+**Decision rule.** Whatever the split, the code change in §4 is the same. If
+the human-lane count is material, its priority is above RS-05/RS-06 (it
+removes typing on every such crop). If the rows are almost all
+`det_db_direct=1`, its priority is C7's: it converts rescued crops into
+CLIP-corroborated ones, which lets them stage, which is what breaks the
+starvation loop C7 describes.
+
+## 4. The plan: un-fold the board, with a cap
+
+The lever is not A7's withhold (the document's §6.4 is right that a withhold
+relabels the 364, it does not reduce them) and not `within_year.top[5]`
+becoming rows (that only covers #1's year). It is a bounded change to the
+fold itself, in one shared function and the two live scorers:
+
+> Inside each year, emit the text-argmax slogan AND its runner-up when the
+> runner-up's normalized text score is within `M_UNFOLD` of the winner's.
+> Both rows carry the year's image score and their own text score through
+> the unchanged formula. K = 2 per year; the cap keeps the board shape.
+
+Everything downstream then sees the sibling with no other change:
+
+- **Review card:** the runner-up becomes a clickable option (the fourth-option
+  precedent from the winter-sports augment already exists), so the human-lane
+  rows stop needing typed entry.
+- **Agreement pool** (`_deep_candidates`): Gemini's read matches a row that
+  CLIP actually scored, so the crop resolves with CLIP corroboration instead
+  of through `db_direct`, and the `_staging` exclusion no longer applies to
+  it. This is the C7 fix.
+- **Auto-confirm gap rules:** #2 can now be a same-year sibling with a tiny
+  gap. That IS A7's withhold, arriving as a side effect rather than as a
+  separate rule, and it is the one live-behaviour change that needs pricing.
+
+### 4.1 Step 1: shadow it (no live change, no new column)
+
+Stamp each `restricted_top` / `shadow_top` row with
+`runner_up: {phrase, text_norm, margin}` at build time. It is a key on a row
+of an existing JSON cell, the same mechanism `visual_shadow` and `ref_sim`
+use, so it is not a new column under the plan §7 freeze, and it turns the
+§3.3 measurement from "rank-1 usurpers only" into "every board row". Cost:
+one dict per row, from sims already in hand.
+
+### 4.2 Step 2: replay, three numbers, from the next export
+
+- **Rescue:** share of off-board truths that become on-board (present as
+  `runner_up` of their year's row) at each `M_UNFOLD` in
+  {0.05, 0.10, 0.15, 0.20}. A7's own data brackets the range: the
+  disagreement-median margin is 0.124, the agree median 0.243.
+- **Cost:** correct autos that would be withheld because the un-folded #2
+  now sits inside the gap rule's margin. A7 measured this at M=0.005 as 2 of
+  856; the same sweep, on the same rows, prices the un-fold.
+- **Card:** how often the runner-up would displace the third year on the
+  card, and how often the confirmed answer was that third year (the
+  operator's lost click).
+
+Gate to ship: rescue on the human-lane and `det_db_direct=1` rows is a
+majority at the chosen M, and correct autos lost is no worse than A7's
+withhold at the same rows. No threshold moves; `AUTO_RESOLVE_THRESHOLD` and
+the gap margins stay where they are.
+
+### 4.3 Step 3: ship behind a kill switch, both repos, one PR
+
+`BUTTONMATCHER_UNFOLD` / `EBAYSCOUT_UNFOLD`, default on once the gate is met,
+`0` restores the fold. `build_leaderboard` is shared and syncs byte-identical;
+`score_slogans` (buttonmatcher) and `_score_slogans` (ebayscout) change the
+same way. `tests/test_buttonmatcher_parity.py` gets the un-fold case.
+Confirm-log grading afterwards is the same `eval_reference_value.py` run: the
+off-board share is the before/after number.
+
+### 4.4 What this does to the fronts and the order
+
+- **A7** keeps its quorum for the withhold. The un-fold is a second lever on
+  the same front, not a new front, and it is not gated by the 250 human rows:
+  it adds candidates, it withholds nothing on its own, and its cost is priced
+  by the replay in 4.2. The quorum was not under-priced; it priced a
+  different lever.
+- **C7** is the front this actually serves. Its part (b), whether rescued
+  slogans ever acquire a reference by another route, is answered by the
+  un-fold making them corroborated in the first place.
+- **C8** stays open for the redundancy question only; `sibling_cos` accrues
+  for free. Do not re-run it until §3 shows a "year absent" slice large
+  enough for reference variety to matter; on the "year taken" slice it cannot,
+  by construction.
+- **Order:** §3 run first (today). Then 4.1 in the next code PR. RS-06 and
+  RS-05 continue in parallel; they are small and already in motion, and
+  nothing here changes their acceptance. WS2 `correction` rows are untouched
+  and still gate Stage D.
+
+## 5. Answers to the document's §6, in its order
+
+1. **Reading 2, on the code.** Both boards fold identically inside a year, so
+   the production board has the same hole for same-type collisions. Run the
+   diff for the record; it settles only the non-football slice.
+2. **No.** A7's quorum prices a withhold on human clicks and stays. The
+   un-fold is a different lever with a different cost and a replay-based
+   gate.
+3. **Partly.** The reference work is correctly scoped and was never going to
+   move this number; nothing in it is demoted. The un-fold goes ahead of
+   RS-05 in priority once §3 is run, and it is C7's fix as much as A7's.
+4. **Correct: a withhold does not reduce the 364.** The second lever is the
+   capped un-fold in §4, not `within_year.top[5]` promoted to rows.
+5. **Keep accruing, do not re-run yet.** The corpus so far says the library
+   is mostly silent, not misleading; the only slice where variety can help is
+   "year absent", and §3 sizes it.
