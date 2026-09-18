@@ -455,6 +455,7 @@ def match_crops_with_diagnostics(
     pil_images: list[Image.Image],
     restrict_years: set[int] | None = None,
     shadow: bool | None = None,
+    vec_sink: list | None = None,
 ) -> list[dict]:
     """Match crops AND produce the per-crop logging payload in ONE encode pass.
 
@@ -471,6 +472,16 @@ def match_crops_with_diagnostics(
     No threshold is applied to ``candidates`` — every crop reports its best
     matches; the caller gates "confirmed" via is_confirmed(overall, gap). The
     shadow (all-years) leaderboard is skipped when BUTTONMATCHER_SHADOW_PASS=0.
+
+    ``vec_sink``, when a list is passed, receives one L2-normed vector per crop
+    in crop order (``vec_sink[i]`` is crop_num ``i+1``), for the caller's
+    crop-vector sidecar (``crop_vectors``).  Nothing here reads it back: it is
+    the embedding the two matmuls below already run on, kept instead of dropped,
+    because it is the only thing the reference library can be measured with —
+    "does this reference photo make a real confirmed crop of that button rank
+    #1" is then a dot product on stored data rather than the composite quality
+    score's guess about photography (`REFERENCE_SCORING_REVIEW.md` §10).
+    ebayscout matters most here: it is the larger source of staged crops.
     """
     if not _initialized:
         raise RuntimeError("clip_matcher.init() must be called before match_crops_with_diagnostics().")
@@ -487,6 +498,15 @@ def match_crops_with_diagnostics(
         with torch.inference_mode():
             vecs = _model.encode_image(tensors).float()
         vecs = vecs / vecs.norm(dim=-1, keepdim=True)
+
+        # The crops' embeddings, for the caller's sidecar (§10.2 step 1).  Taken
+        # per chunk, in chunk order, so the sink ends up in crop order exactly
+        # as ``out`` does.  Fail-open: losing a sidecar must never lose a lot.
+        if vec_sink is not None:
+            try:
+                vec_sink.extend(vecs.detach().cpu().numpy().astype(np.float32))
+            except Exception as _vs_err:
+                print(f">>> CLIP: crop-vector sink skipped ({_vs_err})", flush=True)
 
         for vec in vecs:
             vec        = vec.unsqueeze(0)

@@ -17,6 +17,7 @@ from datetime import date
 from google.cloud import storage
 
 from . import config, pipeline_classify, scan_log as scan_log_util
+from . import crop_vectors as cvec
 
 
 def load_seen(bucket_name: str = config.BUCKET_NAME) -> dict[str, str]:
@@ -243,6 +244,65 @@ def upload_pipeline_input(key: str, image_bytes: bytes,
         return None
 
 
+def write_crop_vectors(job_id: str, vecs, *, command: str = "/pipeline",
+                       item_id=None, crop_nums=None, source: str = "match",
+                       bucket_name: str = config.BUCKET_NAME) -> str | None:
+    """Upload one lot's crop vectors to ``pipeline/embeddings/<job_id>.npz``.
+
+    ebayscout computes an L2-normed embedding for every crop of every lot it
+    scans, multiplies it against the reference bank and the text bank, and drops
+    it — and it is the larger source of staged crops, so most of the reference
+    library's raw material has been arriving with its measurement thrown away.
+    Kept, the vectors answer the one question curation has never asked: does this
+    reference photo make a REAL confirmed crop of that button rank #1
+    (`REFERENCE_SCORING_REVIEW.md` §10.1)?
+
+    ``vecs`` is a sequence of per-crop vectors in crop order (clip_matcher's
+    ``vec_sink``); ``crop_nums`` overrides the implied ``1..N`` numbering.
+    numpy is imported here rather than at module scope, as every heavy import in
+    this service is, so a web session can still import this module.  Returns the
+    blob name on a write, None otherwise; fail-open, and the caller wraps it.
+    """
+    if not cvec.vectors_enabled() or not len(vecs or []):
+        return None
+    try:
+        import io
+
+        import numpy as np
+
+        arr = np.asarray(vecs, dtype=np.float32)
+        if arr.ndim != 2:
+            print(f"!!! PIPELINE: crop vectors for {job_id} are "
+                  f"{arr.ndim}-d — not written", flush=True)
+            return None
+        nums = np.asarray(
+            list(crop_nums) if crop_nums is not None
+            else range(1, arr.shape[0] + 1), dtype=np.int32)
+        if nums.shape[0] != arr.shape[0]:
+            # A sidecar whose numbering does not line up with its vectors
+            # attributes one button's embedding to another, and every value
+            # computed from it is wrong with nothing raised.
+            print(f"!!! PIPELINE: {nums.shape[0]} crop numbers for "
+                  f"{arr.shape[0]} vectors ({job_id}) — not written", flush=True)
+            return None
+        meta = cvec.build_meta(
+            lot_key=job_id, service="ebayscout", command=command, job_id=job_id,
+            item_id=item_id, count=int(arr.shape[0]), dim=int(arr.shape[1]),
+            source=source)
+        buf = io.BytesIO()
+        np.savez_compressed(buf, crop_num=nums, vec=arr,
+                            meta=np.array(json.dumps(meta)))
+        name = cvec.vectors_blob_name(job_id)
+        storage.Client().bucket(bucket_name).blob(name).upload_from_string(
+            buf.getvalue(), content_type="application/octet-stream")
+        print(f">>> PIPELINE: {arr.shape[0]} crop vector(s) → {name} "
+              f"({source}).", flush=True)
+        return name
+    except Exception as exc:
+        print(f"!!! PIPELINE: crop vectors for {job_id} failed: {exc}", flush=True)
+        return None
+
+
 def stage_pipeline_crop(job_id: str, n: int, jpg_bytes: bytes,
                         bucket_name: str = config.BUCKET_NAME) -> str | None:
     """Write one auto-confirmed crop to the temp holding area; return its GCS name."""
@@ -276,11 +336,40 @@ def load_staging_policy(bucket) -> tuple[set, bool]:
         return set(), False
 
 
+def _staged_crop_num(crop: dict):
+    """The crop's 1-based number, from the manifest or from its temp blob name.
+
+    ``stage_pipeline_crop`` writes the temp object as
+    ``pipeline_crops/<job_id>/<n>.jpg``, so the number survives even a manifest
+    written before it carried the field — which matters because this is the join
+    key onto the lot's crop-vector sidecar, and a crop that loses it is a crop
+    the value function cannot score.  None when neither source has it.
+    """
+    n = crop.get("crop_num")
+    if n is None:
+        stem = str(crop.get("gcs_name") or "").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        n = stem or None
+    try:
+        return int(n)
+    except (TypeError, ValueError):
+        return None
+
+
 def promote_crops_to_reference_staging(job_id: str, manifest: dict,
                                        bucket_name: str = config.BUCKET_NAME) -> int:
-    """YES vote: copy each temp crop into reference/_staging/<entry_id>/<ts>.jpg
-    (the shared area buttonmatcher's /reference flow consumes), then remove the
-    temp crops + manifest. Returns the number of crops staged.
+    """YES vote: copy each temp crop into
+    ``reference/_staging/<entry_id>/<ts>__lot-<job_id>__crop-<n>.jpg`` (the
+    shared area buttonmatcher's /reference flow consumes), then remove the temp
+    crops + manifest. Returns the number of crops staged.
+
+    The name's two provenance fields are RS-04 of `REFERENCE_SCORING_REVIEW.md`,
+    and §10.2 promotes them from a nicety to a prerequisite.  Until now every
+    ebayscout crop landed as a bare ``<ts>.jpg``: 92% of the review queue's
+    volume with no lot id, so buttonmatcher's "+N more from this lot" collapse
+    could not see it and six crops of one photo looked like six candidates.  The
+    crop number completes the key: ``(job_id, crop_num)`` is what joins a staged
+    candidate back to the embedding the matcher already computed for it, and the
+    confirm_log row that labels it.
 
     Honours buttonmatcher's /reference STOP list: a slogan the operator declared
     finished never receives another ebayscout crop.  This is the ONE per-slogan
@@ -318,7 +407,9 @@ def promote_crops_to_reference_staging(job_id: str, manifest: dict,
             if not src.exists():
                 continue
             ts   = int(time.time() * 1000) + staged   # unique ms timestamp
-            dest = f"{config.REFERENCE_STAGING_PREFIX}{entry_id}/{ts}.jpg"
+            dest = (config.REFERENCE_STAGING_PREFIX + entry_id + "/"
+                    + cvec.staged_crop_name(ts, lot=job_id,
+                                            crop_num=_staged_crop_num(crop)))
             bucket.copy_blob(src, bucket, dest)
             staged += 1
     except Exception as exc:
