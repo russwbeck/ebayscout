@@ -15,6 +15,11 @@ Estimated cost: **~$1/month** (Cloud Run + Cloud Scheduler).
 > work. The Browse API requires an OAuth application token built from your
 > **App ID (client id)** + **Cert ID (client secret)** — see below.
 
+> **Storage CLI note:** every bucket command here uses `gcloud storage`, not
+> `gsutil`. Google drops `gsutil` from the default Cloud CLI bundle after
+> **March 2027**; `gcloud storage` is the supported replacement and shares the
+> `gcloud` credentials the rest of this guide sets up.
+
 ---
 
 ## Prerequisites
@@ -94,8 +99,10 @@ gcloud iam service-accounts create ebay-scout-sa \
 SA="ebay-scout-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # GCS access (read vectors, read/write seen_items.json)
-gsutil iam ch serviceAccount:${SA}:objectAdmin \
-  gs://60d488c5-9c8e-4acc-aac-button-data
+gcloud storage buckets add-iam-policy-binding \
+  gs://60d488c5-9c8e-4acc-aac-button-data \
+  --member="serviceAccount:${SA}" \
+  --role="roles/storage.objectAdmin"
 
 # Secret Manager access
 for SECRET in EBAY_APP_ID EBAY_CERT_ID EBAY_BOT_TOKEN CHANNEL_ID_EBAY GOOGLE_SHEETS_JSON SPREADSHEET_ID; do

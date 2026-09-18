@@ -243,8 +243,8 @@ read-modify-write of the current month only), and teach
 `tools/merge_scan_log.py`, `build_master_dataset.py` and
 `audit_reference_coverage.py --scan-log` to read the prefix. *Done when:* a
 lot's write touches only the current month's blob; the tools produce the same
-output on the concatenation as before. Operator: `gsutil du` the current blob
-first so the decision is sized.
+output on the concatenation as before. Operator: `gcloud storage du` the
+current blob first so the decision is sized.
 
 **SR-05 — build the correction affordance.** On every auto-confirmed summary
 line (`🟢 GEMINI/AUTO — Button N`) add a one-tap "wrong" control that opens
@@ -399,9 +399,9 @@ would justify training (thousands of human-touched lots) is quarters away.
 
 1. Say whether Cloud Scheduler `ebay-scout-daily` `attemptDeadline` is 1800 s
    now; update the HANDOFF line either way.
-2. `gsutil du gs://…/ebay_scout/scan_log.jsonl` — sizes SR-04.
-3. `gsutil ls gs://…/pipeline/labels/ | wc -l` once a week for a month — the
-   C5 accrual number, so SR-17 can be scheduled.
+2. `gcloud storage du gs://…/ebay_scout/scan_log.jsonl` — sizes SR-04.
+3. `gcloud storage ls gs://…/pipeline/labels/ | wc -l` once a week for a month
+   — the C5 accrual number, so SR-17 can be scheduled.
 4. Confirm the 759/759 `gemini_auto` audit in one line in `HANDOFF.md` (C6).
 5. Decide SR-07: are undervalued alerts wanted at all?
 6. Decide SR-08: port the year/era crawls to the pipeline, or delete them.

@@ -19,10 +19,10 @@ Safe + idempotent:
 Operate on a COPY pulled from GCS, then push the result back:
 
     BUCKET=gs://60d488c5-9c8e-4acc-aac-button-data/ebay_scout
-    gsutil cp $BUCKET/scan_log/2026-05.jsonl ./2026-05.jsonl          # one live partition
+    gcloud storage cp $BUCKET/scan_log/2026-05.jsonl ./2026-05.jsonl     # one live partition
     python -m ebayscout.tools.merge_scan_log \
         --base 2026-05.jsonl --add backfill_scan_log.jsonl --out 2026-05.merged.jsonl
-    gsutil cp ./2026-05.merged.jsonl $BUCKET/scan_log/2026-05.jsonl   # complete month back
+    gcloud storage cp ./2026-05.merged.jsonl $BUCKET/scan_log/2026-05.jsonl  # month back
 
 Do this while no scan is running: the bot appends to the same partition, and a
 push of a copy pulled before that append would drop it.
