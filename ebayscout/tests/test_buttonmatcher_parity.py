@@ -446,3 +446,54 @@ if __name__ == "__main__":
         if _name.startswith("test_"):
             _fn()
     print("all buttonmatcher-parity tests passed")
+
+
+# --- The un-fold (match_logging.year_slogan_rows, shared byte-for-byte) --------
+
+def _unfold_norm(s, min_s=0.15, max_s=0.35):
+    return max(0.0, min(1.0, (s - min_s) / (max_s - min_s)))
+
+
+def test_unfold_constants_stay_calibrated():
+    """M_UNFOLD = 0.10 and K = 4 come from the 2026-09-18 replay: 64-68 of the
+    96 rank-1-usurper rows become visible, at 4 of 187 correct gap-rule autos
+    withheld.  Moving either needs a fresh replay in BOTH repos in one PR, the
+    same rule rerank's weights carry."""
+    from ebayscout import match_logging as ml
+    assert ml.UNFOLD_MARGIN == 0.10
+    assert ml.UNFOLD_CAP == 4
+
+
+def test_unfold_is_on_by_default_and_killable():
+    from ebayscout import match_logging as ml
+    os.environ.pop("BUTTONMATCHER_UNFOLD", None)
+    assert ml.unfold_enabled(), "the un-fold should be live once shipped"
+    try:
+        os.environ["BUTTONMATCHER_UNFOLD"] = "0"
+        assert not ml.unfold_enabled()
+    finally:
+        os.environ.pop("BUTTONMATCHER_UNFOLD", None)
+
+
+def test_both_scorers_keep_the_same_sibling():
+    """clip_matcher._score_slogans and buttonmatcher's score_slogans both defer
+    to year_slogan_rows, so the sibling set cannot drift.  Pinned on a tie,
+    where an unstable sort would diverge between the two services."""
+    from ebayscout import match_logging as ml
+    rows = [(0.26, "Zulu", ""), (0.26, "Alpha", ""), (0.19, "Far", "")]
+    kept = ml.year_slogan_rows(rows, normalize_fn=_unfold_norm, enabled=True)
+    assert [p for _r, p, _t in kept] == ["Alpha", "Zulu"], (
+        "a tie must break deterministically or the logged leaderboard stops "
+        "equalling the live one")
+
+
+def test_the_unfolded_sibling_never_leads_its_year():
+    """The invariant the cost was priced on, asserted on the shared sort key:
+    a sibling lands under the row that displaced it, never above it."""
+    from ebayscout import match_logging as ml
+    winner = {"year": "1992", "overall": 0.6955, "phrase": "Penn State and Proud of it"}
+    sibling = {"year": "1992", "overall": 0.7215, "phrase": "Undo EMU"}
+    ordered = sorted([sibling, winner],
+                     key=lambda r: ml.sort_key(
+                         r, None if r is winner else winner["overall"]))
+    assert ordered[0] is winner and ordered[1] is sibling
