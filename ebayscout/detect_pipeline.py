@@ -3195,9 +3195,18 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
     # evidence the fill-gated swap lacks on a flooded mask — a crop no Gemini
     # point explains, holding a slogan no crop explains.  Synthesize a crop at
     # that slogan's own point (same recipe/trust as the deficit misses) and
-    # re-associate; the phantom crop is NOT dropped (the anchoring gate demotes
-    # it to a manual card), so a wrong fire costs one extra card, never a lost
-    # button.  Kill switch: BUTTONMATCHER_ANCHOR_RECOVERY=0.
+    # re-associate.  Kill switch: BUTTONMATCHER_ANCHOR_RECOVERY=0.
+    #
+    # This comment used to claim the phantom is safe because "the anchoring gate
+    # demotes it to a manual card, so a wrong fire costs one extra card, never a
+    # lost button."  THAT WAS WRONG, and it is why the hole below went unnoticed
+    # for two months.  A crop synthesized AT a Gemini point is anchored to that
+    # point by construction (dist ~0), so the anchoring gate can never reject
+    # one — on 2026-09-16 ten phantoms auto-confirmed through exactly this path
+    # while all twelve real buttons were demoted.  What actually makes the claim
+    # true is B33: gemini_resolve refuses AUTO for a synthesized crop whose
+    # winning candidate is db_direct, so it needs a candidate CLIP's own ranking
+    # surfaced.  See gemini_geometry.assoc_synthesized and gemini_resolve._auto_ok.
     n_anchor_recovered = 0
     _ar_median = plan["median_r"] or ggeo.median_radius(detected_radii)
     if _anchor_recovery_enabled() and crop_to_slogan and _ar_median:

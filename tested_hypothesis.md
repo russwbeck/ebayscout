@@ -539,6 +539,89 @@ button missed by Hough, a carpet phantom taking its count slot — open item #1)
 NOT a coordinate issue; it persists after this fix (verified: that lot is percent
 and unchanged). Resolved in 4.6 below.
 
+## 4.5a The 4.5 fix was HALF right: the scale is PER AXIS — FIXED
+
+4.5's rule is whole-response: take the max over every coordinate in the object,
+and if it exceeds 100 divide **everything** by 10. That is correct only when
+Gemini picks one convention for the whole answer. It does not.
+
+**The 2008 Citizens lot (2026-09-16, pipeline job posted 17:28 EDT)** came back
+with the two axes on *different* scales in the same object:
+
+| field | values | scale | after the 4.5 rule |
+|---|---|---|---|
+| `x` / `edge_x` | 18, 19, 42, 44, 68, 69 | **0-100, already correct** | ÷10 → 1.8–6.9% → **crushed into an 11–41px strip down the left edge** ✗ |
+| `y` / `edge_y` | 64, 210, 393, 693 | **0-1000** | ÷10 → 6.4/21/39.3/69.3% → lands correctly ✓ |
+
+`max = 693` called the whole set permille, so the rule **fixed y by destroying
+x**. Gemini's measurements were fine; only the units were mixed.
+
+**What that did downstream** (replayed through the real `gemini_geometry`):
+
+- All 12 Hough circles read **unanchored** — nearest Gemini point 81–399px
+  against a `0.75×r = 37.5px` gate — so AUTO was refused for **every real
+  button**.
+- `plan_anchor_recovery` then synthesized a crop at each of the 10 mis-placed
+  points. **The count deficit was 0** (Gemini read 10, Hough found 12), so this
+  was *not* the deficit path — see `GEMINI_PIPELINE.md` Phase 1.
+- A synthesized crop sits *at* its Gemini point, so `dist ≈ 0` and it is
+  anchored **by construction**. All 10 phantoms auto-confirmed.
+- Posted: **"22 buttons (Hough 12, +10 recovered from Gemini) · 10
+  Gemini-confirmed · 12 need review"** — on a photo of 13 buttons. The 10
+  green-checked crops in the overlay sit on the floor beside the paper.
+- Had the operator clicked 📋 Inventory, **10 phantom counts would have written
+  to the sheet with no click** (`auto:gemini` rows on the Bot Writes tab). They
+  did not; they re-ran the lot manually through `/count` instead, which is the
+  only reason this cost nothing.
+
+**Why 4.5's own safety nets did not catch it:** `fit_frame_map` exists to
+correct exactly this kind of frame error, and it needs `2 <= len(g_cent)`
+clusters per axis to fit a line. Crushing x into a 30px strip leaves **one**
+x-cluster, so the only x candidate was identity and the fit was refused
+(`applied=False`). The act of breaking the axis blinded the mechanism built to
+repair it.
+
+**Fix (SHIPPED, both repos):** scale is decided **per axis** over that axis'
+own coordinates — `x`/`edge_x` on their max, `y`/`edge_y` on theirs — so a
+correct axis is never rescaled to fix a wrong one. An axis with no coordinates
+has no opinion and defers rather than forcing a disagreement. `coord_scale`
+keeps its summary role in the label record and gains **`mixed`**;
+`coord_scale_x` / `coord_scale_y` carry the detail, so a recurrence is visible
+instead of silent. `size` is a length with no axis, so it is rescaled only when
+both axes agree and **dropped to `None` on a mixed response** — callers fall
+back to the median detected radius rather than guess a radius 10× off.
+
+**Verification:** the live response is carried verbatim as a fixture in
+`test_pipeline_ingest.py`. Replayed through `gemini_geometry` with the fix:
+**9 of 10 slogans anchor onto their correct buttons** (was 0 of 12), anchor
+recovery fires **once** instead of ten times, and the single crop it
+synthesizes lands on the **white USC-U-Later button Hough cannot see** — the
+button this bug forced the operator to type in by hand. Final crop count
+**13**, which is the truth; it was 22.
+
+**Two things this fix does NOT address**, both live:
+
+1. **The anchoring gate cannot reject a phantom** — CLOSED 2026-09-18 as
+   B33, after this section was written. A synthesized crop is now stamped
+   `synthesized` and refused AUTO when its only support is the DB-direct row
+   carrying Gemini's own slogan; it must be corroborated by a candidate CLIP's
+   own ranking surfaced. Replayed on THESE broken coordinates the lot yields 22
+   crops and **0 AUTO** instead of 10 — so B33 alone would have held this lot
+   even without the coordinate fix. See `LOGGER_FRONTS.md` B33 for the residual
+   and what to watch.
+2. **The `edge` point was fabricated.** `edge_y == y - 14` and `edge_x == x` on
+   all ten buttons — always straight up, always the same offset, which derives
+   an ~11px radius against a real ~50px one. That is a Gem-prompt problem, not
+   a parser one; the 2026-09-18 prompt adds an explicit "measure it, do not
+   assume it" rule (§2c).
+
+**Also read, separately:** Gemini **under**-counted this lot — `total_button_count: 10`
+on 13 buttons, missing the entire fourth row. The existing
+`blue + white == total` checksum stayed self-consistent throughout, because a
+checksum over the model's own numbers cannot detect an omission. Counting Rules
+6–8 of the 2026-09-18 prompt (row-completeness pass, "do not stop at a visual
+boundary", `row_tally`) are the response to that.
+
 ## 4.6 Two-signal reconcile swap: a Hough phantom was SUPPRESSING a real Gemini button — FIXED
 
 Open item #1 (the white-carpet "missed blue button") was mechanised from a live

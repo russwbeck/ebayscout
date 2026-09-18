@@ -600,7 +600,8 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `parse_gemini_response` (byte-shared); the reconcile geometry
 - **Gate:** root cause reproduced on the real photo.
 - **Standing:** FIXED. The cause was a coordinate SCALE mismatch — 0-100 vs 0-1000 — not a detection failure. A reminder that the recurring error class is an unstated frame/scale assumption, not a bad model.
-- **Source:** `tested_hypothesis.md` §4.5
+- **Amended 2026-09-18:** the diagnosis was right and the FIX WAS HALF RIGHT. The rule was whole-response (max over every coordinate → divide everything by 10), and Gemini mixes the two conventions **per axis within one response** — x percent, y per-mille on the 2026-09-16 2008 Citizens lot. The rule then fixed y by crushing x into a strip down the left edge, and the lot posted 22 buttons for a photo of 13. Scale is now decided per axis. The error class this front named — an unstated frame/scale assumption — reappeared *inside the fix for it*, one level down: the fix assumed one scale per response.
+- **Source:** `tested_hypothesis.md` §4.5, amended by §4.5a
 
 ### B14 — Two-signal reconcile swap
 
@@ -819,6 +820,21 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Source:** `tested_hypothesis.md` Part XII
 
 ---
+
+### B33 — The anchoring gate cannot reject a phantom it created
+
+- **Track:** Detection
+- **Status:** SHIPPED-WATCH
+- **Stage:** 5
+- **Question:** `assoc_anchored` refuses AUTO when Gemini's point sits more than `0.75×r` from the crop it would confirm. But `plan_anchor_recovery` synthesizes a crop **at** its Gemini point, so `dist ≈ 0` and the crop is anchored **by construction** — the gate can never say no to one. What second signal makes a synthesized crop earn its AUTO?
+- **Instrument:** `n_anchor_recovered`, `unmatched_crop_indices`, `coord_scale`(`mixed`); the label sidecar's per-circle `source` (`gemini_reconciled`)
+- **Gate:** a synthesized crop must clear a **position-independent** test before it may AUTO — mask fill at the synthesized location, or CLIP's own top match agreeing with the slogan the point carries. Anything derived from the point itself is circular.
+- **Standing:** 2026-09-18 — SHIPPED. A synthesized crop is now stamped `synthesized` (`gemini_geometry.assoc_synthesized`, from `circle_info["source"]`) beside `anchored`, and `gemini_resolve._auto_ok` refuses AUTO for a synthesized crop whose winning candidate is `db_direct` — i.e. it must be corroborated by a candidate **CLIP's own ranking surfaced**, which is evidence that did not come from the point that created the crop. It still RESOLVES, so the operator gets a pre-filled card rather than a blank one; it just cannot skip the click. Deliberately not a rank threshold: "CLIP ranked it at all" is binary and needs no calibration. Replaying the 2026-09-16 response through parser→geometry→resolver reproduces the live lot exactly (22 crops, 10 AUTO) and, with B33 on, the same broken coordinates yield **22 crops and 0 AUTO** — all ten phantoms refused. On the fixed coordinates the lot is 13 crops, 9 AUTO, 1 refused (the anchor-recovered white button, now a card).
+- **Watch:** `n_synth_db_direct_refused` in the resolve telemetry. Expect ~0 on healthy lots; a lot showing several means Gemini is placing points where Hough sees nothing AND CLIP cannot read them — the signature of this failure class, now visible instead of silent. If the counter is chronically non-zero on GOOD lots, the gate is costing clicks on genuine misses and wants the mask-fill signal below as a second route to AUTO.
+- **Left open:** the residual is a synthesized crop whose slogan CLIP genuinely ranks from pixels that are not a button — weak but real evidence, accepted by this front's gate as written. Tightening it (a rank ceiling, or mask fill at the synthesized location as an independent photometric check) needs calibration data this repo does not have yet; `det_reconcile_*` plus the new counter is the pool to build it from.
+- **Was:** DEMONSTRATED on a live lot, not fixed. 2026-09-16: ten mis-placed Gemini points produced ten synthesized crops sitting on the floor beside the paper, and all ten auto-confirmed, while all twelve real buttons were demoted to manual cards — the exact inversion of what the gate exists for. Clicking Inventory would have written ten phantom counts with no click. `reconcile_with_gemini`'s own comment asserts the opposite ("the anchoring gate demotes it to a manual card, so a wrong fire costs one extra card, never a lost button"); **that comment is wrong** and is the reason the hole went unnoticed. The 2026-09-18 per-axis fix removed *that lot's* source of bad points; it did not close the hole, and any future source reopens it. Note the coupling to B15's unresolved half: this is the same trust question one path over.
+- **Freeze:** opened against the §7 front freeze WITHOUT retiring one, by the operator's decision on 2026-09-18 (IC-11). The register goes 71 → 72. `main` was already at 71 against a freeze of 70 before this front existed, so the count is reconciled at the next review rather than here. The nearest retirement candidates if one is wanted later: **B14** (SETTLED-CONFIRMED, Stage 6, its own Standing reads "nothing to watch") and **B13** (SETTLED-CONFIRMED, superseded by §4.5a).
+- **Source:** `tested_hypothesis.md` §4.5a; `GEMINI_PIPELINE.md` "Known limitations"; `gemini_resolve._auto_ok`
 
 ## C. Reference and data
 

@@ -20,6 +20,37 @@ newest is at the top, as in buttonmatcher's copy.
 > review; ebayscout's items are RS-03 (intake dedup) and RS-04 (lot id in
 > staged crop names).
 
+> **2026-09-18 — the Gemini coordinate scale is PER AXIS**, and
+> `pipeline_ingest.py` was a shared file nobody had written down. Fixed in
+> both repos; see the 2026-09-18 entry below and `../tested_hypothesis.md`
+> §4.5a.
+
+### 2026-09-18 — per-axis Gemini coordinate scale (shared-file fix, landed here too)
+
+A buttonmatcher pipeline lot posted **22 buttons for a photo of 13**, with ten
+phantom crops auto-confirmed and every real button demoted to a manual card.
+Cause: Gemini answered with `x` in percent and `y` on its native 0-1000 scale
+**in one response**, and `pipeline_ingest`'s scale check was whole-response, so
+it rescaled both axes and fixed `y` by crushing `x` into a strip down the left
+edge of the frame.
+
+**This was live here too.** `pipeline_ingest.py` is byte-identical across the
+two repos — it just was not in `CLAUDE.md`'s shared-files list, which is why
+nobody was looking. Scale is now decided per axis; `coord_scale` gains `mixed`
+and `coord_scale_x`/`_y` carry the detail. The live response is a verbatim
+fixture in `tests/test_pipeline_ingest.py` (30 tests). Pure-python suites here
+pass, `test_buttonmatcher_parity` included.
+
+ebayscout has no human review lane, so the buttonmatcher-side consequence (a
+phantom auto-confirm writing an inventory count with no click) has no analogue
+here — but the same bad coordinates would have mis-cropped buttons feeding the
+deal alert, which is its own silent wrong answer.
+
+Full write-up: `../tested_hypothesis.md` §4.5a (byte-shared). Gem-prompt
+changes: buttonmatcher `GEMINI_PIPELINE.md`. `CLAUDE.md`'s shared-files list now
+names `pipeline_ingest.py`, `gemini_geometry.py` and `gemini_resolve.py`, with
+a note that the last one legitimately differs by one import hunk.
+
 ### 2026-09-14 — WS1 of the review is implemented
 
 The review's first workstream, in both repos. **Reviewed by reading and covered

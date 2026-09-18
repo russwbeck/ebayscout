@@ -42,7 +42,8 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
 
 - **buybot is decommissioned (2026-07-05).** Shared files (`detect.py`/
   `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, `sheet_retry.py`,
-  `confusable_slogans.py`, the shared docs) sync across buttonmatcher + ebayscout
+  `confusable_slogans.py`, `pipeline_ingest.py`, `gemini_geometry.py`,
+  `gemini_resolve.py`, the shared docs) sync across buttonmatcher + ebayscout
   only; ignore older docs that name buybot as a third sync target.
   `sheet_retry.py` joined the set on 2026-09-09, when `match_logging` started
   retrying the Sheets write quota through it; `match_logging.py` imports it
@@ -51,7 +52,16 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
   2026-09-10 — the curated look-alike groups are one list for both services,
   but the two USE it differently: buttonmatcher demotes an auto-confirm to a
   human picker, ebayscout has no human lane and instead flags the deal alert
-  (see `pipeline_classify.lookalike_note`).
+  (see `pipeline_classify.lookalike_note`). The Gemini-pipeline trio was
+  ALREADY shared in practice, and `STRATEGIC_REVIEW_2026-09.md` says so — it was
+  just missing from THIS list, which is the one a session reads first. Noticed
+  2026-09-18 while fixing the per-axis coordinate-scale bug, which was therefore
+  live in BOTH pipelines. `pipeline_ingest.py` and
+  `gemini_geometry.py` are byte-identical; `gemini_resolve.py` differs by
+  exactly one hunk — the `edition_twins` import, wrapped flat-first /
+  package-second the same way `match_logging.py` wraps `sheet_retry` — so port
+  changes to it by hand and leave that hunk alone. `tested_hypothesis.md` is
+  byte-shared too. `diff` before and after touching any of them.
 - **`rerank.py` weights are calibrated, not guessed.** `YEAR_WEIGHT` and
   `SID_WEIGHT` must stay equal across both repos —
   `tests/test_buttonmatcher_parity.py` pins them. Raising them needs a fresh
