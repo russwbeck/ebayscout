@@ -1987,6 +1987,37 @@ dense lots, where `base_r` (derived from a 4×3 grid hint that is wrong for a
 trustworthy radius estimate would let the sweep be one seeded window instead of
 four. Until then the guard is the medication, not the cure.
 
+## 11.5 Reference quality metric: resolution is NOT the dominant term (front C2) — REFUTED
+
+**The question.** `_ref_quality_score` was sharpness-first (Laplacian variance),
+which is not comparable across resolutions: a tiny thumbnail can post a high
+variance and dodge the "weakest ref" flag entirely. The standing proposal was to
+make resolution the dominant signal. It sat BLOCKED from 2026-07 because it was
+framed as needing an operator decision on direction rather than a measurement.
+
+**What settled it.** RS-02 (2026-09-15) made the floor measurable instead of
+arguable: the absolute `MP_FLOOR_PIXELS = 50_000` was replaced with
+`MIN_SHORT_SIDE = 160` taken from the decoded image's real short side, and
+`plan_at_cap_decisions` began naming the reason each candidate was refused —
+but only when a floor ACTUALLY blocked a swap, never for a crop that was going
+to a human anyway.
+
+**The live run, 2026-09-17.** 177 candidates reached review across 119 shelves.
+Every one of them was refused for `review:within_margin`. Zero
+`review:below_size_floor`. Zero `review:below_quality_floor`. Zero
+`review:no_ref_to_displace`.
+
+**Verdict: REFUTED.** Once size is measured on the short side rather than on a
+pixel count, it refuses nothing — so promoting it to the dominant term would
+change no decision the flow actually makes, and would demote the one term that
+does (the composite margin). The old defect was real; it was a defect in HOW
+size was measured, not in how heavily it was weighted, and RS-02 fixed it.
+
+**What this does not say.** It does not say the composite is well-calibrated —
+front C8 shows the opposite, that it is 45% a sameness test. It says only that
+the resolution question is closed and should not be reopened as a weighting
+argument.
+
 # Part XIII — the 2026-09 shipped-watch sweep: seven closings (2026-09-12)
 
 *The complement of Part XI. That sweep graded the fronts that were still

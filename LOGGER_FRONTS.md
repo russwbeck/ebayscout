@@ -852,13 +852,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### C2 — Reference quality metric
 
 - **Track:** Reference and data
-- **Status:** BLOCKED
-- **Stage:** 0
+- **Status:** SETTLED-REFUTED
+- **Stage:** 6
 - **Question:** `_ref_quality_score` is sharpness-first (Laplacian variance), which is not comparable across resolutions — a tiny thumbnail dodges the "weakest ref" flag. Should resolution become the dominant signal?
-- **Instrument:** — (not a data experiment)
-- **Gate:** operator decision on direction. The operator said "nevermind" mid-discussion, so confirm direction before building anything.
-- **Standing:** open as a question, not as an experiment.
-- **Source:** `HYPOTHESES_IN_PROGRESS.md` C2; `HANDOFF.md` known issues
+- **Instrument:** `pipeline_classify` / `_ref_auto_replace_pass` refusal counts, per reason, in the `/reference` session header (RS-02).
+- **Gate:** met without the operator decision it was waiting on. RS-02 replaced the absolute 50,000-pixel floor with `MIN_SHORT_SIDE = 160` measured on the decoded short side; the 2026-09-17 live run then refused **0 of 177** review-bound crops for size or quality (`review:within_margin` on all 177).
+- **Standing:** settled 2026-09-18. Resolution is not the binding constraint, so it should not become the dominant term. Retired to pay for C8 under the front freeze. Verdict: `tested_hypothesis.md` §11.5.
+- **Source:** `HYPOTHESES_IN_PROGRESS.md` C2 (removed); `HANDOFF.md` known issues
 
 ### C3 — Reference save policy
 
