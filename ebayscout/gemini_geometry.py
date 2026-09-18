@@ -518,6 +518,38 @@ def assoc_anchored(dist, r_px, max_frac=0.75):
         return True
 
 
+# ``circle_info["source"]`` values that mean "this crop was SYNTHESIZED at a
+# Gemini point", not detected by Hough.  Set by ``reconcile_with_gemini`` for
+# both the deficit misses and the anchor-recovered slogans.
+SYNTHESIZED_SOURCES = ("gemini_recovered",)
+
+
+def assoc_synthesized(circle):
+    """Was this crop SYNTHESIZED at a Gemini point rather than detected?
+
+    The counterpart to ``assoc_anchored``, and the reason it is needed: a
+    synthesized crop is CENTRED ON the Gemini point that created it, so its
+    association distance is ~0 and ``assoc_anchored`` returns True **by
+    construction**.  Anchoring therefore says nothing at all about a
+    synthesized crop — it cannot fail — and any gate that uses anchoring as
+    its proxy for "this pairing is trustworthy" is, for these crops, checking
+    a number against itself.
+
+    Measured 2026-09-16 (B14a): ten crops synthesized at mis-placed Gemini
+    points all passed the anchoring gate and auto-confirmed, while all twelve
+    real Hough circles — the ones carrying independent position evidence —
+    were refused.  Callers use this to demand evidence that did NOT come from
+    the point that created the crop.
+
+    Fail-closed on anything unexpected: not a dict, no source, unknown source
+    ⇒ False (treated as a normal detected crop), which is the pre-B14a
+    behaviour and never blocks a lot that predates the flag.
+    """
+    if not isinstance(circle, dict):
+        return False
+    return str(circle.get("source") or "") in SYNTHESIZED_SOURCES
+
+
 def plan_anchor_recovery(final_centers, final_radii, crop_to_slogan, gemini_px,
                          gemini_slogans, median_r, max_frac=0.75):
     """Gemini indices whose slogans should get a SYNTHESIZED crop because their

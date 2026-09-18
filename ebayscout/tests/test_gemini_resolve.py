@@ -319,3 +319,112 @@ def test_anchor_gate_flag_default_on_with_kill_switch():
     os.environ["BUTTONMATCHER_ANCHOR_GATE"] = "0"
     assert fn() is False
     os.environ.pop("BUTTONMATCHER_ANCHOR_GATE", None)
+
+
+# --- B14a: a synthesized crop cannot confirm itself --------------------------
+
+def _dbc(year, slogan, type_="Football"):
+    """A DB-direct candidate: Gemini's own slogan appended straight from the DB
+    because CLIP's year-folded leaderboard never surfaced it.  Carries no CLIP
+    corroboration at all — see main._gemini_db_candidates."""
+    return {"year": year, "slogan": slogan, "overall": None, "slogan_score": 0,
+            "type": type_, "db_direct": True}
+
+
+def test_synthesized_crop_on_db_direct_resolves_but_never_autos():
+    """B14a, the 2026-09-16 failure in one crop.
+
+    A crop synthesized at a Gemini point is anchored BY CONSTRUCTION, and the
+    DB-direct tier appends Gemini's own slogan as its candidate — so Gemini's
+    point makes the crop, Gemini's slogan is injected, and Gemini's slogan
+    matches it.  Nothing independent ever looked at the pixels.  It must still
+    RESOLVE (the operator gets a pre-filled card) but must not skip the click.
+    """
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_dbc("2008", "Cheese Puffs")]},
+        {0: {"slogan": "Cheese Puffs", "confidence": 0.95, "index": 3,
+             "anchored": True, "synthesized": True}},
+        {"cheesepuffs": {"2008"}}, set(), normalize_fn=_norm)
+    r = res[0]
+    assert r["year"] == "2008"          # still resolved — not a lost button
+    assert r["db_direct"] is True
+    assert r["auto"] is False           # but never without a click
+    assert res["telemetry"]["n_gemini_confirmed"] == 0
+    assert res["telemetry"]["n_synth_db_direct_refused"] == 1
+    # It is NOT counted as unanchored or low-confidence — it passed both.
+    assert res["telemetry"]["n_unanchored"] == 0
+    assert res["telemetry"]["n_low_confidence"] == 0
+
+
+def test_synthesized_crop_autos_when_clip_itself_ranked_the_slogan():
+    """The legitimate recovery: a real button Hough missed, whose slogan CLIP's
+    OWN ranking surfaces from the crop's pixels.  That is evidence which did not
+    come from the point that created the crop, so AUTO stands — otherwise the
+    gate would cost a click on every genuine miss (e.g. the white USC-U-Later
+    button Hough cannot see)."""
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_cand("2009", "USC-U-Later")]},          # no db_direct flag
+        {0: {"slogan": "USC-U-Later", "confidence": 0.95, "index": 10,
+             "anchored": True, "synthesized": True}},
+        {"usculater": {"2009"}}, set(), normalize_fn=_norm)
+    assert res[0]["auto"] is True
+    assert res["telemetry"]["n_gemini_confirmed"] == 1
+    assert res["telemetry"]["n_synth_db_direct_refused"] == 0
+
+
+def test_db_direct_still_autos_on_a_real_detected_crop():
+    """The gate is narrow on purpose. DB-direct exists for the year-folded
+    shadowing case (Logger_14) and keeps working on a DETECTED crop, which
+    carries independent position evidence a synthesized one cannot."""
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_dbc("1995", "I-owa Doubt It")]},
+        {0: {"slogan": "I-owa Doubt It", "confidence": 0.95, "index": 4,
+             "anchored": True, "synthesized": False}},
+        {"iowadoubtit": {"1995"}}, set(), normalize_fn=_norm)
+    assert res[0]["auto"] is True
+    assert res["telemetry"]["n_synth_db_direct_refused"] == 0
+
+
+def test_synthesized_absent_is_fail_open():
+    """Callers predating B14a send no `synthesized` key — behaviour unchanged."""
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_dbc("1984", "Stop Stanford")]},
+        {0: {"slogan": "Stop Stanford", "confidence": 0.92, "anchored": True}},
+        {"stopstanford": {"1984"}}, set(), normalize_fn=_norm)
+    assert res[0]["auto"] is True
+
+
+def test_synthesized_gate_holds_through_scenario_b():
+    """A repeated slogan defers to pass 2; the gate must survive the deferral."""
+    cands = [_dbc("1972", "Crush the Orange"), _dbc("1973", "Crush the Orange")]
+    res = gr.resolve_with_gemini_slogans(
+        {0: cands},
+        {0: {"slogan": "Crush the Orange", "confidence": 0.95, "index": 1,
+             "anchored": True, "synthesized": True}},
+        {"crushtheorange": {"1972", "1973"}}, set(), normalize_fn=_norm)
+    assert res[0]["auto"] is False
+    assert res["telemetry"]["n_synth_db_direct_refused"] == 1
+
+
+def test_the_2026_09_16_lot_shape_autos_nothing():
+    """The whole failure, at lot scale: ten crops synthesized at mis-placed
+    Gemini points, every one of them anchored (by construction) and high
+    confidence, every one matched only by its own injected DB-direct row.
+    Before B14a all ten auto-confirmed and would have written to the sheet with
+    no click. After it, ten pre-filled cards and zero writes."""
+    slogans = ["Defeaticus Sparticus", "U Hoose U Lose", "Cheese Puffs",
+               "Owl Shook Up", "Rule The Rooster", "I-O-Wasn't",
+               "It's Fruitless, Orange", "In Our House Now", "Gee Wiz Wally",
+               "USC-U-Later"]
+    crop_candidates = {i: [_dbc("2008", s)] for i, s in enumerate(slogans)}
+    crop_to_slogan = {
+        i: {"slogan": s, "confidence": 0.95, "index": i + 1,
+            "anchored": True, "synthesized": True}
+        for i, s in enumerate(slogans)}
+    res = gr.resolve_with_gemini_slogans(
+        crop_candidates, crop_to_slogan,
+        {_norm(s): {"2008"} for s in slogans}, set(), normalize_fn=_norm)
+    assert len(res) == len(slogans) + 1          # all resolved (+ telemetry key)
+    assert all(res[i]["auto"] is False for i in range(len(slogans)))
+    assert res["telemetry"]["n_gemini_confirmed"] == 0
+    assert res["telemetry"]["n_synth_db_direct_refused"] == 10

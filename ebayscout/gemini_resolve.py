@@ -45,6 +45,45 @@ except ImportError:                     # ebayscout imports them as a package
     from . import edition_twins as edt
 
 
+def _auto_ok(gate_ok, synthesized, cand):
+    """May this crop AUTO-resolve on this winning candidate? (B14a)
+
+    ``gate_ok`` is the existing gate — confidence, not flagged, anchored.  This
+    adds the one rule anchoring cannot express.
+
+    A crop SYNTHESIZED at a Gemini point (``assoc["synthesized"]``, stamped by
+    the caller from ``gemini_geometry.assoc_synthesized``) is anchored to that
+    point BY CONSTRUCTION — ``dist`` is ~0 because the point is where the crop
+    was cut.  So for these crops the anchoring gate is not evidence, and the
+    caller's DB-direct tier is not evidence either: it APPENDS Gemini's own
+    slogan to the candidate pool when CLIP never surfaced it, and Scenario A
+    then matches that appended row.  Gemini's point creates the crop, Gemini's
+    slogan is injected as its candidate, and Gemini's slogan matches it —
+    the loop closes with CLIP never having corroborated anything.
+
+    Measured 2026-09-16: ten crops synthesized at mis-placed points
+    auto-confirmed this way, on a photo where they sat on the floor beside the
+    paper, while all twelve real buttons were demoted to manual cards.  Had the
+    operator clicked Inventory, ten phantom counts would have written to the
+    sheet with no click.
+
+    So a synthesized crop may AUTO only on a candidate CLIP's OWN ranking
+    surfaced (``db_direct`` false) — evidence that did not come from the point
+    that created the crop.  A synthesized crop whose only support is db_direct
+    still RESOLVES (the operator gets a pre-filled card with the suggestion);
+    it just cannot skip the click.  A wrong fire costs one card, never a button.
+
+    Deliberately NOT a rank threshold: "CLIP ranked it at all" is binary and
+    needs no calibration, whereas "CLIP ranked it in the top k" is a tuned
+    constant and this repo does not guess those.
+    """
+    if not gate_ok:
+        return False
+    if synthesized and bool(cand.get("db_direct")):
+        return False
+    return True
+
+
 def _year_int(y):
     """Best-effort int from a year label; None if not numeric."""
     try:
@@ -140,6 +179,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
     per_crop = []
     n_low_confidence = 0
     n_unanchored = 0
+    n_synth_db_direct = 0
 
     # --- Pass 1: Scenario A (unique year) + collect anchors ------------------
     for crop_idx, assoc in crop_to_slogan.items():
@@ -158,6 +198,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
 
         conf = assoc.get("confidence")
         anchored = assoc.get("anchored", True)
+        synthesized = bool(assoc.get("synthesized"))
         gate_ok = ((conf is None or conf >= conf_min)
                    and assoc.get("index") not in flagged_indices
                    and anchored)
@@ -174,12 +215,15 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
 
         if len(years) == 1:
             rank, cand = matches[0]
+            _auto = _auto_ok(gate_ok, synthesized, cand)
+            if gate_ok and not _auto:
+                n_synth_db_direct += 1
             resolutions[crop_idx] = {
                 "year": cand.get("year"),
                 "slogan": cand.get("slogan"),
                 "type": cand.get("type"),
                 "source": "gemini_auto",
-                "auto": gate_ok,
+                "auto": _auto,
                 "confidence": conf,
                 "gemini_slogan": g_slogan,
                 "printed_year": assoc.get("printed_year"),
@@ -194,7 +238,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
             })
         else:
             deferred.append((crop_idx, norm_g, matches, conf, gate_ok, g_slogan,
-                             assoc.get("printed_year")))
+                             assoc.get("printed_year"), synthesized))
 
     # --- Pass 2: Scenario B (repeated slogan) -------------------------------
     # Disambiguation ladder: the button's own PRINTED YEAR marker (when Gemini
@@ -215,7 +259,8 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         return game_year_by_key.get(
             (normalize_fn(c.get("slogan") or ""), _year_int(c.get("year"))))
 
-    for crop_idx, norm_g, matches, conf, gate_ok, g_slogan, printed_year in deferred:
+    for (crop_idx, norm_g, matches, conf, gate_ok, g_slogan, printed_year,
+         synthesized) in deferred:
         rank = cand = None
         if printed_year is not None:
             # Offset-aware: a bowl edition's marker is its game_date calendar year
@@ -243,12 +288,15 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
             rank, cand = matches[0]  # CLIP's own top-ranked match
             source = "gemini_clip_fallback"
 
+        _auto = _auto_ok(gate_ok, synthesized, cand)
+        if gate_ok and not _auto:
+            n_synth_db_direct += 1
         resolutions[crop_idx] = {
             "year": cand.get("year"),
             "slogan": cand.get("slogan"),
             "type": cand.get("type"),
             "source": source,
-            "auto": gate_ok,
+            "auto": _auto,
             "confidence": conf,
             "gemini_slogan": g_slogan,
             "printed_year": printed_year,
@@ -270,6 +318,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         "n_printed_year_gamematch": n_printed_year_gamematch,
         "n_low_confidence": n_low_confidence,
         "n_unanchored": n_unanchored,
+        "n_synth_db_direct_refused": n_synth_db_direct,
         "n_manual": len(crop_candidates) - len(resolutions),
         "majority_year": anchor_year,
         "majority_clear": clear,

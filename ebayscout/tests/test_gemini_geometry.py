@@ -474,3 +474,38 @@ def test_frame_fit_skips_when_already_fully_anchored():
     pts = [(102, 101), (297, 99), (99, 303), (301, 298)]
     fm = gg.fit_frame_map(centers, radii, pts, 50)
     assert fm["applied"] is False and fm["anchored_identity"] == 4
+
+
+# --- B14a: telling a synthesized crop from a detected one --------------------
+
+def test_assoc_synthesized_recognises_recovered_crops():
+    """`reconcile_with_gemini` tags every crop it cuts at a Gemini point —
+    deficit misses and anchor-recovered slogans alike — with this source."""
+    assert gg.assoc_synthesized({"source": "gemini_recovered", "r": 40}) is True
+
+
+def test_assoc_synthesized_false_for_detected_and_junk():
+    """Fail-closed: anything that is not explicitly a synthesized crop is
+    treated as a normal detected one, which is the pre-B14a behaviour."""
+    for circle in ({"source": "hough", "r": 40},
+                   {"source": "gemini_led", "r": 40},
+                   {"source": "", "r": 40},
+                   {"source": None},
+                   {"r": 40},            # no source key at all
+                   {},
+                   None,
+                   "gemini_recovered"):  # not a dict
+        assert gg.assoc_synthesized(circle) is False
+
+
+def test_synthesized_crop_is_anchored_by_construction():
+    """The premise of B14a, stated as a test: a crop cut AT a Gemini point has
+    dist ~0, so `assoc_anchored` can never reject it however tight the gate.
+    Anchoring is therefore not evidence about a synthesized crop."""
+    gx, gy, r = 300.0, 400.0, 48.0
+    x1, y1, x2, y2 = gg.synth_box(gx, gy, r, 600, 800)
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    dist = ((cx - gx) ** 2 + (cy - gy) ** 2) ** 0.5
+    assert dist <= 1.0                                   # centred on the point
+    assert gg.assoc_anchored(dist, r) is True
+    assert gg.assoc_anchored(dist, r, max_frac=0.01) is True   # even absurdly tight

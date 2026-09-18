@@ -896,18 +896,34 @@ def process_pipeline_lot(job_id: str) -> None:
     # gemini_resolve refuses AUTO for unanchored pairs. Fail-open on missing
     # dist/radius. Kill switch BUTTONMATCHER_ANCHOR_GATE=0.
     _n_unanchored = 0
+    _n_synth = 0
     if _anchor_gate_enabled():
         for _aci, _assoc in crop_to_slogan.items():
-            _ar = (circle_info[_aci].get("r")
-                   if _aci < len(circle_info) and isinstance(circle_info[_aci], dict)
-                   else None)
+            _circ = (circle_info[_aci]
+                     if _aci < len(circle_info) and isinstance(circle_info[_aci], dict)
+                     else None)
+            _ar = _circ.get("r") if _circ else None
             _assoc["anchored"] = ggeo.assoc_anchored(_assoc.get("dist"), _ar)
+            # B14a: a crop SYNTHESIZED at a Gemini point is anchored to that
+            # point by construction — dist is ~0 because the point is where the
+            # crop was cut — so ``anchored`` says nothing about it and cannot be
+            # the trust signal. Stamped beside the gate it qualifies, so the
+            # resolver can demand evidence that did not come from the point that
+            # created the crop.
+            _assoc["synthesized"] = ggeo.assoc_synthesized(_circ)
             if not _assoc["anchored"]:
                 _n_unanchored += 1
+            if _assoc["synthesized"]:
+                _n_synth += 1
         if _n_unanchored:
             print(f">>> PIPELINE ANCHOR_GATE: {_n_unanchored}/{len(crop_to_slogan)} "
                   f"crop→slogan associations unanchored (dist > 0.75×r) — AUTO "
                   f"refused for those crops.", flush=True)
+        if _n_synth:
+            print(f">>> PIPELINE SYNTH_GATE: {_n_synth}/{len(crop_to_slogan)} "
+                  f"associations are on SYNTHESIZED crops (anchored by "
+                  f"construction) — AUTO requires a candidate CLIP's own "
+                  f"ranking surfaced, not DB-direct.", flush=True)
 
     # Training-label sidecar (AUTOMATION_VISION / Logger_10 §10): persist the
     # detection-space image + final circle set (with provenance) + Gemini's
