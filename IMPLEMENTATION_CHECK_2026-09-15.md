@@ -196,3 +196,131 @@ listing. Ran: both pure suites on `main` and the RS branch; pyflakes on the
 touched modules; the fixture validation above. Did not run: anything
 against Cloud Run, GCS, Sheets or Slack, so IC-01 and IC-02 are code
 readings of documented Cloud Run behaviour, not reproductions.
+
+---
+
+# 2026-09-18 alignment check: `main` and the active branches
+
+Same method as above: every commit read from its diff, PR and CI state
+re-queried from the GitHub API on 2026-09-18, both pure suites run on `main`
+(buttonmatcher 1,159 passed; ebayscout 563 passed; heavy modules still not
+importable here). Items are numbered on from IC-08.
+
+## 6. `main` since the 09-15 check
+
+Both mains are aligned with the plan. Nothing on either `main` moves a
+threshold, adds an infra flag, or touches the frozen legacy scan.
+
+| commit | repo | plan item | verdict |
+|---|---|---|---|
+| 8047960 (#175) | buttonmatcher | IC-05 / RS-02 incumbents-vs-mean, IC-06 size floor, RS-01 retire, RS-03 log | in plan |
+| 1937e64 (#177) | buttonmatcher | RS-03 log completeness: AUTO_REVIEW, per-crop `reason`, `sibling_cos` on auto rows | in plan; this is the evidence RS-05/RS-06 need |
+| 8348c3c (#176) / fd001a0 (#86) | both | none: per-axis Gemini coordinate scale in `pipeline_ingest` | out of plan, justified. A real bug (mixed percent/permille axes), fixed once, synced byte-identical, tested |
+| 3a89c84, 9746cb6 (#85) | ebayscout | IC-03 CI runner loop, SR-07 seen-marks single writer, SR-08 partitioned scan log, `ENABLE_UNDERVALUED_ALERTS` read | in plan |
+| 407670f (#87) | ebayscout | none: `gsutil` -> `gcloud storage` in docs | out of plan, harmless; see IC-11 |
+
+**IC-09 (record, not code).** The 2026-09-17 `/reference` session's result,
+185 candidates inside the margin and 10 swaps, exists only in the message of
+1937e64. `HANDOFF.md` on `main` does not carry it. Add the one line; it is
+the first post-fix measurement of the auto pass and the next session's
+baseline.
+
+## 7. The active branches
+
+### 7.1 `claude/buttonmatcher-strategic-review-bev1z4` (buttonmatcher, 552b9f8 + 38978ae, unmerged, CI green)
+
+Adds `tools/eval_reference_value.py`, `tools/eval_logic.py` helpers, 12
+tests, and front **C8** in `HYPOTHESES_IN_PROGRESS.md`.
+
+**Aligned.** The headline finding is the right one and matches the direction
+of the reviews: 83.0% of confirmed slogans already rank #1, and 63% of the
+581 misses never reach the stored top-10 board at all. That is a retrieval
+and year-folded-board problem (C7, §3.7 of the reference review), not a
+crop-quality problem, and it is the correct reason to stop spending
+curation effort on composite tuning. The tool is stdlib-only, read-only and
+runs off a CSV export, so it costs nothing to keep.
+
+**IC-10: C8 drops RS-05 on a misread of the fixture.** The commit says the
+composite delta "does not separate a crop the operator took from one they
+left: agreement sits at the 57% base rate for every margin from 2 to 10".
+That metric asks whether the margin predicts *which* reference the operator
+replaced. RS-05 never claimed that; §4 above already assigns the "swapped
+other" rows to RS-06. Replayed on the fixture, the margin predicts *whether*
+a swap happens, which is the only thing an auto-swap gate has to get right:
+
+| best candidate minus flagged weakest | swapped weakest | swapped other | no change |
+|---|---|---|---|
+| ≥ +3 | 20 | 12 | 0 |
+| +1 / +2 | 6 | 10 | 2 |
+| ≤ 0 | 0 | 3 | 4 |
+
+At ≥ +3 the operator swapped something on 32 of 32 shelves; at ≤ 0 they
+swapped the weakest on 0 of 7. An auto pass at +3/0 makes the 20 weakest
+swaps and the 4 discards with no error against the operator, and leaves the
+12 + 3 "swapped other" rows to RS-06's novelty term. So: **RS-05 stays**, with
+the acceptance in §4 unchanged; C8's evidence is the reason RS-06 comes
+first, not the reason RS-05 goes. Do not carry the "dropped" wording into
+`REFERENCE_SCORING_REVIEW.md` or `HANDOFF.md`.
+
+**IC-11: the front freeze was bypassed twice.** Plan §7: no new fronts
+unless one is retired in the same PR. `LOGGER_FRONTS.md` on `main` is at 71
+and nothing has been retired, and this branch opens C8 while the docs
+branch below opens B14a. Both fronts are worth having. The fix is the rule
+as written: each PR that opens one names the front it retires (the C-track
+has at least one candidate whose exit condition C8 has now answered), and
+the count stays flat.
+
+### 7.2 `claude/sheet-write-source-a5xnst` (both repos, 09447d3 / 385c290, unmerged, pushed after #176 / #86 merged)
+
+Docs only: the 2026-09-18 Gem prompt with its two unapplied corrections
+(flagged index must reuse the detected index; the schema example breaks its
+own counting rules), `tested_hypothesis.md` §4.5a, the Phase 1 correction
+in `GEMINI_PIPELINE.md` (recovery does drop crops and does fire at deficit
+0), B13 amended, new B14a, PROGRESS test counts. The content is correct and
+worth merging; the two shared docs are identical across the two branches.
+
+**IC-12: commits on a merged PR's branch.** #176 and #86 merged at 01:38 and
+01:45 UTC; these commits were pushed at 11:07 and 11:08 UTC onto the same
+branch. CLAUDE.md names this exact mistake. They need a fresh branch off
+`main` and their own PR; nothing on `main` references them yet, so nothing
+is lost by moving them.
+
+**IC-13: the ebayscout copy is red, and B14a is the cause.** Run
+35338118051, 3 failed / 614 passed:
+
+```
+SystemExit: malformed front heading: '### B14a — The anchoring gate cannot reject a phantom it created'
+ebayscout/tools/build_goal_trackers.py:569
+```
+
+`parse_register` matches `### ([A-E]\d+) —` and so does the Apps Script the
+tracker repair emits (`^([A-E]\d+) `), so an `a` suffix is not a front id
+anywhere the register is read by a machine. The buttonmatcher copy passes
+only because buttonmatcher has no register parser. Renumber it **B20** (B19
+is the last B on `main`) before the branch is re-cut, in both repos, and the
+three `test_goal_tracker_repair` tests go green with no code change.
+
+### 7.3 `claude/gsutil-deprecation-migration-j3hkdf` (buttonmatcher, d61ad85, unmerged)
+
+The buttonmatcher half of ebayscout's #87. Simulated merge onto `main` is
+clean. Until it lands, `STRATEGIC_REVIEW_2026-09.md`,
+`REFERENCE_SCORING_REVIEW.md`, `SHIPPED_WATCH_REVIEW.md` and this file
+differ between the repos by the `gsutil` lines alone (this file: one
+sentence in IC-06). Merging it restores byte parity on all four. That is
+the whole action; no other PR should touch those files until it is in.
+
+## 8. Order of work from here
+
+1. Merge the gsutil branch (7.3) to restore doc parity.
+2. Re-cut 7.2 off `main` in both repos with B14a renumbered to B20; open the
+   two PRs; ebayscout CI must be green before merge.
+3. On 7.1: change the C8 text from "RS-05 dropped" to "RS-05 gated behind
+   RS-06", name the front C8 retires, then merge.
+4. RS-06 (novelty term, fed by the `sibling_cos` now on auto rows), with the
+   fixture's 25 "swapped other" rows as its acceptance set; RS-05 follows on
+   the same fixture at +3/0.
+5. WS2 `correction` rows (SR-05) are still not started and still gate
+   Stage D. Nothing on either branch moves them.
+
+Verified as in §5: diffs, API state, CI logs, both pure suites, the fixture
+replay above. Not run: anything against Cloud Run, GCS, Sheets or Slack.
