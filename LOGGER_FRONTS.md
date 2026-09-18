@@ -600,7 +600,8 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Instrument:** `parse_gemini_response` (byte-shared); the reconcile geometry
 - **Gate:** root cause reproduced on the real photo.
 - **Standing:** FIXED. The cause was a coordinate SCALE mismatch — 0-100 vs 0-1000 — not a detection failure. A reminder that the recurring error class is an unstated frame/scale assumption, not a bad model.
-- **Source:** `tested_hypothesis.md` §4.5
+- **Amended 2026-09-18:** the diagnosis was right and the FIX WAS HALF RIGHT. The rule was whole-response (max over every coordinate → divide everything by 10), and Gemini mixes the two conventions **per axis within one response** — x percent, y per-mille on the 2026-09-16 2008 Citizens lot. The rule then fixed y by crushing x into a strip down the left edge, and the lot posted 22 buttons for a photo of 13. Scale is now decided per axis. The error class this front named — an unstated frame/scale assumption — reappeared *inside the fix for it*, one level down: the fix assumed one scale per response.
+- **Source:** `tested_hypothesis.md` §4.5, amended by §4.5a
 
 ### B14 — Two-signal reconcile swap
 
@@ -613,6 +614,17 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 - **Standing:** FIXED and SHIPPED. Working as designed — but dormant in practice (fires on ~1 of 78 lots), which is exactly what B7 exists to extend.
 - **Stopped 2026-09-12:** dormant confirmed a third time, per image this time — the swap fires on **5 of 637 lots (0.8%)** against a population of **65** lots carrying an unbacked circle. (The tab read 51 and 698; both were per-crop.) Working as designed, nothing to watch. Extending it is B7's question. See `SHIPPED_WATCH_REVIEW.md` §2.
 - **Source:** `tested_hypothesis.md` §4.6; **verdict: `tested_hypothesis.md` §13.4**
+
+### B14a — The anchoring gate cannot reject a phantom it created
+
+- **Track:** Detection
+- **Status:** OPEN
+- **Stage:** 3
+- **Question:** `assoc_anchored` refuses AUTO when Gemini's point sits more than `0.75×r` from the crop it would confirm. But `plan_anchor_recovery` synthesizes a crop **at** its Gemini point, so `dist ≈ 0` and the crop is anchored **by construction** — the gate can never say no to one. What second signal makes a synthesized crop earn its AUTO?
+- **Instrument:** `n_anchor_recovered`, `unmatched_crop_indices`, `coord_scale`(`mixed`); the label sidecar's per-circle `source` (`gemini_reconciled`)
+- **Gate:** a synthesized crop must clear a **position-independent** test before it may AUTO — mask fill at the synthesized location, or CLIP's own top match agreeing with the slogan the point carries. Anything derived from the point itself is circular.
+- **Standing:** DEMONSTRATED on a live lot, not fixed. 2026-09-16: ten mis-placed Gemini points produced ten synthesized crops sitting on the floor beside the paper, and all ten auto-confirmed, while all twelve real buttons were demoted to manual cards — the exact inversion of what the gate exists for. Clicking Inventory would have written ten phantom counts with no click. `reconcile_with_gemini`'s own comment asserts the opposite ("the anchoring gate demotes it to a manual card, so a wrong fire costs one extra card, never a lost button"); **that comment is wrong** and is the reason the hole went unnoticed. The 2026-09-18 per-axis fix removed *that lot's* source of bad points; it did not close the hole, and any future source reopens it. Note the coupling to B15's unresolved half: this is the same trust question one path over.
+- **Source:** `tested_hypothesis.md` §4.5a; `GEMINI_PIPELINE.md` "Known limitations"
 
 ### B15 — Deficit-fill over-trust
 
