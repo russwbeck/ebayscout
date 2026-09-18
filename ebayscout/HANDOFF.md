@@ -25,6 +25,44 @@ newest is at the top, as in buttonmatcher's copy.
 > both repos; see the 2026-09-18 entry below and `../tested_hypothesis.md`
 > §4.5a.
 
+### 2026-09-18 — crop vectors kept, and staged crops finally say where they came from
+
+§10 of `REFERENCE_SCORING_REVIEW.md` (shared, read §10.7 first) replaces the
+composite quality score with a measure taken on real confirmed crops: does this
+reference photo make a real crop of that button rank #1? That needs the crop's
+CLIP embedding, which this service computes for every crop of every lot,
+multiplies against the reference and text banks, and drops one line later.
+
+ebayscout's half, all of §10.5 step 1:
+
+- **`crop_vectors.py` is a new shared, byte-identical file** (added to
+  `CLAUDE.md`'s list, along with `label_harvest.py`, which was in the same
+  position — shared in practice since July, missing from the list). Pure stdlib:
+  the sidecar's naming and payload contract, the staged-crop name and its parsers,
+  and the `BUTTONMATCHER_CROP_VECTORS` kill switch.
+- `clip_matcher.match_crops_with_diagnostics` takes a `vec_sink` and fills it from
+  the encode it already runs — no second pass, so a crawl costs one array copy.
+  The pipeline writes `pipeline/embeddings/<job_id>.npz` beside the lot's
+  `pipeline/labels/` sidecar (`seen_items.write_crop_vectors`, numpy imported in
+  the function as every heavy import here is).
+- **RS-04, and it mattered most here.** Staged crops are now
+  `<ms>__lot-<job_id>__crop-<n>.jpg`. They were `<ms>.jpg` — this service is the
+  larger source of staged crops, ~92% of the review queue, so buttonmatcher's
+  "+N more from this lot" collapse was blind on almost the whole queue and six
+  crops of one photo read as six independent candidates. The crop number comes
+  from the manifest and falls back to the temp blob's own name, so a manifest in
+  flight across the deploy still keys its crops; a crop that cannot be keyed
+  still stages, because losing the join costs a measurement and an unstaged crop
+  is gone.
+
+No thresholds moved and no decision changed. The curation flow, the backfill, the
+value function and its shadow all live in buttonmatcher — this repo only supplies
+vectors and correctly-named crops.
+
+**Not run:** nothing against Cloud Run, GCS, Slack or CLIP. 433 pure tests pass
+in a web session (34 new); `detect_color` (cv2) and `goal_tracker_repair`
+(openpyxl) are CI's.
+
 ### 2026-09-18 — per-axis Gemini coordinate scale (shared-file fix, landed here too)
 
 A buttonmatcher pipeline lot posted **22 buttons for a photo of 13**, with ten
