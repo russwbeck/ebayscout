@@ -127,6 +127,93 @@ removes typing on every such crop). If the rows are almost all
 CLIP-corroborated ones, which lets them stage, which is what breaks the
 starvation loop C7 describes.
 
+## 3a. Results: the confirm_log export, run 2026-09-18
+
+The operator supplied the confirm_log CSV (4,669 rows, 2026-07-20 to
+2026-09-17, both JSON boards intact on every row). Everything in §3 that
+needs only confirm_log was run; the two splits that need match_log
+(`det_db_direct`, `within_year` margins) are still pending that export.
+The branch tool reproduces the document's numbers exactly (3,426 scored,
+83.0% #1, 581 misses, 364 off-board). Corpus is effectively September:
+3,340 of the 3,426 scored rows.
+
+**Both boards agree, as §2.2 said.** Restricted: 359 off-board, 63% of 573
+misses. Shadow: 364, 63% of 581. Where a year is on both boards it carries
+the same phrase 32,882 times and a different one 528 times, and all 528 are
+on the Football-only slash paths (`pick`, `auto_sort`, `auto_gap_only`). The
+document's §5 reading 1 is closed: this is production.
+
+**Twin false positives are negligible:** 5 rows (3 `gemini_printed_year`, 2
+`edition_pick`) have the phrase on the board under another year. The clean
+count is 359 on shadow.
+
+**Who carries the 359:**
+
+| source | off-board | scored rows with that source |
+|---|---|---|
+| `gemini_auto` | 322 | 2,550 (12.6%) |
+| `typed_search` | 19 | 24 |
+| `missed_button` | 8 | 14 |
+| `pick` | 7 | 371 |
+| `gemini_printed_year` | 2 | 90 |
+| `confusable_pick` | 1 | 1 |
+
+Human lane: 35 of 552 human confirmations (6.3%), 27 of them with a typed
+slogan. Machine lane: 324, and 304 of the 322 `gemini_auto` rows share a
+year with a sibling in their own lot. So the 364 is C7's number first and
+the operator's typing cost second. The operator types for it about once in
+sixteen confirmations; the pipeline leans on the DB-direct rescue for it
+about once in eight.
+
+**Year taken vs year absent splits evenly, and the two halves need different
+repairs:**
+
+| | rows | `gemini_auto` | human | the truth has references elsewhere |
+|---|---|---|---|---|
+| year TAKEN | 183 | 151 | 30 | 115 of 183 |
+| year ABSENT | 176 | 171 | 5 | 166 of 176 |
+
+Usurper depth on the taken rows: rank 1 on 119 (65%), rank 2 to 5 on 37,
+rank 6 to 10 on 27. The rank-1 usurpers are what `within_year_json.top[5]`
+can price today; the deeper ones need the row-key shadow in §4.1.
+
+**The usurpers are few and generic.** 81 distinct slogans hold the 183
+stolen slots; the top five hold 54. `Penn State and Proud of it` 1992 alone
+holds 28, all at rank 1, which is C1's sticky attractor doing exactly what
+C1 said. The usurper rows average text score 0.482 against 0.645 for
+genuine #1 rows, on an image score of 0.841 the truth would have inherited.
+68 of the 183 usurper phrases contain "Penn State", "Lions" or "Nittany":
+generic wording with a hot text embedding wins the year's argmax and the
+year's image score does the rest.
+
+**The year-absent half is an image miss with the photos on the shelf.** 166
+of the 176 truths have references (they appear on-board with a `ref_sim`
+in other rows) and only 8 were never on any board. Their year sits deep on
+image alone: `rank_image_only` 21 to 40 on 70 rows, past 40 on 48, 11 to 20
+on 33, top-10 on 23. So the shelf exists and did not recognise the crop,
+and the text side (a cold pun, A6 Mode 1) did not rescue it. That is the
+one slice where reference variety, C8's question, can still matter. It is
+about 30% of all misses and it is NOT reachable by the un-fold.
+
+**What this changes in §4.** The un-fold's ceiling is the taken half: 183
+rows, half the off-board set, a fifth of the misses. Its job is
+visibility, not #1: the truth's row lands just under the usurper (same
+image score, lower text), which is enough for the review card, the
+agreement pool and the gap rule, and not enough to rank first on its own.
+Two more levers now have numbers behind them:
+
+- **C1, immediately:** retire or re-shoot the attractor shelves.
+  `Penn State and Proud of it` 1992 is 28 of 183 on its own. This is the
+  cheapest 15% of the taken half and needs no code.
+- **Within-year argmax on centered text** (the `rank_centered` machinery,
+  `build_centered_leaderboard`) as a second shadow: the usurpers win on
+  embedding temperature, which centering removes by construction. It can
+  be logged as a `text_centered` key on the same row shadow as 4.1.
+
+Pending from match_log: `det_db_direct` on the 322 `gemini_auto` rows
+(expected near 1 on all of them), and `within_year.runner_up_margin` on the
+119 rank-1 usurper rows, which is the un-fold rescue rate at each margin.
+
 ## 4. The plan: un-fold the board, with a cap
 
 The lever is not A7's withhold (the document's §6.4 is right that a withhold
