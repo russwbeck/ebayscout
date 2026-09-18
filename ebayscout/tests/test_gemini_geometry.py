@@ -476,7 +476,7 @@ def test_frame_fit_skips_when_already_fully_anchored():
     assert fm["applied"] is False and fm["anchored_identity"] == 4
 
 
-# --- B14a: telling a synthesized crop from a detected one --------------------
+# --- B33: telling a synthesized crop from a detected one --------------------
 
 def test_assoc_synthesized_recognises_recovered_crops():
     """`reconcile_with_gemini` tags every crop it cuts at a Gemini point —
@@ -486,7 +486,7 @@ def test_assoc_synthesized_recognises_recovered_crops():
 
 def test_assoc_synthesized_false_for_detected_and_junk():
     """Fail-closed: anything that is not explicitly a synthesized crop is
-    treated as a normal detected one, which is the pre-B14a behaviour."""
+    treated as a normal detected one, which is the pre-B33 behaviour."""
     for circle in ({"source": "hough", "r": 40},
                    {"source": "gemini_led", "r": 40},
                    {"source": "", "r": 40},
@@ -499,7 +499,7 @@ def test_assoc_synthesized_false_for_detected_and_junk():
 
 
 def test_synthesized_crop_is_anchored_by_construction():
-    """The premise of B14a, stated as a test: a crop cut AT a Gemini point has
+    """The premise of B33, stated as a test: a crop cut AT a Gemini point has
     dist ~0, so `assoc_anchored` can never reject it however tight the gate.
     Anchoring is therefore not evidence about a synthesized crop."""
     gx, gy, r = 300.0, 400.0, 48.0

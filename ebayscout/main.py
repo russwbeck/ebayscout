@@ -904,7 +904,7 @@ def process_pipeline_lot(job_id: str) -> None:
                      else None)
             _ar = _circ.get("r") if _circ else None
             _assoc["anchored"] = ggeo.assoc_anchored(_assoc.get("dist"), _ar)
-            # B14a: a crop SYNTHESIZED at a Gemini point is anchored to that
+            # B33: a crop SYNTHESIZED at a Gemini point is anchored to that
             # point by construction — dist is ~0 because the point is where the
             # crop was cut — so ``anchored`` says nothing about it and cannot be
             # the trust signal. Stamped beside the gate it qualifies, so the

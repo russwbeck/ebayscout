@@ -602,12 +602,12 @@ button this bug forced the operator to type in by hand. Final crop count
 **Two things this fix does NOT address**, both live:
 
 1. **The anchoring gate cannot reject a phantom** — CLOSED 2026-09-18 as
-   B14a, after this section was written. A synthesized crop is now stamped
+   B33, after this section was written. A synthesized crop is now stamped
    `synthesized` and refused AUTO when its only support is the DB-direct row
    carrying Gemini's own slogan; it must be corroborated by a candidate CLIP's
    own ranking surfaced. Replayed on THESE broken coordinates the lot yields 22
-   crops and **0 AUTO** instead of 10 — so B14a alone would have held this lot
-   even without the coordinate fix. See `LOGGER_FRONTS.md` B14a for the residual
+   crops and **0 AUTO** instead of 10 — so B33 alone would have held this lot
+   even without the coordinate fix. See `LOGGER_FRONTS.md` B33 for the residual
    and what to watch.
 2. **The `edge` point was fabricated.** `edge_y == y - 14` and `edge_x == x` on
    all ten buttons — always straight up, always the same offset, which derives

@@ -535,14 +535,14 @@ def assoc_synthesized(circle):
     its proxy for "this pairing is trustworthy" is, for these crops, checking
     a number against itself.
 
-    Measured 2026-09-16 (B14a): ten crops synthesized at mis-placed Gemini
+    Measured 2026-09-16 (B33): ten crops synthesized at mis-placed Gemini
     points all passed the anchoring gate and auto-confirmed, while all twelve
     real Hough circles — the ones carrying independent position evidence —
     were refused.  Callers use this to demand evidence that did NOT come from
     the point that created the crop.
 
     Fail-closed on anything unexpected: not a dict, no source, unknown source
-    ⇒ False (treated as a normal detected crop), which is the pre-B14a
+    ⇒ False (treated as a normal detected crop), which is the pre-B33
     behaviour and never blocks a lot that predates the flag.
     """
     if not isinstance(circle, dict):

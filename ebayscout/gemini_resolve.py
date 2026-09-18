@@ -46,7 +46,7 @@ except ImportError:                     # ebayscout imports them as a package
 
 
 def _auto_ok(gate_ok, synthesized, cand):
-    """May this crop AUTO-resolve on this winning candidate? (B14a)
+    """May this crop AUTO-resolve on this winning candidate? (B33)
 
     ``gate_ok`` is the existing gate — confidence, not flagged, anchored.  This
     adds the one rule anchoring cannot express.

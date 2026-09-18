@@ -3204,7 +3204,7 @@ def reconcile_with_gemini(circle_info, gemini_slogans, image_bgr,
     # point by construction (dist ~0), so the anchoring gate can never reject
     # one — on 2026-09-16 ten phantoms auto-confirmed through exactly this path
     # while all twelve real buttons were demoted.  What actually makes the claim
-    # true is B14a: gemini_resolve refuses AUTO for a synthesized crop whose
+    # true is B33: gemini_resolve refuses AUTO for a synthesized crop whose
     # winning candidate is db_direct, so it needs a candidate CLIP's own ranking
     # surfaced.  See gemini_geometry.assoc_synthesized and gemini_resolve._auto_ok.
     n_anchor_recovered = 0

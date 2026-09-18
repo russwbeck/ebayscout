@@ -321,7 +321,7 @@ def test_anchor_gate_flag_default_on_with_kill_switch():
     os.environ.pop("BUTTONMATCHER_ANCHOR_GATE", None)
 
 
-# --- B14a: a synthesized crop cannot confirm itself --------------------------
+# --- B33: a synthesized crop cannot confirm itself --------------------------
 
 def _dbc(year, slogan, type_="Football"):
     """A DB-direct candidate: Gemini's own slogan appended straight from the DB
@@ -332,7 +332,7 @@ def _dbc(year, slogan, type_="Football"):
 
 
 def test_synthesized_crop_on_db_direct_resolves_but_never_autos():
-    """B14a, the 2026-09-16 failure in one crop.
+    """B33, the 2026-09-16 failure in one crop.
 
     A crop synthesized at a Gemini point is anchored BY CONSTRUCTION, and the
     DB-direct tier appends Gemini's own slogan as its candidate — so Gemini's
@@ -386,7 +386,7 @@ def test_db_direct_still_autos_on_a_real_detected_crop():
 
 
 def test_synthesized_absent_is_fail_open():
-    """Callers predating B14a send no `synthesized` key — behaviour unchanged."""
+    """Callers predating B33 send no `synthesized` key — behaviour unchanged."""
     res = gr.resolve_with_gemini_slogans(
         {0: [_dbc("1984", "Stop Stanford")]},
         {0: {"slogan": "Stop Stanford", "confidence": 0.92, "anchored": True}},
@@ -410,7 +410,7 @@ def test_the_2026_09_16_lot_shape_autos_nothing():
     """The whole failure, at lot scale: ten crops synthesized at mis-placed
     Gemini points, every one of them anchored (by construction) and high
     confidence, every one matched only by its own injected DB-direct row.
-    Before B14a all ten auto-confirmed and would have written to the sheet with
+    Before B33 all ten auto-confirmed and would have written to the sheet with
     no click. After it, ten pre-filled cards and zero writes."""
     slogans = ["Defeaticus Sparticus", "U Hoose U Lose", "Cheese Puffs",
                "Owl Shook Up", "Rule The Rooster", "I-O-Wasn't",
