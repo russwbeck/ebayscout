@@ -136,6 +136,97 @@ def build_centered_leaderboard(
         centered, year_scores, text_years, text_phrases, text_types, **kwargs)
 
 
+# --- THE UN-FOLD: a year contributes more than one slogan row -----------------
+#
+# Every board is folded to one row per YEAR: the text-similarity argmax inside
+# that year wins, and the image term is per-year, so a slogan that is not its
+# year's best TEXT match has no row on any board at any depth with any image
+# evidence.  Measured on outcomes 2026-09-18: 364 of 581 confirmed misses never
+# reached the board, and on 183 of them the year was present under a DIFFERENT
+# slogan.  `Penn State and Proud of it` 1992 alone holds 28 of those slots.  The
+# usurpers average text 0.482 against 0.645 for genuine #1 rows, on an image
+# score of 0.841 the truth would have inherited: generic wording with a hot text
+# embedding wins the argmax and the year's image score does the rest.
+#
+# So: emit the winner AND its close siblings.  Same year, same image score,
+# their own text score, the unchanged formula.
+#
+# ONE INVARIANT, and it is what the cost was priced on.  A sibling must never
+# outrank its own year's winner.  The rescue was priced as "the truth's row
+# lands just under the usurper", costing 4 of 187 correct gap-rule autos at
+# M=0.10 — an ADDITIVE change that withholds nothing by itself.  But the rarity
+# tiebreaker is per phrase and worth up to 0.04, while a normalized text margin
+# of M is worth only 0.5*M in `overall`.  At the measured median margin (0.028 →
+# 0.014) a distinctive pun outscores a generic usurper on rarity alone, which
+# would change the #1 answer rather than add an option — a live re-ranking
+# nobody has priced.  `sort_key` therefore orders each year's rows as a block
+# behind that year's winner: years rank exactly as they do today, and a sibling
+# lands immediately under the row that displaced it.  Scores are logged honestly;
+# only the ORDER is constrained.
+#
+# Kill switch BUTTONMATCHER_UNFOLD=0.  One shared name in both services, as
+# BUTTONMATCHER_SHADOW_PASS and BUTTONMATCHER_LABEL_HARVEST already are — this
+# file is copied byte-identical, so it cannot read a different name per repo.
+
+UNFOLD_MARGIN = 0.10      # normalized text distance from the year's winner
+UNFOLD_CAP = 4            # rows per year INCLUDING the winner
+
+
+def unfold_enabled() -> bool:
+    return os.environ.get("BUTTONMATCHER_UNFOLD", "1").strip() not in (
+        "0", "false", "False", "")
+
+
+def year_slogan_rows(entries, *, normalize_fn, margin=UNFOLD_MARGIN,
+                     cap=UNFOLD_CAP, enabled=None):
+    """The rows one YEAR contributes to a board, best text first.
+
+    ``entries`` is that year's ``(raw_text_sim, phrase, type)`` triples.  Returns
+    the same triples: the text argmax, then every sibling whose NORMALIZED score
+    is within ``margin`` of the winner's, capped at ``cap`` rows in total.
+
+    The margin is on the normalized scale because that is the scale the 0.5/0.5
+    blend consumes and the scale `within_year_json.runner_up_margin` was measured
+    on — raw CLIP cosines run ~5x tighter (normalize_slogan stretches [0.15,
+    0.35] onto [0, 1]), so a margin read off the wrong scale is wrong by 5x.
+
+    Ordering is total and deterministic — normalized score, then phrase — so the
+    two services cannot disagree about which sibling was kept.  With ``enabled``
+    false it returns exactly one row: the fold, unchanged.
+    """
+    rows = []
+    for raw, phrase, ty in entries or []:
+        try:
+            rows.append((float(normalize_fn(float(raw))), float(raw),
+                         phrase, ty))
+        except (TypeError, ValueError):
+            continue
+    if not rows:
+        return []
+    rows.sort(key=lambda r: (-r[0], str(r[2])))
+    keep = [rows[0]]
+    if (unfold_enabled() if enabled is None else enabled) and cap > 1:
+        top = rows[0][0]
+        for r in rows[1:]:
+            if len(keep) >= cap or top - r[0] > margin:
+                break
+            keep.append(r)
+    return [(raw, phrase, ty) for _n, raw, phrase, ty in keep]
+
+
+def sort_key(row, winner_overall=None):
+    """Board ordering that keeps each year's rows together, winner first.
+
+    See the invariant above: a year sorts by its WINNER's overall exactly as it
+    does today, and its siblings follow immediately behind it rather than
+    floating up past the row that displaced them.
+    """
+    own = float(row.get("overall") or 0.0)
+    lead = own if winner_overall is None else float(winner_overall)
+    return (-lead, 0 if winner_overall is None else 1, -own,
+            str(row.get("phrase") or row.get("slogan") or ""))
+
+
 def build_leaderboard(
     text_sims,
     year_scores,
@@ -178,7 +269,7 @@ def build_leaderboard(
     -------
     list[dict] with keys: year, image_score, text_score, overall, phrase, type
     """
-    best_by_year = {}  # year(str) -> (best_text_sim, phrase, type)
+    by_year = {}  # year(str) -> [(text_sim, phrase, type), ...]
     n = len(text_sims)
     for k in range(n):
         yr = str(text_years[k])
@@ -187,35 +278,51 @@ def build_leaderboard(
         ty = str(text_types[k])
         if allowed_types is not None and ty not in allowed_types:
             continue
-        ts = float(text_sims[k])
-        cur = best_by_year.get(yr)
-        if cur is None or ts > cur[0]:
-            best_by_year[yr] = (ts, text_phrases[k], ty)
+        by_year.setdefault(yr, []).append(
+            (float(text_sims[k]), text_phrases[k], ty))
+
+    # One row per year became up to UNFOLD_CAP; see year_slogan_rows.
+    best_by_year = {}
+    for yr, entries in by_year.items():
+        kept = year_slogan_rows(entries, normalize_fn=normalize_fn)
+        if kept:
+            best_by_year[yr] = kept
 
     results = []
-    for yr, (best_text, phrase, ty) in best_by_year.items():
+    for yr, kept in best_by_year.items():
         img_score = float(year_scores.get(yr, year_scores.get(_maybe_int(yr), 0.0)))
-        norm_text = float(normalize_fn(best_text))
-        # Mirror score_slogans EXACTLY so logged leaderboards == live scores.
-        overall = 0.5 * img_score + 0.5 * norm_text
-        if norm_text > 0.9:
-            overall += (norm_text - 0.9) * 2.5
-        if norm_text < 0.3:
-            overall *= 0.7
-        words = set(tokenize_fn(phrase)) - set(stopwords)
-        if words:
-            bonus = min(0.04 * sum(rarity_fn(w) for w in words) / len(words), 0.04)
-            overall = min(1.0, overall + bonus)
-        results.append({
-            "year": yr,
-            "image_score": round(img_score, 5),
-            "text_score": round(norm_text, 5),
-            "overall": round(overall, 5),
-            "phrase": phrase,
-            "type": ty,
-        })
+        _winner_overall = None
+        for best_text, phrase, ty in kept:
+            norm_text = float(normalize_fn(best_text))
+            # Mirror score_slogans EXACTLY so logged leaderboards == live scores.
+            overall = 0.5 * img_score + 0.5 * norm_text
+            if norm_text > 0.9:
+                overall += (norm_text - 0.9) * 2.5
+            if norm_text < 0.3:
+                overall *= 0.7
+            words = set(tokenize_fn(phrase)) - set(stopwords)
+            if words:
+                bonus = min(0.04 * sum(rarity_fn(w) for w in words) / len(words),
+                            0.04)
+                overall = min(1.0, overall + bonus)
+            row = {
+                "year": yr,
+                "image_score": round(img_score, 5),
+                "text_score": round(norm_text, 5),
+                "overall": round(overall, 5),
+                "phrase": phrase,
+                "type": ty,
+            }
+            # The year's winner leads its block; siblings follow it.  Recorded
+            # BEFORE the row is appended so the winner keys off its own score.
+            row["_lead"] = _winner_overall
+            if _winner_overall is None:
+                _winner_overall = row["overall"]
+            results.append(row)
 
-    results.sort(key=lambda r: r["overall"], reverse=True)
+    results.sort(key=lambda r: sort_key(r, r.get("_lead")))
+    for r in results:
+        r.pop("_lead", None)
     if top_n is not None:
         return results[:top_n]
     return results

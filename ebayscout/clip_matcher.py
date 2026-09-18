@@ -818,47 +818,79 @@ def _score_slogans(
             continue
         match_mask = valid_years == year
         if not match_mask.any():
-            best_raw    = 0.0
-            best_phrase = "Unknown"
+            _kept = [(0.0, "Unknown")]
         else:
-            local_sims     = valid_sims[match_mask]
-            best_local_idx = int(np.argmax(local_sims))
-            best_raw       = float(local_sims[best_local_idx])
-            global_idx     = valid_indices[match_mask][best_local_idx]
-            best_phrase    = _text_phrases[global_idx]
+            # The un-fold: this year contributes its text argmax AND any sibling
+            # within match_logging.UNFOLD_MARGIN of it.  Shared selection, so
+            # this scorer, buttonmatcher's and the logged leaderboard cannot
+            # drift apart on which sibling was kept.
+            _gidx = valid_indices[match_mask]
+            _kept = [
+                (_raw, _phrase) for _raw, _phrase, _ty in match_logging.year_slogan_rows(
+                    [(float(valid_sims[match_mask][_li]),
+                      _text_phrases[_gidx[_li]], "")
+                     for _li in range(int(match_mask.sum()))],
+                    normalize_fn=_normalize_slogan)]
+        _winner_overall = None
+        for best_raw, best_phrase in _kept:
+            slogan_score = _normalize_slogan(best_raw)
+            overall      = (config.ALPHA * image_score) + (config.BETA * slogan_score)
 
-        slogan_score = _normalize_slogan(best_raw)
-        overall      = (config.ALPHA * image_score) + (config.BETA * slogan_score)
+            # Boost for near-certain text match (>90%) — ramps fast. Single tier only,
+            # matching buttonmatcher score_slogans / build_leaderboard (no 75–90% tier).
+            if slogan_score > 0.9:
+                overall += (slogan_score - 0.9) * 2.5
+            # Penalty for very weak text match
+            if slogan_score < config.SLOGAN_PENALTY_THRESHOLD:
+                overall *= config.PENALTY_MULTIPLIER
 
-        # Boost for near-certain text match (>90%) — ramps fast. Single tier only,
-        # matching buttonmatcher score_slogans / build_leaderboard (no 75–90% tier).
-        if slogan_score > 0.9:
-            overall += (slogan_score - 0.9) * 2.5
-        # Penalty for very weak text match
-        if slogan_score < config.SLOGAN_PENALTY_THRESHOLD:
-            overall *= config.PENALTY_MULTIPLIER
+            # Rarity tiebreaker (capped at +0.04): rewards distinctive slogan words so
+            # a rare exact phrase edges out a generic one. Mirrors build_leaderboard
+            # EXACTLY so logged leaderboards equal live scores.
+            _words = set(tokenize(best_phrase)) - STOPWORDS
+            if _words:
+                _bonus  = min(0.04 * sum(rarity_weight(w) for w in _words) / len(_words), 0.04)
+                overall = min(1.0, overall + _bonus)
 
-        # Rarity tiebreaker (capped at +0.04): rewards distinctive slogan words so
-        # a rare exact phrase edges out a generic one. Mirrors build_leaderboard
-        # EXACTLY so logged leaderboards equal live scores.
-        _words = set(tokenize(best_phrase)) - STOPWORDS
-        if _words:
-            _bonus  = min(0.04 * sum(rarity_weight(w) for w in _words) / len(_words), 0.04)
-            overall = min(1.0, overall + _bonus)
+            _row = {
+                "year":         year,
+                "slogan":       best_phrase,
+                "overall":      overall,
+                "image_score":  image_score,
+                "slogan_score": slogan_score,
+            }
+            # A sibling never outranks its own year's winner — what the un-fold's
+            # cost was priced on.  See match_logging.sort_key.
+            _row["_lead"] = _winner_overall
+            if _winner_overall is None:
+                _winner_overall = overall
+            results.append(_row)
 
-        results.append({
-            "year":         year,
-            "slogan":       best_phrase,
-            "overall":      overall,
-            "image_score":  image_score,
-            "slogan_score": slogan_score,
-        })
+    results.sort(key=lambda r: match_logging.sort_key(r, r.get("_lead")))
+    for r in results:
+        r.pop("_lead", None)
+    # Keep up to 10 YEARS (buttonmatcher scores with limit=10), with every row
+    # each contributed: trimming by ROW would let an un-folded sibling push a
+    # whole year off the board.  The reference rerank / ref-photo check re-sort
+    # this list, and the Gemini resolver matches its slogan against the full
+    # top-10 — so do NOT trim to 3 here.
+    return _top_years(results, 10)
 
-    results.sort(key=lambda x: (x["overall"], x["slogan_score"]), reverse=True)
-    # Keep up to 10 (buttonmatcher scores with limit=10). The reference rerank /
-    # ref-photo check re-sort this list, and the Gemini resolver matches its
-    # slogan against the full top-10 — so do NOT trim to 3 here.
-    return results[:10]
+
+def _top_years(results, n):
+    """The first ``n`` distinct years of an ordered board, with every row they
+    contributed.  Mirrors buttonmatcher's helper of the same name."""
+    if n is None:
+        return results
+    out, seen = [], []
+    for r in results or []:
+        y = r.get("year")
+        if y not in seen:
+            if len(seen) >= n:
+                break
+            seen.append(y)
+        out.append(r)
+    return out
 
 
 def _normalize_slogan(score: float, min_s: float = 0.15, max_s: float = 0.35) -> float:
