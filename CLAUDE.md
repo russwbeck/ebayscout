@@ -43,7 +43,8 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
 - **buybot is decommissioned (2026-07-05).** Shared files (`detect.py`/
   `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, `sheet_retry.py`,
   `confusable_slogans.py`, `pipeline_ingest.py`, `gemini_geometry.py`,
-  `gemini_resolve.py`, the shared docs) sync across buttonmatcher + ebayscout
+  `gemini_resolve.py`, `crop_vectors.py`, `label_harvest.py`, the shared docs)
+  sync across buttonmatcher + ebayscout
   only; ignore older docs that name buybot as a third sync target.
   `sheet_retry.py` joined the set on 2026-09-09, when `match_logging` started
   retrying the Sheets write quota through it; `match_logging.py` imports it
@@ -61,7 +62,15 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
   exactly one hunk — the `edition_twins` import, wrapped flat-first /
   package-second the same way `match_logging.py` wraps `sheet_retry` — so port
   changes to it by hand and leave that hunk alone. `tested_hypothesis.md` is
-  byte-shared too. `diff` before and after touching any of them.
+  byte-shared too. `crop_vectors.py` joined on 2026-09-18 with §10.2 step 1 of
+  `REFERENCE_SCORING_REVIEW.md`: both services now keep each matched crop's CLIP
+  vector (`pipeline/embeddings/<job_id>.npz`) and name a staged crop
+  `<ms>__lot-<job_id>__crop-<n>.jpg`, and one file has to define that name's
+  shape or the two repos write into one bucket with two conventions. It is
+  byte-identical and pure stdlib. `label_harvest.py` was in the same position —
+  shared in practice since 2026-07-11, missing from this list — and the backfill
+  that re-cuts old crops reads its records, so name it here too. `diff` before
+  and after touching any of them.
 - **`rerank.py` weights are calibrated, not guessed.** `YEAR_WEIGHT` and
   `SID_WEIGHT` must stay equal across both repos —
   `tests/test_buttonmatcher_parity.py` pins them. Raising them needs a fresh

@@ -984,8 +984,16 @@ def process_pipeline_lot(job_id: str) -> None:
 
     # 5) CLIP matching, INDEPENDENT of the JSON
     pil_crops   = _ip._bgr_to_pil(crops)
-    diagnostics = _cm.match_crops_with_diagnostics(pil_crops, restrict_years=restrict_years)
+    # The crops' embeddings, kept instead of dropped (§10.2 step 1): this is the
+    # lane that supplies most of the reference library, so its vectors are most
+    # of the evidence the value function has.  Keyed on job_id, beside this lot's
+    # pipeline/labels/ sidecar and joining the confirm_log rows below.
+    _vec_sink: list = []
+    diagnostics = _cm.match_crops_with_diagnostics(pil_crops,
+                                                   restrict_years=restrict_years,
+                                                   vec_sink=_vec_sink)
     crop_candidates = {i: d["candidates"] for i, d in enumerate(diagnostics)}
+    seen_items.write_crop_vectors(job_id, _vec_sink, item_id=item_id)
 
     # 5b) DB-DIRECT agreement tier (buttonmatcher parity — main._gemini_db_candidates).
     #     The candidate lists above are YEAR-FOLDED: _score_slogans emits ONE row
@@ -1118,6 +1126,10 @@ def process_pipeline_lot(job_id: str) -> None:
             manifest_crops.append({
                 "gcs_name": gcs_name, "year": b["year"], "slogan": b["slogan"],
                 "entry_id": _cm.entry_id_for(b["year"], b["slogan"]),
+                # b["n"] is crop_idx + 1 — the same number the match and confirm
+                # rows log — so it is the key that joins this staged crop to its
+                # embedding in the lot's sidecar (RS-04 / §10.2 step 4).
+                "crop_num": b["n"],
             })
         except Exception as exc:
             print(f"!!! PIPELINE: crop stage failed (crop {b['n']}): {exc}", flush=True)

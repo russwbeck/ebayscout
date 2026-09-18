@@ -469,3 +469,245 @@ Three follow-ups, none blocking merge:
    JSON fixture of them (entry id, ref scores, candidate scores, chosen
    indices, action) would let the margin re-fit be a unit test on day one
    rather than wait for `reference_log` to accrue.
+
+---
+
+## 10. The finish line (2026-09-18, rewritten the same day)
+
+**The first version of this section was wrong, and wrong in the way §3.7
+warned against.** It read C8's null result ("shelf redundancy does not
+predict outcome, p = 0.12") as "variety is not the gap" and set the finish
+line on how many shelves a session queues. But the shelves C8 measured were
+all built by the sameness score: 87% of their references sit at a saturated
+100 on the term that rewards looking like what is already there. A
+correlation cannot be read off a sample that has no range. The library was
+selected for similar crops, so the only thing the library can show is that
+similar crops all behave the same. The operator's objection is the correct
+one: **the finish line is a library of crops that make matching better, and
+nothing in the curation loop has ever measured that.** This section replaces
+the queue-size framing entirely. Queue size is a consequence of getting the
+criterion right, not the goal.
+
+### 10.1 What "makes matching better" means, exactly
+
+A reference photo has one job: when a real lot photo of that button arrives,
+its year and its slogan should win. So the value of a reference is measured
+on real confirmed crops, never on other references:
+
+- **Held-out set per shelf.** Every confirmation is a labeled crop. For entry
+  *e*, H_e is its confirmed crops. The export today has 723 confirmed
+  (slogan, year) keys; 560 have at least 3 crops, 372 have at least 5
+  (2,523 crops), 40 have at least 10. That is enough to score most active
+  shelves now and every active shelf within weeks at the current 200
+  confirmations a day.
+- **Hard negatives per shelf.** confirm_log also records who beat whom: 402
+  distinct (truth, winner) pairs, 40 seen three times or more, 429 keys
+  involved. N_e is the confirmed crops of the entries *e* is confused with,
+  in either direction.
+- **Value of a reference set R for shelf e:**
+  the count of H_e crops on which *e* ranks #1 at slogan level under R,
+  minus the count of N_e crops on which *e* wrongly ranks #1 under R.
+  Computed with the live formula (year image score = max over R, text
+  unchanged, un-folded board), so the number IS the matcher's answer.
+- **Marginal value of one reference** = Value(R) − Value(R without it).
+  Zero means the photo changes no outcome: dead weight, first to be
+  replaced. **Marginal value of a candidate** = Value(R with it, minus the
+  weakest-by-marginal-value) − Value(R). Positive means stage and swap; zero
+  or negative means discard. No composite, no margin, no click.
+
+This is §3.7's leave-one-out retrieval value, and RS-06's first half, made
+the whole criterion instead of a term inside the old one.
+
+### 10.2 Why it is cheap: the image side of the matcher is a dot product
+
+Everything the value function needs is an embedding. At match time the
+service already computes each crop's L2-normed ViT-B/32 vector (`vecs`,
+`main.py` 1775) and multiplies it against `ref_vectors` and the text bank;
+then it throws the vector away. `vectors.pt` (every reference's vector) and
+`text_features.pt` (every slogan's) are already blobs in the bucket. So:
+
+1. **Persist crop vectors at match time.** One small array per job
+   (`pipeline/embeddings/<job_id>.npy`, 512 floats per crop, keyed
+   `crop_num`), written next to the `pipeline/labels/` sidecar that has
+   existed since 2026-07-11. Slash-flow crops the same, keyed on
+   `thread_ts` + `crop_num`. Fail-open, kill switch, a few lines at the
+   three call sites. **This is the prerequisite for everything below and
+   it is the first PR.**
+2. **Backfill.** 3,944 of the 4,620 usable confirmations are pipeline rows
+   with a `job_id`, all since the sidecar shipped, so their crops can be
+   re-cut from the stored detection image and circles and embedded once, in
+   one `/internal/` request per batch (CPU inside a request, per the
+   standing constraint). The 676 slash-flow rows without a sidecar are lost
+   as held-out data; their crops that were staged still exist as JPEGs.
+3. **The value function runs offline** on the vectors and the two `.pt`
+   blobs: pure numpy, no CLIP, no Cloud Run, runs in Cloud Shell or here.
+   It replays the matcher's image side for any hypothetical shelf in
+   milliseconds. `tools/eval_reference_value.py` grows a `--embeddings`
+   mode; the replay of the live formula is what `match_logging.
+   build_leaderboard` already is.
+4. **Candidates arrive with their vector.** A staged crop is a confirmed
+   crop, so its vector was computed when it was matched; the staged name
+   must carry `job_id` and `crop_num` to join it. That is RS-04, and it is
+   now a prerequisite, not a nicety.
+
+### 10.3 The curation rule that replaces the composite
+
+- **Intake (RS-07, redefined):** a candidate for shelf *e* is scored by
+  marginal value against H_e and N_e. Positive → stage as a swap for the
+  reference with the lowest marginal value, applied by the auto pass. Zero
+  or negative → discard, logged with both numbers. A shelf with fewer than
+  3 held-out crops falls back to the current composite and is marked
+  `cold` in the header; it warms itself as confirmations arrive.
+- **Rebuild of what exists:** one pass over every shelf, marginal value per
+  reference. A reference at zero on a shelf with 5+ held-out crops is
+  retired to `_retired/` the moment a positive-value candidate exists; the
+  shelf never drops below its current count. This is how a library built
+  for sameness turns into one built for retrieval without a rebuild day.
+- **The attractors fall out of the same rule.** `Penn State and Proud of it`
+  1992 holds 28 stolen year slots; on its own hard negatives its references
+  have strongly negative marginal value, so the rule retires them without
+  anyone naming the shelf. C1 stops being a hand-curated list.
+- **The composite survives as a floor only:** `MIN_SHORT_SIDE`, exposure
+  clipping, blur. It decides what may not enter, never what stays.
+- **STOP means "do not ask me", never "do not add a clearly better crop".**
+  Operator decision, 2026-09-18. A stopped shelf is skipped by the human
+  queue only; the auto pass still stages, scores and swaps on it when the
+  value function is positive, and announces the swap in the header. The
+  `stage_skip_reason` gate that currently refuses staging on a stopped
+  shelf (`main.py` `_stage_confirmed_crop`) is therefore wrong under this
+  definition and changes with step 5 of §10.5: `stopped` moves from the
+  stage gate to the review-queue filter.
+- **Human review** is reserved for cold shelves and for the case the rule
+  cannot see: a candidate whose confirmation was itself wrong. Wrong
+  confirmations are the `correction` rows of WS2 (SR-05), which is the
+  other reason that lane matters.
+
+### 10.4 Conditions for done
+
+| | today | done |
+|---|---|---|
+| slogan-level confirmed-#1 on held-out crops, all shelves | 83.0% | rises each month and is reported per shelf; no fixed target, the trend is the gate |
+| references with zero marginal value on shelves with 5+ held-out crops | unmeasured | 0 |
+| shelves whose value went DOWN after a swap | unmeasured | 0 (the rule cannot produce one; a non-zero count is a bug) |
+| confirmed slogans with no reference | 9 of 723 | 0 after 30 days of feed |
+| `/reference` human queue | 122 shelves | cold shelves only |
+| duplicates at intake | not gated | a candidate at cosine ≥ 0.99 to a shelf-mate has marginal value ≤ 0 by construction; RS-03's dHash remains for the identical-photo case |
+
+### 10.5 Order of work
+
+1. Persist crop vectors at match time (both repos; the write is a few
+   lines, the join key is `job_id` + `crop_num`). RS-04 in the same PR.
+2. Backfill: re-cut and embed the pipeline confirmations from
+   `pipeline/labels/`, one `/internal/` batch. Export `vectors.pt` and
+   `text_features.pt` once for offline use.
+3. `eval_reference_value.py --embeddings`: marginal value per reference and
+   per staged candidate, offline. Run it on the current library and publish
+   the per-shelf table. **This is the first honest measurement of the
+   library and it needs no live change.** Expect the 87% saturated
+   references to split into a few that carry a shelf and many at zero.
+4. Shadow the rule for one session: log what marginal value would decide
+   beside what the composite decides, on every candidate.
+5. Flip: intake and the auto pass use marginal value; composite becomes the
+   floor. Kill switch.
+6. RS-05 and RS-06 as previously specified are **closed by this**: the +3/0
+   margin and the novelty term were both proxies for value, and value is
+   now measured directly. C8 is answered the same way: the question was
+   never whether redundancy correlates with outcome in a library that has
+   no variety, it was whether each photo changes an outcome, and that is
+   now a column.
+
+### 10.6 What this does not fix, said plainly
+
+The 176 year-absent misses in `OFF_BOARD_MISSES_PLAN_2026-09-18.md` §3a are
+the slice where reference photos are the lever, and this is what moves
+them: those shelves have references (166 of 176) that do not recognise the
+real crops, which is exactly a zero-or-negative marginal value. The 183
+year-taken misses are the un-fold's. Ranking misses with the truth on-board
+(217) are the rerank's. None of the three is the curation queue's.
+
+### 10.7 Implementation state (2026-09-18, the implementers)
+
+Steps 1-4 are built and on `claude/reference-image-db-status-ggg2jm` in both
+repos; step 5 is a switch, with nothing left to build for it. **None of it has
+run against GCS, CLIP, Slack or Cloud Run** — no web session can — so every
+number below is a test result or a count of code, never a measurement of the
+library. The first real measurement is the operator's, in the order under
+"What the operator runs".
+
+| step | state | where |
+|---|---|---|
+| 1. persist crop vectors + RS-04 | **built** | `crop_vectors.py` (shared, byte-identical), `vec_sink` in `match_all_crops` / `match_crops_with_diagnostics`, both buttonmatcher lanes + the ebayscout pipeline, `seen_items.promote_crops_to_reference_staging` |
+| 2. backfill + bank export | **built** | `reference_backfill.py`, `/reference backfill [N]`, `/reference export` |
+| 3. marginal value per reference | **built, never run** | `reference_value.py` (pure), `tools/value_replay.py`, `tools/eval_reference_value.py --embeddings --out --out-cases` |
+| 4. shadow one session | **built** | `BUTTONMATCHER_REFERENCE_VALUE=shadow` (default), `value_shadow` on every `reference_log` decision row, a header line |
+| 5. flip | **a switch** | `BUTTONMATCHER_REFERENCE_VALUE=live`; the composite stays as the intake floor |
+| 6. RS-05 / RS-06 closed by this | **honoured** | neither margin was moved; `COMPOSITE_MARGIN` is still 0.10 and `DISCARD_MARGIN` 0.05, and they stop mattering the moment step 5 flips |
+
+**What the data contract is**, so nothing downstream has to guess:
+
+- `pipeline/embeddings/<job_id>.npz` — `crop_num` int32, `vec` float32 [N, 512],
+  `meta` (json: `lot_key`, `job_id`, `service`, `source` = `match`|`backfill`).
+  float32 and not float16 because the value function ranks thousands of
+  near-identical cosines and half precision can reorder a shelf.
+- `reference/_staging/<entry>/<ms>__lot-<job_id>__crop-<n>.jpg` — RS-04, in both
+  repos. `source_lot` stops at the next `__`, so adding the crop number cannot
+  silently turn every crop of one photo into its own "lot".
+- `reference_value/ref_vectors.npz`, `text_features.npz` (with the exported
+  `word_freq` table), `entries.npz` — written by `/reference export`.
+- `reference_value/shelf_value.json` (the published table) and
+  `shelf_cases.npz` (the evidence, with each crop's vector) — written by the
+  tool, read by `/reference` for the shadow.
+
+**Three things the implementation had to decide, which §10 left open.** Each is
+a property of the live board rather than a choice, and each is pinned by a test:
+
+1. **The image score is the YEAR's max, over every reference of that year — not
+   the shelf's.** §10.1 says "year image score = max over R"; the live scorer's
+   `year_scores` is the max over the year's whole reference pool. So one entry's
+   photos lift every slogan sharing its year (which is the mechanism behind C1's
+   attractors), and a reference is worth nothing on a crop a year-mate already
+   carries. The implementation uses the live definition and carries the
+   year-mates' best as `pool_sim`; ignoring it would credit a shelf for outcomes
+   it had no part in.
+2. **A reference photo cannot make a slogan beat a same-year sibling.** The
+   board's #1 row is always its year's text-argmax, so for a crop whose year is
+   taken by another slogan NO reference set can rank it #1. Those crops are
+   counted in their own `unwinnable` column and never as misses — which is what
+   keeps this measure from claiming the un-fold's work, and from sending the
+   operator to re-shoot a shelf that is losing on text. §10.6 already says those
+   183 rows are A7's; this is that statement made structural.
+3. **The blend is never restated.** A row's `overall` is affine in the year image
+   score, so the threshold is exact — but the slope and intercept are solved by
+   probing `match_logging.build_leaderboard` at two image scores rather than
+   re-deriving the 0.5/0.5 weights, the near-certain-text boost, the weak-text
+   penalty and the rarity tiebreaker. A slope the live formula cannot produce is
+   refused, so a scorer that gains a term fails loudly instead of being quietly
+   mis-described.
+
+**What the operator runs, in order.** Each step is one Slack command or one
+Cloud Shell command, and each is safe to repeat:
+
+1. `/reference export` — the three banks. Cheap; re-run after any text_db edit.
+2. `/reference backfill` — 200 lots a batch, resumable, skips lots already done.
+   Repeat until the header says 0 left. This is the only expensive step (one
+   download + CLIP encode per lot) and it is once per lot, ever.
+3. In Cloud Shell:
+   `gcloud storage cp gs://<bucket>/reference_value/*.npz .` ·
+   `gcloud storage cp -r gs://<bucket>/pipeline/embeddings .` ·
+   `python tools/eval_reference_value.py --confirm-log confirm_log.csv
+   --embeddings embeddings --out shelf_value.json --out-cases shelf_cases.npz`
+   — **the first honest measurement of the library.** §10.5 expects the 87%
+   saturated references to split into a few that carry a shelf and many at zero.
+4. Upload both files back under `reference_value/`.
+5. Run `/reference` once and read the `value shadow:` header line. The number
+   that decides the flip is not the agreement rate — a rule that agreed
+   everywhere would change nothing — it is whether the disagreements are ones the
+   value rule can defend, plus `target_disagree` (both rules saying "swap" and
+   disagreeing about what goes, which is IC-10's warning).
+6. `BUTTONMATCHER_REFERENCE_VALUE=live` when they do.
+
+Operator actions still outstanding from earlier tickets, unchanged by this work:
+the 30-day lifecycle rule on `reference/_retired/` (IC-07), and `C1`'s attractor
+shelves — though §10.3 predicts the value rule retires those without anyone
+naming them, and step 3's table is where to check that before re-shooting
+anything.
