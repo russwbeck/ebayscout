@@ -1014,3 +1014,65 @@ damage. Curation by marginal value prunes the harmless middle automatically and
 leaves the harmful tail to a person. The warm negatives (`Press Textile` 1982 at −6,
 `Temple Whoo?` 1978 at −4, `Topple the Titans` 1981 at −4) it can fix itself, but
 only when a positive-value candidate happens to arrive for them.
+
+#### The second live session (08:59 EDT): the one-swap rule pays for itself
+
+```
+• auto-replaced 0 ref(s) and removed 3 staged crop(s) (retired where the value
+  rule decided) across 2 slogan(s)
+• left for you: 38 within the margin
+• value rule *LIVE*: 41 candidate(s) scored, 38 on cold shelves (no opinion),
+  0 positive, 3 at zero or below, 3 the composite left to you
+• *32 slogan(s) queued for review*
+```
+
+No ⚠️ on that line, which is the guard's first clean pass: the export named every
+shelf, and every shelf still matched what the cases describe.
+
+**The three candidates the previous session held back now score zero.** Last night
+ended with "3 second positive on one shelf — next session decides it": three
+candidates with positive marginal value that could not be applied, because their
+shelf had already spent its one swap for the pass. Tonight, measured against evidence
+that includes the photo that landed, the same three are worth **nothing** and were
+retired. (The arithmetic ties them together on both sides — 41 candidates = 38 cold +
+3 decidable, and the previous session's residue was 38 within-margin + 3 held — but
+the headers alone do not prove the crops are identical.)
+
+That is the one-swap-per-pass rule earning its place on its second outing. Applied
+last night on marginals measured against the pre-swap shelf, those three would have
+evicted three real references in exchange for photos that resolve nothing.
+
+**§10.4's queue condition is met, literally.** It asked for the human queue to be
+"cold shelves only". Every one of the 38 candidates left is on a cold shelf; the queue
+went 119 → 34 → 32, and what remains is exactly the population the rule says it has no
+business deciding.
+
+#### The cold gate is asymmetric, and that is why C1 is still a person's job
+
+A shelf is cold below `COLD_SHELF_MIN` (3) **winnable held-out crops of its own** —
+confirmed crops of that button, excluding the ones whose year another slogan's text
+already takes, which no photo can win. Below three, "this photo resolved one more
+crop" is indistinguishable from one lucky crop, so the rule declines and the composite
+decides. Cold shelves warm themselves at ~200 confirmations a day; a button that
+rarely sells never does.
+
+But look at what that threshold counts. It counts the shelf's **own** crops. The harm
+an attractor does is counted on **other** shelves' crops, and there the evidence is
+abundant: `Penn State and Proud of it` 1992 has 2 own crops (cold) and 17 crops
+wrongly taken from other buttons. So the rule holds plenty of evidence that those four
+photos are harmful, and refuses to act because it holds thin evidence about whether
+they are helpful.
+
+Judging "is this photo worth a slot" requires the shelf's own crops. Judging "is this
+photo stealing from everyone else" does not. **A gate that blocks both on the same
+threshold is stricter than the measurement requires**, and it is the reason the single
+most damaging shelf in the library — the one §10.3 promised the rule would retire
+without anyone naming it — is still waiting on a camera.
+
+What it would take: allow a retirement on negative evidence alone (a reference whose
+marginal value is negative on N or more hard negatives, independent of the shelf's own
+crop count), with a floor so a shelf can never be emptied, and the retirement going to
+`reference/_retired/` as every other one does. Not built, and not to be built
+casually: it widens what the rule may destroy, and a false positive there deletes a
+good photo of a button nobody has confirmed lately. Recorded here as the obvious next
+question rather than left to be rediscovered.
