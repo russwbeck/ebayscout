@@ -627,13 +627,15 @@ year-taken misses are the un-fold's. Ranking misses with the truth on-board
 
 ### 10.7 Implementation state (2026-09-18, the implementers)
 
-> **It has since run.** §10.8 is the measurement and §10.9 the shadow; this
-> section is the pre-run record of what was built, kept because the data contract
-> and the three decisions below are still the contract. Where it says "never run",
-> read §10.8.
+> **It has since run, and step 5 has shipped.** §10.8 is the measurement, §10.9
+> the shadow, §10.10 what `live` actually does; this section is the pre-run record
+> of what was built, kept because the data contract and the three decisions below
+> are still the contract. Where it says "never run", read §10.8; where it calls
+> step 5 a switch, read §10.10 — that claim was wrong.
 
 Steps 1-4 are built and on `claude/reference-image-db-status-ggg2jm` in both
-repos; step 5 is a switch, with nothing left to build for it. **None of it has
+repos; step 5 was believed to be a switch with nothing left to build, which
+§10.10 corrects. **None of it has
 run against GCS, CLIP, Slack or Cloud Run** — no web session can — so every
 number below is a test result or a count of code, never a measurement of the
 library. The first real measurement is the operator's, in the order under
@@ -645,7 +647,7 @@ library. The first real measurement is the operator's, in the order under
 | 2. backfill + bank export | **built** | `reference_backfill.py`, `/reference backfill [N]`, `/reference export` |
 | 3. marginal value per reference | **built, never run** | `reference_value.py` (pure), `tools/value_replay.py`, `tools/eval_reference_value.py --embeddings --out --out-cases` |
 | 4. shadow one session | **built** | `BUTTONMATCHER_REFERENCE_VALUE=shadow` (default), `value_shadow` on every `reference_log` decision row, a header line |
-| 5. flip | **a switch** | `BUTTONMATCHER_REFERENCE_VALUE=live`; the composite stays as the intake floor |
+| 5. flip | **shipped 2026-09-19 — and it was NOT a switch**, see §10.10 | `BUTTONMATCHER_REFERENCE_VALUE=live`; the composite stays as the intake floor and supplies the swap target |
 | 6. RS-05 / RS-06 closed by this | **honoured** | neither margin was moved; `COMPOSITE_MARGIN` is still 0.10 and `DISCARD_MARGIN` 0.05, and they stop mattering the moment step 5 flips |
 
 **What the data contract is**, so nothing downstream has to guess:
@@ -854,3 +856,42 @@ untested until a candidate lands on a shelf the composite clears outright.
 
 **Standing recommendation, unchanged by the run:** flip intake and discard to the
 value rule; leave the swap target with the composite.
+
+### 10.10 Step 5, shipped (2026-09-19) — and it was not a switch
+
+**§10.7's "step 5 is a switch, not new code" was wrong, and wrong in a way that
+would have wasted the operator's session.** `BUTTONMATCHER_REFERENCE_VALUE=live`
+was accepted by `_ref_value_mode` and then read nowhere: the only mode anything
+tested for was `off`, and the shadow was computed *after*
+`_ref_apply_swaps` and `_ref_delete_staged` had already run. Setting `live` would
+have changed nothing at all, silently. What step 5 needed was the scoring moved
+ahead of the apply, a second planner, and a discard that does not delete.
+
+**What `live` does now.** The at-cap pass scores the value rule first, then
+re-plans with `reference_value.plan_live_decisions`, then applies one plan —
+the same `(swaps, discards, reviews, reasons)` shape either rule produced it, so
+the log rows and the refusal line are unchanged:
+
+| | |
+|---|---|
+| intake and discard | the **rule's**: marginal value > 0 stages and swaps, ≤ 0 discards |
+| what may enter at all | the **composite's** floor (`clears_floor`: size, exposure, blur), never overridden — §10.3's "the composite survives as a floor only" |
+| which reference a swap displaces | the **composite's** weakest, by the operator's decision of 2026-09-19 and §10.8's 97.7% of references tied at zero. The candidate's marginal value is measured against that same photo, so the number describes the swap performed; the log row carries it as `measured_against`, and `value_target` stays what the rule would have preferred |
+| a discard | **retired**, not deleted: `reference/_retired/<entry>/<ts>__value_discard.jpg`, IC-07's window. An automatic "no" taken on evidence that is uploaded by hand gets 30 days to be looked at |
+| swaps per shelf per pass | **one.** Each marginal value is measured against the shelf as it stands, and after one swap that shelf is gone, so a second positive's number describes a set that no longer exists. It goes to review and next session decides it on fresh evidence |
+| a cold shelf (< 3 winnable held-out crops) | the composite's plan, untouched |
+| evidence older than `CASES_MAX_AGE_DAYS` (30) | the composite's plan, untouched, and the header says so — the operator's own requirement, in their words, "I'll forget to run it" |
+| `stop staging` | moves from the staging gate to the review-queue filter, §10.3: STOP means "do not ask me", never "do not add a clearly better crop". At-cap stopped shelves are scored and swapped and never queued; a **below-cap** stopped shelf is left alone entirely, because every swap this pass can express takes a slot from something and a shelf with room would lose a photo it did not have to lose. `/reference sloganid <id>` overrides the filter — naming a shelf is asking about it |
+| kill switch | `=shadow` (log only, the default) or `=off` (skip entirely) |
+
+The staleness guard is the one piece here with no evidence behind its threshold:
+30 days is IC-07's number reused, not a measurement. It fails safe — a stale file
+means the composite decides, which is the behaviour of the last year — and the
+header names the file's age every live session so the number can be argued with.
+
+**Still unmeasured, and unchanged by shipping this:** `target_disagree`. A
+composite that punts names no swap target, so the first shadow produced no
+comparison (§10.9), and the decision to leave the victim with the composite rests
+on the 97.7%-tie argument alone. The row now carries `measured_against` beside
+`value_target`, so the first live session where the composite *does* clear a shelf
+outright will produce the comparison without any further change.
