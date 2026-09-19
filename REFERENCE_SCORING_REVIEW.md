@@ -627,6 +627,11 @@ year-taken misses are the un-fold's. Ranking misses with the truth on-board
 
 ### 10.7 Implementation state (2026-09-18, the implementers)
 
+> **It has since run.** §10.8 is the measurement and §10.9 the shadow; this
+> section is the pre-run record of what was built, kept because the data contract
+> and the three decisions below are still the contract. Where it says "never run",
+> read §10.8.
+
 Steps 1-4 are built and on `claude/reference-image-db-status-ggg2jm` in both
 repos; step 5 is a switch, with nothing left to build for it. **None of it has
 run against GCS, CLIP, Slack or Cloud Run** — no web session can — so every
@@ -805,3 +810,47 @@ clears (re-shoot or add), the 18 negative shelves (retire), and the 9 confirmed
 slogans with no reference at all. The 368 year-taken misses are A7's un-fold and
 the 217 on-board ranking misses are the rerank's — neither is curation's, and
 neither is fixable by a photograph.
+
+### 10.9 The shadow (2026-09-19), and one metric of mine that was wrong
+
+Step 4 ran live, `BUTTONMATCHER_REFERENCE_VALUE=shadow`, on the same export §10.8
+measured. The header the operator saw:
+
+```
+• left for you: 177 within the margin
+• value shadow: 177 candidate(s) scored, 38 on cold shelves (no opinion),
+  would swap 9, discard 130, *139 disagree* with the composite
+• 119 slogan(s) queued for review
+```
+
+**The result.** Of the 139 candidates the rule had evidence to decide (177 minus
+38 on cold shelves), it discards 130 and swaps 9 — **94% discard**. Flipping
+intake and discard alone would take the queue from 177 to ~47, which is most of
+§10.4's "cold shelves only" condition reached in one step. That is §10.8's
+saturation finding arriving from the candidate side: on a library whose shelves
+already win their own crops by 0.23 of margin, almost nothing offered to a warm
+shelf changes an outcome.
+
+**"139 disagree" was an artifact of my own metric, not a finding.** Every one of
+these 177 candidates is *within the composite's margin* — that is why it is in the
+queue at all — so the composite's verdict on each is `REVIEW`: no opinion. And
+9 + 130 = 139 = every candidate the value rule decided. The disagreement count was
+therefore "the composite punted and the rule did not", which is true by
+construction for the whole review band and measures nothing; read as a
+disagreement rate it would have looked like the rule fighting the composite on 78%
+of the queue. `shadow_summary` now counts `agree` / `disagree` **only** over rows
+where the composite actually decided, reports the punts separately as
+`no_opinion`, and prints the comparison with its denominator; two tests pin it
+(`test_a_composite_punt_is_not_a_disagreement` and the header wiring test). The
+honest reading of this session is: **zero comparisons were available, and zero
+conflicts were found.**
+
+**`target_disagree` is still untested.** It is the number §10.8 says to watch, and
+this run could not produce it: a composite that punts names no swap target, so
+`composite_target` was None on all 177 rows and the comparison never happened.
+§10.8's recommendation to leave the swap target on the composite therefore rests
+on the 97.7%-tie argument alone, with no live evidence either way. It will stay
+untested until a candidate lands on a shelf the composite clears outright.
+
+**Standing recommendation, unchanged by the run:** flip intake and discard to the
+value rule; leave the swap target with the composite.
