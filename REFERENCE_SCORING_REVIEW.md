@@ -1129,10 +1129,28 @@ The before/after table in §10.11 survives: 2,342 → 2,350 crops ranking #1 is 
 positive-side number and property 2 has always held there. Its "197 → 194" row
 inherits this bug.
 
-**The fix**, not built as of this writing: skip a negative whose truth shares the
-shelf's year, and report the count so the exclusion is visible rather than a silently
-smaller denominator — the same discipline `case_from_context` already follows for
-crops it cannot reduce to a threshold.
+**The fix, built 2026-09-19.** `reference_value.same_year_confusion` (pure, with
+`year4` so a bowl-year label like `1984 (Mellon)` compares on its year) decides it, and
+the tool skips such a negative instead of charging it. An unknown year on either side
+is NOT a same-year match: with nothing to compare the crop stays chargeable, because a
+denominator that quietly shrank is the failure this whole correction is about.
+
+The exclusion is **reported, never silent**: `same_year_not_charged` per shelf in
+`shelf_value.json`, a `same-year, NOT charged` total in the run's summary, and an `sy`
+column beside `fp` in the worst-shelf table — so a shelf with a large `sy` and a small
+`fp` is legible as a text problem rather than reading as a photograph problem. That
+column is the thing that would have stopped the wrong re-shoot recommendation on
+sight.
+
+Nothing in the service changed: it reads the published cases, so the fix reaches the
+live rule the next time `/reference export` and the tool are run, and the currently
+published `shelf_cases.npz` still carries the old negatives until then.
+
+The end-to-end fixture gained a **cross-year** confusion in the same change. Its only
+confusion was 1984-vs-1984, so after the fix a test asserting "a confusion becomes a
+hard negative" would have passed while testing nothing at all — the hard-negative half
+of the value function would have gone uncovered exactly as the same-year half went
+unimplemented.
 
 **What the fix does NOT buy, said plainly.** It changes no match. The operator
 already has a guard that presents two same-year slogans for a manual click, so these
