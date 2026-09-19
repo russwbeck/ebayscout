@@ -814,7 +814,8 @@ It turns out the right thing, measured, mostly says there is nothing to do.
 
 **The reference work that remains, in full:** the 211 cases where no shelf photo
 clears (re-shoot or add), the 18 negative shelves (retire), and the 9 confirmed
-slogans with no reference at all. The 368 year-taken misses are A7's un-fold and
+slogans with no reference at all. The 368 year-taken misses are A7's un-fold (**shipped
+2026-09-18 — §10.14**, so read them as clicks on a second option, not typed entries) and
 the 217 on-board ranking misses are the rerank's — neither is curation's, and
 neither is fixable by a photograph.
 
@@ -1175,3 +1176,117 @@ reported as a finding, twice, without anyone asking which years the stolen crops
 from. The check that caught it was one query over data already on disk. **A shelf's
 false-positive count is not evidence about its photographs until the same-year crops
 are out of it.**
+
+### 10.13 The fixed run (2026-09-19): what the table says now
+
+First run with §10.12's fix, over the same `confirm_log` export and the same 8,167 crop
+vectors as every run above, so the only change is which crops a shelf is charged for:
+
+| | before the fix | after |
+|---|---|---|
+| crops wrongly taken | 194 | **138** |
+| of those, same-year (no photo can win them) | charged as the photos' fault | **56, reported separately** |
+| shelves with negative value | 18 | **15** |
+| published cases | 5,729 | 5,360 |
+| held-out crops ranked #1 | 2,350 (80.7%) | 2,350 (80.7%) — untouched, as expected |
+| references at zero / negative | 2,773 / 14 | 2,773 / 14 — unchanged |
+
+**`Penn State and Proud of it` 1992 is gone from the worst 25 entirely**, which is
+§10.12's withdrawal confirmed by the measurement rather than by argument. The shelf the
+document twice called the library's worst, and once called proof that the rule finds C1's
+attractors unprompted, is an ordinary shelf.
+
+**The new head of the list is a real list.** Every one of these is a shelf where the
+photographs are what lose the crops, because the same-year column beside it is zero:
+
+```
+  value hits/held  fp  sy dead  year  slogan
+     -6    3/3      9   0    4  1982  Press Textile
+     -4    4/4      8   0    3  1978  Temple Whoo?
+     -4    3/3      7   0    4  1981  Topple the Titans
+     -4    1/1      5   0    4  2017  Shelled and Discarded  [cold]
+     -3    3/3      6  11    4  1978  TTIP PITT
+```
+
+`Press Textile` 1982 is the library's worst shelf: it wins all three of its own crops and
+takes nine from other years. `TTIP PITT` 1978 is the mixed case the column exists for — 6
+cross-year charges it can fix and 11 same-year ones it cannot, which before the fix were
+one indistinguishable number.
+
+The former top of the list — `Undo EMU`, `Eers to Penn State`, `Just a Pitt Stop`, all
+1992 — now appear at value 0 with `0/9`, `0/9` and `0/6` hits and a small `sy`. They are
+the **victims** of the same-year tangle, sitting on 24 confirmed crops between them that
+none of their shelves win. No photograph fixes that either: it is the same text-picker
+problem seen from the losing side. *(It was written as "the strongest argument for A7's
+un-fold" — which had shipped the day before. See §10.14: these crops are pre-un-fold
+records, and their true slogan would be on the card today.)*
+
+#### The count was mislabelled first, and the fix is the same discipline again
+
+The first version of this reported **369** where 56 belonged. It counted every crop of an
+excluded sibling rather than the crops the shelf would actually have been charged for,
+under a column reading "wrongly won" — a number measuring one thing beside a label
+claiming another, which is precisely the error §10.12 exists to correct. Caught within the
+hour, by the two numbers failing to reconcile with the drop from 194 to 138.
+
+The excluded crops are now scored rather than skipped, so only real charges are counted,
+and both figures are printed: the charges (56) and how many sibling crops were examined to
+find them (369). A published count is not evidence until its label is what it measures.
+
+### 10.14 The un-fold already shipped — how to read every "year taken" number above
+
+**Written because this session told the operator that the un-fold was the next project
+and had not been built. It shipped the day before, and one `grep` would have said so.**
+
+`d937523`, 2026-09-18 21:00 UTC: a year emits its text argmax **and** every sibling
+within `UNFOLD_MARGIN = 0.10` on the normalized scale, capped at `UNFOLD_CAP = 4` rows.
+One shared selector (`match_logging.year_slogan_rows`) serving buttonmatcher's
+`score_slogans`, ebayscout's `_score_slogans` and `build_leaderboard`, so the two live
+scorers and the logged board cannot disagree about which sibling was kept. Default on,
+`BUTTONMATCHER_UNFOLD=0` restores the fold exactly. Both constants came from the replay
+§4.2 of `OFF_BOARD_MISSES_PLAN_2026-09-18.md` asked for, so that plan's gate was met
+before it went live.
+
+**What did NOT change, and why this section is not a bug report against §10.2.**
+`sort_key` orders each year's rows as a block behind that year's winner, so years rank
+exactly as they did and a sibling lands immediately under the row that displaced it.
+Property 2 therefore still holds exactly: the #1 row is still its year's text argmax, no
+reference set can change which slogan of a year leads, and `tools/value_replay.py` is
+still right to build one row per year — the extra rows sit below their year's winner and
+cannot alter who is first. Every marginal value, `need`, `unwinnable` count and
+same-year exclusion in §10.8 through §10.13 stands as computed.
+
+**What changes is what the numbers COST, which is not what they measure.** Before the
+un-fold, a slogan that was not its year's best text match had no row on any board at any
+depth: the operator had to type it. Since 2026-09-18 it sits on the card, one line under
+the row that beat it, and the card's trim counts YEARS rather than rows so nothing is
+pushed off to make room. So:
+
+- **368 "year TAKEN by another slogan"** is still an accurate count of crops this
+  measure cannot help — a photograph cannot make them #1, which is all the column
+  claims. It is **no longer** 368 typed entries. Read it as clicks on a second option.
+- **`Undo EMU` 0/9, `Eers to Penn State` 0/9, `Just a Pitt Stop` 0/6** (§10.13) are
+  records of the folded board. Those crops were confirmed before the un-fold existed;
+  the same crops today would put the true slogan on the card.
+- **"the strongest single argument for A7's un-fold"** (§10.13) — an argument for
+  something already shipped. It is evidence the un-fold was worth shipping, not a case
+  for doing it.
+
+**What is genuinely unmeasured: the live effect.** Every number in §10.8-§10.13 comes
+from a `confirm_log` export whose rows almost all predate 2026-09-18 21:00 UTC, so
+nothing here observes the un-fold working. The three numbers §4.2 predicted are still
+worth grading against reality, and grading needs only an export covering rows after the
+ship — no code:
+
+1. **Rescue:** of the crops whose year is taken, how many now resolve because the true
+   slogan was on the card.
+2. **Cost:** correct auto-confirms that now come to a human because an un-folded sibling
+   sits inside the gap rule's margin. This is the one number that could argue for
+   `BUTTONMATCHER_UNFOLD=0`.
+3. **Card:** whether a sibling ever displaces something the operator needed — priced at
+   zero by the trim-by-years change, and worth confirming rather than assuming.
+
+**The process lesson, and it is the same one as §10.12 in a different costume.** That
+section's failure was reporting a number whose label did not match what it measured.
+This one's is describing the state of the code from memory, twice in one conversation,
+when the code was on disk. **Before naming something as work to be done, grep for it.**

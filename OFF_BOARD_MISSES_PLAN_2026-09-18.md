@@ -1,5 +1,25 @@
 # Off-board misses: verification and plan (2026-09-18)
 
+> **STATUS: §4's un-fold SHIPPED, 2026-09-18 21:00 UTC, `d937523`** — both live
+> scorers and the logged board, through one shared selector
+> (`match_logging.year_slogan_rows`), default on, kill switch
+> `BUTTONMATCHER_UNFOLD=0`. It went in at `UNFOLD_MARGIN = 0.10` normalized and
+> `UNFOLD_CAP = 4` rows per year, not §4's "K = 2", both values from the §4.2
+> replay so this plan's gate was met before the ship. Two things §4 did not cover
+> were found while building it and are in the commit message: the rarity
+> tiebreaker made the change a live RE-RANKING unless each year's rows are blocked
+> behind that year's winner (`sort_key` now does that), and `limit` and the card
+> trim had to count YEARS rather than rows so a sibling cannot push a third year
+> off the card — the "operator's lost click" §4.2 listed as unmeasured is
+> therefore priced at zero by construction.
+>
+> **Still open: grading it live.** §4.2's three numbers were predicted from stored
+> boards; nothing has yet observed the shipped behaviour, because every
+> confirm_log export to date is almost entirely pre-ship. See
+> `REFERENCE_SCORING_REVIEW.md` §10.14 — and note that §3a's counts, and every
+> "year taken" number anywhere downstream, describe the FOLDED board and are
+> clicks rather than typed entries now.
+
 Answers `OFF_BOARD_MISSES_2026-09-18.md` (buttonmatcher branch
 `claude/buttonmatcher-strategic-review-bev1z4`, commit b550325). Synced to both
 repos because the mechanism lives in a shared file and the fix lands in both.
