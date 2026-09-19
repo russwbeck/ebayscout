@@ -1175,3 +1175,58 @@ reported as a finding, twice, without anyone asking which years the stolen crops
 from. The check that caught it was one query over data already on disk. **A shelf's
 false-positive count is not evidence about its photographs until the same-year crops
 are out of it.**
+
+### 10.13 The fixed run (2026-09-19): what the table says now
+
+First run with §10.12's fix, over the same `confirm_log` export and the same 8,167 crop
+vectors as every run above, so the only change is which crops a shelf is charged for:
+
+| | before the fix | after |
+|---|---|---|
+| crops wrongly taken | 194 | **138** |
+| of those, same-year (no photo can win them) | charged as the photos' fault | **56, reported separately** |
+| shelves with negative value | 18 | **15** |
+| published cases | 5,729 | 5,360 |
+| held-out crops ranked #1 | 2,350 (80.7%) | 2,350 (80.7%) — untouched, as expected |
+| references at zero / negative | 2,773 / 14 | 2,773 / 14 — unchanged |
+
+**`Penn State and Proud of it` 1992 is gone from the worst 25 entirely**, which is
+§10.12's withdrawal confirmed by the measurement rather than by argument. The shelf the
+document twice called the library's worst, and once called proof that the rule finds C1's
+attractors unprompted, is an ordinary shelf.
+
+**The new head of the list is a real list.** Every one of these is a shelf where the
+photographs are what lose the crops, because the same-year column beside it is zero:
+
+```
+  value hits/held  fp  sy dead  year  slogan
+     -6    3/3      9   0    4  1982  Press Textile
+     -4    4/4      8   0    3  1978  Temple Whoo?
+     -4    3/3      7   0    4  1981  Topple the Titans
+     -4    1/1      5   0    4  2017  Shelled and Discarded  [cold]
+     -3    3/3      6  11    4  1978  TTIP PITT
+```
+
+`Press Textile` 1982 is the library's worst shelf: it wins all three of its own crops and
+takes nine from other years. `TTIP PITT` 1978 is the mixed case the column exists for — 6
+cross-year charges it can fix and 11 same-year ones it cannot, which before the fix were
+one indistinguishable number.
+
+The former top of the list — `Undo EMU`, `Eers to Penn State`, `Just a Pitt Stop`, all
+1992 — now appear at value 0 with `0/9`, `0/9` and `0/6` hits and a small `sy`. They are
+the **victims** of the same-year tangle, sitting on 24 confirmed crops between them that
+none of their shelves win. No photograph fixes that either: it is the same text-picker
+problem seen from the losing side, and it is the strongest single argument for A7's
+un-fold in this document.
+
+#### The count was mislabelled first, and the fix is the same discipline again
+
+The first version of this reported **369** where 56 belonged. It counted every crop of an
+excluded sibling rather than the crops the shelf would actually have been charged for,
+under a column reading "wrongly won" — a number measuring one thing beside a label
+claiming another, which is precisely the error §10.12 exists to correct. Caught within the
+hour, by the two numbers failing to reconcile with the drop from 194 to 138.
+
+The excluded crops are now scored rather than skipped, so only real charges are counted,
+and both figures are printed: the charges (56) and how many sibling crops were examined to
+find them (369). A published count is not evidence until its label is what it measures.
