@@ -968,3 +968,49 @@ positional — `<entry>.1`, `<entry>.2` — which *looks* like a blob name and i
 one. The operator reads that column to decide which photo to re-shoot or retire, so
 on any shelf whose bank order differed from its name order it named the wrong
 photo. It is now the real name, or absent.
+
+#### What the six swaps were worth, measured
+
+The re-export the guard forced turned into the cleanest experiment this work has
+produced. The tool was run twice over the **same** `confirm_log.csv` and the same
+8,167 crop vectors from 665 sidecars — once at 21:26 EDT, before the live session,
+and once the next morning after it. The only thing that differed between the two
+runs is the six reference photos the rule swapped:
+
+| | before | after |
+|---|---|---|
+| held-out crops ranked #1 | 2,342 (80.4%) | **2,350 (80.7%)** |
+| crops wrongly taken from other buttons | 197 | **194** |
+| references at zero marginal value | 2,777 (97.7%) | 2,773 (97.6%) |
+| harmful (negative) references | 15 | **14** |
+
+**Six photos changed, and eight more confirmed crops rank #1 with three fewer
+stolen.** It is a small effect on a large library, and it is a clean one: identical
+evidence on both sides, one variable. §10.4 asks for "shelves whose value went DOWN
+after a swap = 0", and this is that condition holding on measured data rather than
+by construction — the first evidence that the rule's swaps improve retrieval instead
+of merely churning a shelf.
+
+Every shelf verified, too: **722 of 722 named**, nothing refused. The `_year_*`
+pseudo-entries cannot fail this check because they never become shelves here — a
+shelf exists only where a confirmation joins a real `text_db` entry.
+
+#### The limit this run makes plain: the worst shelf is cold
+
+`Penn State and Proud of it` 1992 is still the worst shelf in the library at value
+−16 with **17 crops stolen** from other buttons, and it is now marked `cold`: 1 hit
+from 2 held-out crops, below `COLD_SHELF_MIN`. So the rule will never touch it. The
+same holds for the other cold negatives (`Shelled and Discarded` 2017, `Lions Rule
+The Rim` 2000, `Stop Badgering Us` 2018, `Hawkward` 2017).
+
+This is the shape of the remaining reference work, and it is worth stating flatly
+because it is the opposite of what §10.3 predicted. §10.3 said "the attractors fall
+out of the same rule — C1 stops being a hand-curated list". They do fall out of the
+*measurement*: the rule found the shelf unprompted and ranked it worst by a factor
+of 2.7. But a shelf becomes an attractor by stealing OTHER buttons' crops, and
+stealing is not evidence about itself — the shelf's own held-out count stays small,
+so the rule is structurally barred from acting on exactly the shelves doing the most
+damage. Curation by marginal value prunes the harmless middle automatically and
+leaves the harmful tail to a person. The warm negatives (`Press Textile` 1982 at −6,
+`Temple Whoo?` 1978 at −4, `Topple the Titans` 1981 at −4) it can fix itself, but
+only when a positive-value candidate happens to arrive for them.
