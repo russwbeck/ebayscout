@@ -263,7 +263,7 @@ def write_crop_vectors(job_id: str, vecs, *, command: str = "/pipeline",
     this service is, so a web session can still import this module.  Returns the
     blob name on a write, None otherwise; fail-open, and the caller wraps it.
     """
-    if not cvec.vectors_enabled() or not len(vecs or []):
+    if not cvec.vectors_enabled() or vecs is None:
         return None
     try:
         import io
@@ -271,6 +271,8 @@ def write_crop_vectors(job_id: str, vecs, *, command: str = "/pipeline",
         import numpy as np
 
         arr = np.asarray(vecs, dtype=np.float32)
+        if arr.size == 0:
+            return None
         if arr.ndim != 2:
             print(f"!!! PIPELINE: crop vectors for {job_id} are "
                   f"{arr.ndim}-d — not written", flush=True)
