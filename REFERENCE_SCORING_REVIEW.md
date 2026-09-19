@@ -732,7 +732,9 @@ evidence that the replay is faithful rather than merely plausible: 80.4% of
 held-out crops rank #1 (C8 read 83.0% off the *stored* boards); 368 of the 571
 misses are year-taken, 64% (the off-board plan measured 63% off-board); and the
 worst shelf by value is `Penn State and Proud of it` 1992 — C1's named attractor,
-reached from outcomes alone, ranked worst by a factor of 2.7 over the next.
+reached from outcomes alone, ranked worst by a factor of 2.7 over the next. (**That
+third cross-check is withdrawn — §10.12.** The shelf ranked worst on same-year
+mistakes the measure should never have charged to it. The other two stand.)
 
 | | |
 |---|---|
@@ -740,7 +742,7 @@ reached from outcomes alone, ranked worst by a factor of 2.7 over the next.
 | references zero / positive / negative marginal value | **2,777 (97.7%)** / 50 / 15 |
 | shelves holding a load-bearing reference | **48** of 722 |
 | crops wrongly taken from other buttons | **197** |
-| worst shelf | `Penn State and Proud of it` 1992 — value −16, 17 stolen |
+| worst shelf | `Penn State and Proud of it` 1992 — value −16, 17 stolen — **WITHDRAWN, see §10.12: every charge against this shelf is a same-year mistake no photo can fix** |
 
 #### The 97.7% is saturation, not redundancy
 
@@ -790,7 +792,10 @@ its job with room to spare.
   but because the library is largely *finished* for the buttons it holds crops of.
 - **The harmful tail.** 18 shelves with negative value and 197 stolen crops, led
   by C1's attractor at −16/17. §10.3 predicted the rule would retire those
-  without anyone naming the shelf, and it does.
+  without anyone naming the shelf, and it does. **⚠️ Both counts are inflated and
+  the C1 claim is withdrawn — §10.12.** The stolen-crop count charges a shelf for
+  same-year mistakes that belong to the text picker; how much of the tail survives
+  the fix is unmeasured.
 - **What it is NOT for, yet: choosing which reference goes.** The
   recommendation from this run is to flip intake and discard to the value rule and
   leave the swap TARGET on the composite until a measure with resolution there
@@ -980,7 +985,7 @@ runs is the six reference photos the rule swapped:
 | | before | after |
 |---|---|---|
 | held-out crops ranked #1 | 2,342 (80.4%) | **2,350 (80.7%)** |
-| crops wrongly taken from other buttons | 197 | **194** |
+| crops wrongly taken from other buttons | 197 | **194** (both inflated — §10.12) |
 | references at zero marginal value | 2,777 (97.7%) | 2,773 (97.6%) |
 | harmful (negative) references | 15 | **14** |
 
@@ -1049,6 +1054,12 @@ business deciding.
 
 #### The cold gate is asymmetric, and that is why C1 is still a person's job
 
+> **⚠️ The C1 half of this is wrong — §10.12.** The gate *is* asymmetric, and that
+> observation stands on its own. But it is not what kept the rule off this shelf:
+> all 28 crops the shelf wrongly won belong to other 1992 buttons, so there was
+> nothing there for any reference change to fix. Read the paragraphs below for the
+> gate; ignore them for C1.
+
 A shelf is cold below `COLD_SHELF_MIN` (3) **winnable held-out crops of its own** —
 confirmed crops of that button, excluding the ones whose year another slogan's text
 already takes, which no photo can win. Below three, "this photo resolved one more
@@ -1076,3 +1087,73 @@ crop count), with a floor so a shelf can never be emptied, and the retirement go
 casually: it widens what the rule may destroy, and a false positive there deletes a
 good photo of a button nobody has confirmed lately. Recorded here as the obvious next
 question rather than left to be rediscovered.
+
+### 10.12 CORRECTION: the false-positive count charges photos for the picker's mistakes
+
+**Everything this section corrects was written earlier the same day, by the same
+session, and read as a finding. It was a measurement artefact.**
+
+The operator asked the obvious question about the re-shoot §10.11 recommended —
+*why would I delete four perfectly good photos* — and checking it settled the matter.
+Of the crops `Penn State and Proud of it` 1992 wrongly wins, **28 of 28 belong to
+other 1992 buttons**: `Undo EMU` (9), `Eers to Penn State` (9), `BYU No Can Do` (7),
+`Just a Pitt Stop` (3). Zero come from any other year.
+
+No reference photo can change one of them. Within a year the leading row is the
+**text** argmax, and the year's image score is shared by every slogan of that year —
+so removing this shelf's photos lowers the score of the true button's row by exactly
+as much as it lowers this one's, and the text winner is unchanged. §10.2's property 2
+already says this, and §10.1 already sets those crops aside when they are a shelf's
+own (`need=None`, counted `unwinnable`).
+
+**The bug: the same rule was never applied to the hard negatives.**
+`tools/eval_reference_value.py` collects a shelf's negatives from
+`confusion_pairs` without checking whether the confused button shares the shelf's
+year, so a same-year confusion becomes a −1 the shelf is charged for and cannot
+avoid. Symmetric treatment was the whole point of property 2, and only half of it
+shipped.
+
+**What this invalidates.** Each of these is a claim in §10.8 or §10.11 that a future
+session would otherwise trust:
+
+| claim | status |
+|---|---|
+| `Penn State and Proud of it` 1992 is the worst shelf, value −16, 17 stolen | **withdrawn.** Every charge against it is a same-year mistake. It may be an ordinary shelf |
+| "the rule found C1's attractor unprompted, worst by a factor of 2.7" | **withdrawn.** It found a text-picker problem and labelled it a photo problem. Written up twice, with satisfaction, both times wrong |
+| 197 (later 194) crops wrongly taken | **inflated by an unknown amount.** One shelf was 28/28 same-year; the library-wide split is unmeasured until the fix re-runs |
+| 18 shelves with negative value | same — inflated, count unknown |
+| §10.11's "the cold gate is why C1 is a person's job" | **moot.** The gate is still asymmetric, but that is not what kept the rule off this shelf: there was nothing there for it to fix |
+| §10.3's "the attractors fall out of the same rule" | still unproven, and this run is not evidence for it |
+
+The before/after table in §10.11 survives: 2,342 → 2,350 crops ranking #1 is a
+positive-side number and property 2 has always held there. Its "197 → 194" row
+inherits this bug.
+
+**The fix**, not built as of this writing: skip a negative whose truth shares the
+shelf's year, and report the count so the exclusion is visible rather than a silently
+smaller denominator — the same discipline `case_from_context` already follows for
+crops it cannot reduce to a threshold.
+
+**What the fix does NOT buy, said plainly.** It changes no match. The operator
+already has a guard that presents two same-year slogans for a manual click, so these
+28 were caught by a person and never reached the sheet; the cost of them is clicks,
+not bad data, and it is a cost the picker owns. What the fix buys is narrower:
+
+1. **The worst-shelf list becomes a list a camera can act on.** Ranked by a cost that
+   includes same-year mistakes, the table points at shelves no photograph can improve
+   — which is precisely the wasted re-shoot this correction caught by hand.
+2. **The live rule stops discarding candidates for harm they cannot cause.** A staged
+   crop charged for same-year theft looks worse than it is, and at a 94% discard rate
+   some of those refusals are unearned.
+
+Neither is urgent, and a discarded candidate is retired rather than deleted. What
+*was* urgent is this section: three sentences in this document told the operator to
+re-shoot a shelf that did not need it.
+
+**The process lesson, which is the one worth keeping.** The measure was built to
+separate "what a photo can fix" from "what it cannot", that separation is stated
+three times in §10.1 and §10.2 — and it was still implemented on one side only, then
+reported as a finding, twice, without anyone asking which years the stolen crops came
+from. The check that caught it was one query over data already on disk. **A shelf's
+false-positive count is not evidence about its photographs until the same-year crops
+are out of it.**
