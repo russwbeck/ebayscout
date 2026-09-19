@@ -881,6 +881,7 @@ the log rows and the refusal line are unchanged:
 | swaps per shelf per pass | **one.** Each marginal value is measured against the shelf as it stands, and after one swap that shelf is gone, so a second positive's number describes a set that no longer exists. It goes to review and next session decides it on fresh evidence |
 | a cold shelf (< 3 winnable held-out crops) | the composite's plan, untouched |
 | evidence older than `CASES_MAX_AGE_DAYS` (30) | the composite's plan, untouched, and the header says so — the operator's own requirement, in their words, "I'll forget to run it" |
+| a shelf whose photos changed since the export, or a table that names none | the composite's plan, untouched, and no rows published at all — see §10.11, which is why this row exists |
 | `stop staging` | moves from the staging gate to the review-queue filter, §10.3: STOP means "do not ask me", never "do not add a clearly better crop". At-cap stopped shelves are scored and swapped and never queued; a **below-cap** stopped shelf is left alone entirely, because every swap this pass can express takes a slot from something and a shelf with room would lose a photo it did not have to lose. `/reference sloganid <id>` overrides the filter — naming a shelf is asking about it |
 | kill switch | `=shadow` (log only, the default) or `=off` (skip entirely) |
 
@@ -895,3 +896,75 @@ comparison (§10.9), and the decision to leave the victim with the composite res
 on the 97.7%-tie argument alone. The row now carries `measured_against` beside
 `value_target`, so the first live session where the composite *does* clear a shelf
 outright will produce the comparison without any further change.
+
+### 10.11 The first live session (2026-09-19), and the defect it exposed
+
+The rule decided for real. Header, verbatim:
+
+```
+• auto-filled 0 crop(s) up to the cap
+• auto-replaced 6 ref(s) and removed 130 staged crop(s) (retired where the
+  value rule decided) across 87 slogan(s)
+• left for you: 38 within the margin, 3 second positive on one shelf
+• value rule *LIVE*: 177 candidate(s) scored, 38 on cold shelves (no opinion),
+  9 positive, 130 at zero or below, 139 the composite left to you
+• *34 slogan(s) queued for review*
+```
+
+**The queue went 119 → 34**, better than the ~47 §10.9 predicted, because the 130
+retirements emptied whole shelves rather than thinning them. Every candidate is
+accounted for, which is the property worth having: 177 = 38 cold + 139 decided;
+139 = 9 positive + 130 at zero; 9 positive = 6 swaps applied + 3 held by
+one-swap-per-pass. No floor vetoes, no failed swaps. §10.8's saturation finding
+arriving as a session that mostly says "there is nothing here to ask about".
+
+#### The defect: a published shelf is positional, and a swap moves it
+
+Those 6 swaps left the published evidence **misaligned**, not merely stale.
+
+A case's `shelf_sims` is a positional list — one cosine per reference, in the
+order the bank held them at export time — and every index the rule uses reads into
+it: `marginal_values`, `weakest_index`, and `candidate_marginal(replace=…)`. A swap
+retires a photo from the middle of a shelf and appends its replacement at the end
+(`<entry>.<n>.jpg`, n = existing + 1), so afterwards position *i* does not mean the
+same photo on both sides. "Drop reference 2" drops something else.
+
+The 30-day staleness guard cannot see this: the file's age has not changed. The
+next live pass would have decided those 6 shelves on a description of a shelf that
+no longer existed, with nothing on screen to say so, and the failure direction is
+the bad one — a retired photo still counted as present makes a shelf look weaker
+than it is, which makes a worthless candidate look positive.
+
+#### The guard
+
+`/reference export` now publishes **the shelf by name**: `{entry_id: [blob name,
+…]}`, sorted, inside `ref_vectors.npz` (key `shelf_refs`). Sorted is the right
+order because that is the order an entry's bank rows are in — `_ref_rebuild_entry`
+re-encodes from `sorted(blobs)` and runs on every replace or delete, and hydration
+reads GCS's own lexicographic listing. The offline tool copies the names of every
+shelf it publishes into `shelf_cases.npz`, so the names can never come from a
+different run than the numbers they describe. Then:
+
+- **the tool checks the count** (`shelf_names` → `(names, ok)`): a shelf the bank
+  named a different number of references for than it holds vectors for is published
+  with its numbers but **not** with its names, and the run says how many;
+- **the service checks the names** (`reference_value.shelf_unchanged`), per shelf,
+  per session. Order is part of the check, since the list is positional;
+- **a shelf that has moved publishes nothing at all** — not even a shadow row. A
+  marginal value computed against a set that no longer exists would look exactly
+  like a real one in the log, and the log is what the next calibration is fitted on;
+- **a table that names no references refuses every shelf.** "Cannot be verified" is
+  not "unchanged". Every table exported before this — including the one the first
+  live session ran on — is in that state, so the rule stays dormant until one
+  `/reference export` plus one offline run, and the header says exactly that.
+
+Both refusals are said out loud in the header **even when they leave nothing to
+report**, which is the one case where the warning has to outlive the summary: a
+refused shelf produces no candidates, and a header built only from candidates would
+print nothing whatsoever.
+
+This also fixes something quieter. `shelf_value.json`'s `references[].name` was
+positional — `<entry>.1`, `<entry>.2` — which *looks* like a blob name and is not
+one. The operator reads that column to decide which photo to re-shoot or retire, so
+on any shelf whose bank order differed from its name order it named the wrong
+photo. It is now the real name, or absent.
