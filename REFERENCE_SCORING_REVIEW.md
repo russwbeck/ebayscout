@@ -711,3 +711,97 @@ the 30-day lifecycle rule on `reference/_retired/` (IC-07), and `C1`'s attractor
 shelves — though §10.3 predicts the value rule retires those without anyone
 naming them, and step 3's table is where to check that before re-shooting
 anything.
+
+### 10.8 The first run (2026-09-19) — what marginal value actually found
+
+*Operator-run, on the live export. The numbers below are measured, not modelled:
+665 backfilled lots, 8,167 crop vectors, 2,913 confirmations joined to one, 722
+shelves scored, 2,842 references. The 1,707 unjoined confirmations are slash-flow
+lots that never wrote a `pipeline/labels/` sidecar — NOT a backfill gap; the
+backfill reached 0 left, and those crops are unrecoverable as §10.2 said.*
+
+**Three numbers cross-check against earlier, independent reads**, which is the
+evidence that the replay is faithful rather than merely plausible: 80.4% of
+held-out crops rank #1 (C8 read 83.0% off the *stored* boards); 368 of the 571
+misses are year-taken, 64% (the off-board plan measured 63% off-board); and the
+worst shelf by value is `Penn State and Proud of it` 1992 — C1's named attractor,
+reached from outcomes alone, ranked worst by a factor of 2.7 over the next.
+
+| | |
+|---|---|
+| shelves positive / zero / negative value | 640 / 64 / **18** |
+| references zero / positive / negative marginal value | **2,777 (97.7%)** / 50 / 15 |
+| shelves holding a load-bearing reference | **48** of 722 |
+| crops wrongly taken from other buttons | **197** |
+| worst shelf | `Penn State and Proud of it` 1992 — value −16, 17 stolen |
+
+#### The 97.7% is saturation, not redundancy
+
+This is the finding, and it is not the one §10 was written to expect. Decomposing
+the 2,545 winnable held-out cases:
+
+| of the shelf's own photos, how many clear the threshold | cases | |
+|---|---|---|
+| all 4 | **1,973** | **77.5%** |
+| 3 | 163 | 6.4% |
+| 2 | 112 | 4.4% |
+| exactly 1 | 83 | 3.3% — of which **80 are load-bearing** |
+| none | 211 | 8.3% — the real misses |
+
+**Median `need` 0.685; median best own similarity 0.912.** The shelves win their
+own crops by roughly 0.23 of margin, with every photo individually sufficient.
+
+So the zeros are not duplicates: only 90 of the 2,777 (3.2%) sit at cosine ≥ 0.97
+to a shelf-mate. And they are not the year fold either: only **3** cases of 2,545
+owe their zero to a year-mate's photo. Marginal value is a derivative, and on a
+saturated regime a derivative is zero almost everywhere. A reference that is
+individually unnecessary on an easy crop is not dead weight — it is a shelf doing
+its job with room to spare.
+
+#### What this changes in §10.3 and §10.4
+
+1. **"Displace the lowest-marginal-value reference" (§10.3) is inoperable** on
+   97.7% of the library, and this is measured rather than predicted: everything
+   ties at zero, and the redundancy tie-break has only 90 references to work
+   with. It would be choosing near-arbitrarily among genuinely distinct photos —
+   which is IC-10's warning, now with a number on it.
+2. **"References with zero marginal value → 0" (§10.4) is unreachable, and
+   misconceived.** On a well-covered shelf every photo is individually removable,
+   so the target asks for a state the measure cannot express. It should be struck
+   and replaced by the two conditions this run can actually drive: shelves with
+   **negative** value → 0, and cases where **no** shelf photo clears → 0.
+3. **"Value(R) − Value(R − r) = 0 for every r" does not mean the shelf is
+   disposable.** Marginal value is one-at-a-time; the zeros cover each other.
+   Nothing may be deleted on the strength of a zero.
+
+#### What the rule is genuinely for
+
+- **The intake gate (§10.3) — and it works better than §10 expected, for a
+  different reason.** A candidate that changes no outcome is provably worthless,
+  and at 77.5% saturation nearly every candidate is. The review queue collapses
+  to cold shelves, which is §10.4's queue condition met — not by better ranking,
+  but because the library is largely *finished* for the buttons it holds crops of.
+- **The harmful tail.** 18 shelves with negative value and 197 stolen crops, led
+  by C1's attractor at −16/17. §10.3 predicted the rule would retire those
+  without anyone naming the shelf, and it does.
+- **What it is NOT for, yet: choosing which reference goes.** The
+  recommendation from this run is to flip intake and discard to the value rule and
+  leave the swap TARGET on the composite until a measure with resolution there
+  exists. Watch `target_disagree` in the shadow: a high count there is this
+  prediction confirmed, not the value rule winning an argument.
+
+#### C8 was right, for a sharper reason than C8 could show
+
+§10 was written to overturn C8's null result on the grounds that a correlation
+cannot be read off a library with no variance. That objection was correct, and the
+measurement it produced still lands where C8 did: the reference photos are mostly
+not what loses these matches. C8 could only say "redundancy does not predict
+outcome"; this says why — the crops that reach a shelf are won by 0.23 of margin
+by every photo on it. The composite was measuring the wrong thing, as §10 argued.
+It turns out the right thing, measured, mostly says there is nothing to do.
+
+**The reference work that remains, in full:** the 211 cases where no shelf photo
+clears (re-shoot or add), the 18 negative shelves (retire), and the 9 confirmed
+slogans with no reference at all. The 368 year-taken misses are A7's un-fold and
+the 217 on-board ranking misses are the rerank's — neither is curation's, and
+neither is fixable by a photograph.
