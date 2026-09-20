@@ -29,8 +29,9 @@ not run here and nothing in GCS or Cloud Run logs was read. See §9.*
 3. **The automation program is not moving toward its own goal.** Stage B
    (detection standing alone) is ~18 points short of its gate at real volume
    and the gap is accuracy, not volume; Stage D (the human as auditor) is
-   gated on a number that **cannot be produced** because the correction flow
-   the docs keep asking the operator to use was never built (§3.2). The
+   gated on a number that **could not be produced** because the correction
+   flow the docs kept asking the operator to use was never built (§3.2 —
+   BUILT 2026-09-20, SR-05). The
    roadmap's "volume is the constraint" line is from July and the September
    data contradicts it.
 4. **The measurement apparatus has become the main cost.** 70 fronts, 92
@@ -124,7 +125,15 @@ Two more facts sharpen this:
   Those are the two live detection defects; both were re-instrumented on
   09-12 and need one feed cycle before they can be read.
 
-### 3.2 The Stage-D gate is blocked on a feature that does not exist
+### 3.2 The Stage-D gate was blocked on a feature that did not exist
+
+> **RESOLVED 2026-09-20 (SR-05).** The affordance is built: a per-lot **Any of
+> these wrong?** button that logs `correction` / `skip_correction` and swaps
+> the sheet in the lot's own direction. A10 moves BLOCKED → OPEN; it stays at
+> stage 1 until rows actually land, because the instrument existing is not the
+> same as the number being measured. The diagnosis below stands as written —
+> it is why this sat still for months, and it is worth keeping.
+
 
 `LOGGER_FRONTS.md` A10, `AUTOMATION_ROADMAP.md` 4c and `AUTOMATION_VISION.md`
 §6.4 all say the same thing: auto-confirm precision "is inferred, not
@@ -144,7 +153,11 @@ reason and survives only in chat.
 
 This is the single most important gap in the review: **the gate to the stage
 that would actually reduce the operator's clicks is unreachable by design.**
-Ticket SR-05 builds it.
+Ticket SR-05 builds it. *(Built 2026-09-20. The grep was re-run first across
+every caller of `build_confirm_record`, both logging wrappers, and any source
+literal containing `correction`: the nearest thing that existed was
+`wrong_slogan`, which is on `/buy`, is `crop_num=1`, and logs
+`source="slogan_pick"`. The 1-in-N audit sample is still NOT built.)*
 
 ### 3.3 Where the engineering effort went
 
@@ -206,7 +219,7 @@ Ranked. "Sev" is impact on data or money, not effort. Line numbers are as of
 | SR-02 | Med | ebayscout | `main.py` `_run_daily_scan` (2169, 2445, 2455) vs `_mark_item_seen_now` (1284) | The legacy CLIP path loads `seen` once and later does a wholesale `save_seen(seen)` outside `_seen_lock`; a pipeline confirmation that lands during a year/era/hunt crawl is erased from `seen_items.json` and the lot is re-fed and re-alerted. |
 | SR-03 | Med | buttonmatcher | `main.py` `_kick_pipeline_mode` (timeout 890) + `_run_pipeline_mode_now` | The per-lot confirm loop is one HTTP request against a 900 s Cloud Run limit. Observed ~6.8 s/button (353 buttons in 40 min) plus 1/3/8 s 429 backoffs; an 80-button lot (they occur) is at the edge, and past it the loop continues CPU-throttled with the claim held — the 15.5 h cliff pattern from `DECISIONS.md` #23. |
 | SR-04 | Med | ebayscout | `seen_items.append_scan_log` under `_scanlog_lock` | Every lot downloads and re-uploads the entire `scan_log.jsonl`. Unbounded growth, linear cost per lot, serialized across concurrent Gem results. |
-| SR-05 | Med (program) | buttonmatcher | no producer for `source=correction` / `skip_correction` | See §3.2. The Stage-D gate's only instrument does not exist. |
+| SR-05 | Med (program) | buttonmatcher | no producer for `source=correction` / `skip_correction` | See §3.2. The Stage-D gate's only instrument did not exist. **DONE 2026-09-20** — the per-lot "Any of these wrong?" button; the 1-in-N audit sample remains open. |
 | SR-06 | Low-Med | buttonmatcher | `_inventory_written`, `_load_pipeline_job` | The write ledger is in-memory; a lot resumed from its GCS snapshot after a restart has no ledger, so stale review cards for already-written crops become live double-count traps (documented on the 2026-09-08 lot). Bot Writes is durable and holds exactly the keys needed to reseed it. |
 | SR-07 | Low | ebayscout | `config.ENABLE_UNDERVALUED_ALERTS` | Defined `False`, never read. `process_pipeline_lot` posts undervalued alerts whenever `lot_value > asking`. The flag and `DECISIONS.md`'s "deferred" note are wrong about live behavior. |
 | SR-08 | Low | ebayscout | `main.py` 1997–2110, `_post_yellow_review`, `_run_daily_scan`/`_evaluate_listing` | Dead or near-dead code left from PR #17 (`/scout` removed): `scout_verify_*`/`scout_count_*` handlers with nothing posting their cards; ~650 lines of CLIP-only scan reachable only by flags. `CLAUDE.md` still says ebayscout "serves a manual `/scout` mode." |
@@ -346,7 +359,7 @@ detectors and silent drift.
 
 | Ticket | Repo | Size | What / gate |
 |---|---|---|---|
-| SR-05 correction affordance + 1-in-N audit sample | buttonmatcher | L | `correction` rows flow; precision readable |
+| ~~SR-05 correction affordance~~ **DONE 2026-09-20** — the 1-in-N audit sample is the remaining half | buttonmatcher | L | `correction` rows flow; precision readable |
 | SR-13 **two headline metrics** in the tracker: taps per confirmed button (from `confirm_log.source` — human sources vs machine) and buttons written per operator-hour (from Bot Writes timestamps); one tab, replacing nothing | ebayscout (tools) | S | tab reads from raw tabs, guarded by `test_goal_tracker_repair` |
 | SR-14 **inventory from a sort** — after a `/sort` or `/sort complete` lot settles, offer one tap "count these into inventory" that runs the identified list through `_record_inventory_change` (no re-photograph, no re-match) | buttonmatcher | M | the 2011–2016 case: 100 confirmed → 100 written with one tap per lot |
 | SR-15 **reference review load** — measure first: slogans queued per session, taps per slogan, share auto-resolved by the at-cap rule; then raise the auto-resolve share (e.g. auto-replace when the staged crop beats the weakest on resolution-normalized sharpness — C2's open question, decided by data rather than by asking again) | buttonmatcher | M | queue per session down by half at equal library quality (spot-audit 20) |
@@ -457,7 +470,7 @@ are the right tool for a module that cannot be imported here.*
 | SR-10 patch dir | main `102f74d` | Closed. |
 | SR-11 CI | main `ab898cb` / `14119a6` | **Runs, but skips 305 tests** — 10.4 |
 | SR-12 records | main `ab898cb` / `14119a6` | Closed, one leftover — 10.5 |
-| SR-05 correction affordance | not started | Correctly deferred to WS2. |
+| SR-05 correction affordance | **done 2026-09-20** | The button ships; the 1-in-N audit sample does not. |
 
 ### 10.1 SR-01: the hook does not reach Slack click handlers
 

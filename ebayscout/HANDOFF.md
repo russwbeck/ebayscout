@@ -108,8 +108,11 @@ buttonmatcher carries SR-01 (the Bot Writes tail flushed in-request), SR-03
 (the confirm loop chunked across requests), SR-06 (the write ledger reseeded
 from Bot Writes) and SR-10.
 
-**Not done, deliberately:** SR-05, the correction affordance the Stage-D gate
-needs. It is WS2 and nothing in WS2–WS4 starts before WS1 merges.
+**SR-05 is now DONE (2026-09-20):** the correction affordance the Stage-D
+gate needs, built in buttonmatcher (this service has no human lane). It had
+never existed, so A10 sat at zero against ~3,988 auto-path confirmations and
+read as a discipline problem; A10 moves BLOCKED → OPEN, stage 1 until rows
+land. **Still open from SR-05:** the 1-in-N audit sample.
 
 **Watch on the first live feed after deploy:**
 1. `>>> SCAN LOG: Appended 1 records to ebay_scout/scan_log/2026-09.jsonl` —
