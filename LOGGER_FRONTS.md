@@ -236,13 +236,13 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 ### A10 — Measured auto-confirm error rate
 
 - **Track:** Matching and auto-confirm
-- **Status:** BLOCKED
+- **Status:** OPEN
 - **Stage:** 1
 - **Volume:** 100 — auto-confirms with corrections logged
 - **Question:** what is the actual precision of the auto-confirm path?
-- **Instrument:** `correction` / `skip_correction` rows in `confirm_log` — the only source. Nothing else can produce this number.
+- **Instrument:** `correction` / `skip_correction` rows in `confirm_log` — the only source. Nothing else can produce this number. Written by the per-lot **Any of these wrong?** button (buttonmatcher `handle_lot_corrections_submit`), which is the only producer.
 - **Gate:** ~100 auto-confirms with corrections logged → measure precision directly. ≥95% supports widening auto-confirm, e.g. lowering `auto_sort` toward 0.82 (Logger_5 says 0.82 keeps precision ~0.979 at ~3.5× volume — but verify on measured corrections first). Stage D needs ≥98% over ≥300 confirmations.
-- **Standing:** ZERO correction rows have ever been logged. Auto-path precision is inferred, not measured — the only load-bearing number in the system still unmeasured. When an auto-confirm is wrong during normal use, use the correction flow; do not silently fix the sheet.
+- **Standing:** **the instrument now exists; it did not before, which is why this front has never moved.** Zero `correction` rows had been logged against ~3,988 auto-path confirmations, and the reason was not discipline: `match_logging` documented `correction`/`skip_correction`, `LOGGING.md` described them, the tracker counted them, and **nothing in either repo wrote them** — the flow this entry told the operator to use was never built. (Verified 2026-09-20 across every caller of `build_confirm_record`, both logging wrappers, and any source literal containing `correction`; the nearest thing that existed was `wrong_slogan`, which is on `/buy`, is `crop_num=1`, and logs `source="slogan_pick"`.) Built 2026-09-20 as SR-05: one **Any of these wrong?** button per lot, listing every auto-confirmed button with what resolved AND what Gemini itself read, taking a typed correction per button. Blank means right; `?` means wrong-but-unknown and logs `skip_correction` without touching the sheet. A correction also swaps the sheet in the lot's own direction. Auto-path precision stays inferred until the first rows land — the difference is that it is now reachable. Status moves BLOCKED → OPEN for that reason; stage stays 1 until there is data.
 - **Source:** `AUTOMATION_ROADMAP.md` Phase 4c; `AUTOMATION_VISION.md` §4 Stage D, §6.4
 
 ### A11 — Football pre-filter split

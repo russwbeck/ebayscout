@@ -194,9 +194,9 @@ pipeline's rate limit stops being the bottleneck.
 the human sees (a) new/unknown slogans, (b) needed-button purchase decisions,
 (c) a random 1-in-N audit sample sized to detect a precision drop of 2 points
 within a week, (d) anything two signals disagreed on.
-*Enter when:* measured auto precision (via the correction flow — USE it, it
-is still the only unmeasured number in the system) ≥98% over ≥300
-confirmations. *Never remove* the audit sample; it is the drift detector.
+*Enter when:* measured auto precision (via the **Any of these wrong?** button
+on each lot — it did not exist before 2026-09-20, which is why this number has
+never been measured) ≥98% over ≥300 confirmations. *Never remove* the audit sample; it is the drift detector.
 
 **Parallel track — the sport dimension.** The football pre-filter's split is
 half-done: auto-confirm is football/agreement-gated (shipped), suggestions are
@@ -252,10 +252,11 @@ behind this list.)*
    contained-fragment dedup fix (`tested_hypothesis.md` Part I §2).
 3. **Read the first post-fix Logger export** for `ref_sim` on confirmed
    outcomes → set or reject the absolute mismatch threshold (§5).
-4. **Start using the correction flow religiously** — auto precision is the
-   only load-bearing number still inferred rather than measured, and Stage D
-   is gated on it. (The 759/759 `gemini_auto` audit deserves a durable
-   record too.)
+4. **Use the Any of these wrong? button on every lot** — auto precision is
+   the only load-bearing number still inferred rather than measured, and
+   Stage D is gated on it. Until 2026-09-20 there was nothing to use: the
+   correction flow this list had asked for was never built (SR-05). (The
+   759/759 `gemini_auto` audit deserves a durable record too.)
 5. When Stage B enters: flip the unguided count to primary on gated lots
    behind an env flag, shadow-log disagreement vs truth for two weeks, then
    stop guiding those lots.
