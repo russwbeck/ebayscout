@@ -112,7 +112,34 @@ from Bot Writes) and SR-10.
 gate needs, built in buttonmatcher (this service has no human lane). It had
 never existed, so A10 sat at zero against ~3,988 auto-path confirmations and
 read as a discipline problem; A10 moves BLOCKED → OPEN, stage 1 until rows
-land. **Still open from SR-05:** the 1-in-N audit sample.
+land.
+
+**SR-05's second half shipped too (2026-09-20):** the 1-in-N audit sample, also
+in buttonmatcher — a hash picks 1 pipeline lot in 10, withholds every
+auto-confirm on it (`gemini_auto` and the A18 ladder), and grades the
+operator's answer against what the auto would have written (`audit_shadow` vs
+`audit_hit` / `audit_miss`). It skips lots of 15+ buttons, so the number is
+SMALL-LOT auto precision — A10 can close on it, E4 spans both lot shapes and
+cannot. **What lands in THIS repo** is the workbook side:
+`tools/build_goal_trackers.py` gained two A10 cells (sampled autos, sampled
+precision) and two E2 cells (the per-shape `auto_overridden` override rate),
+and now excludes `audit_*` from every denominator that says "confirmations" —
+otherwise turning the sampler on would have inflated E4's own ≥300 gate. That
+pass also fixed A25's share, whose denominator was a raw COUNTA of confirm_log.
+**The workbook needs a repair run** for the new cells: rebuild the Apps Script
+and paste it, and the REPAIR tab must then read **build `1af63410`** (it was
+`c302a789`). The new rows are A10 +2 and E2 +3, and `LIVE_ROW_BUDGET` moved
+with them, so the repair relays those two tabs out rather than writing over
+their PROGRESS LOG.
+
+**Also corrected (2026-09-20):** E2's gate said `auto_overridden` "has no UI
+affordance, so it cannot be the tripwire". It has had one since 2026-07-19
+(✏️ Fix count → `count_source="auto_overridden"`); the claim was written
+2026-07-18, was true for a day, and was copied into the 2026-09-07 restatement
+with the "yet" dropped. What it lacked was a reader, which E2's tab now has.
+It is a floor, not a rate — the one-tap default lets an unchecked count through
+as `auto` — so it trips the rollback but cannot close the gate. Nothing in this
+service writes that column (no human lane); it is buttonmatcher's upload path.
 
 **Watch on the first live feed after deploy:**
 1. `>>> SCAN LOG: Appended 1 records to ebay_scout/scan_log/2026-09.jsonl` —
