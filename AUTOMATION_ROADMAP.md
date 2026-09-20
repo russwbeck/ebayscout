@@ -24,7 +24,7 @@ it is no longer a sync target.)*
 | 3.5 | Tighten `ni_gate=auto` | ✅ **merged + deployed** — AUTO requires `scale_path=scale_first` AND a non-bailed guided detector (`demote_auto_on_detector_bailout`, #116/#50); validated at n=329: 96%/100%±1 | — |
 | 4a | Low-res guard (thumbnail auto-confirm) | ✅ implementable immediately | nothing |
 | 4b | Reference coverage for 0.00-scoring slogans | ⏸ data (exists, needs a run) | one `audit_reference_coverage` run vs GCS |
-| 4c | Measured auto-confirm error rate | ⏸ human data | `correction` rows in confirm_log (~100 auto-confirms reviewed) |
+| 4c | Measured auto-confirm error rate | ⏸ accruing | `correction` rows in confirm_log (~100 auto-confirms reviewed); producer shipped 2026-09-20 |
 | 5 | Rollout: drop the guided count (revised: gate-scoped, not bucket-scoped) | ⏸ re-measure after 2a/2b/3 land | next instrumented batch |
 
 ## Measured baseline — Logger_4 (2026-07-02, the 300-lot `ignore_seen` run)
@@ -269,11 +269,14 @@ threshold. These items close the remaining risk:
   as often as raw AT SCALE, including truths raw ranking leaves off-board —
   and only together with a recalibration of every score threshold
   (0.85/green/gap), since all are calibrated to today's distribution.
-- **4c — measured auto-confirm error rate: blocked on human data that doesn't
-  exist yet.** No `correction`/`skip_correction` rows have ever been logged, so
-  auto-path precision is inferred, not measured. To cross: when an auto-confirm
-  is wrong during normal use, use the correction flow (don't silently fix the
-  sheet). Target: ~100 auto-confirms with corrections logged → measure precision
+- **4c — measured auto-confirm error rate: the producer now exists.** No
+  `correction`/`skip_correction` rows had ever been logged, and the cause was
+  not operator discipline — nothing in either repo wrote those sources, so the
+  "correction flow" this roadmap asked for was never built (SR-05; confirmed
+  2026-09-20). It is built now: a per-lot **Any of these wrong?** button that
+  takes a typed correction, logs `correction` / `skip_correction`, and swaps
+  the sheet in the lot's own direction. To cross: use it when an auto-confirm
+  is wrong during normal use (don't silently fix the sheet). Target: ~100 auto-confirms with corrections logged → measure precision
   directly; ≥95% supports widening auto-confirm, e.g. lowering the 0.85
   `auto_sort` threshold toward 0.82 (Logger_5 says 0.82 keeps precision at
   ~0.979 with ~3.5× volume — but verify on measured corrections first).
@@ -414,7 +417,9 @@ instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
 **Still waiting on operator-side data (unchanged asks):**
 
 - First `correction` rows in confirm_log (Phase 4c is still at zero — the
-  auto-confirm error rate remains inferred, not measured).
+  auto-confirm error rate remains inferred, not measured). This was a MISSING
+  FEATURE, not a missing habit, until 2026-09-20; the **Any of these wrong?**
+  button on each lot now produces those rows.
 - A durable record of the 759/759 `gemini_auto` visual audit (currently only
   attested in chat; a one-line note in HANDOFF or the Sheet makes it citable).
 
