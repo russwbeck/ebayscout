@@ -285,6 +285,25 @@ def _live():
     _agree1 = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
                f'*({_gcount}<>"")*(ABS({_nisel}-{_gcount})<=1))')
 
+    # The gated stratum, split by lot shape.  E2's ≥98% gate has sat at ~78%
+    # while the corpus turned out to hold two different failure regimes: on
+    # 2026-09-20, 43% of dense lots are fused against 5.3% of small ones, the
+    # sub-64px crops are all in dense lots, and scale confidence fails on
+    # SMALL lots instead.  A gate pooled across both can be missed forever by
+    # the harder half while the easier half is already shippable, so measure
+    # them apart before concluding Stage B is blocked.  Same axis C7's gate
+    # already names ("the rate, split by lot shape").
+    _small = f'({_gcount}>=1)*({_gcount}<=6)'
+    _dense = f'({_gcount}>=7)'
+
+    def _strat(cond, agree=False):
+        base = (f'({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
+                f'*{gnum}*{cond}')
+        if not agree:
+            return f'=SUMPRODUCT({base})'
+        return (f'=IFERROR(SUMPRODUCT({base}*({_nisel}={_gcount}))'
+                f'/SUMPRODUCT({base}),"—")')
+
     # Bands: `src` restricts to human-confirmed rows.  gemini_auto fires only
     # when CLIP already agreed with Gemini, so grading a band against those
     # rows asks the board whether it agrees with itself — and they are ~75% of
@@ -623,11 +642,27 @@ def _live():
  # Every count here was per-CROP, so an 80-button sheet counted 80 gated
  # "lots": it read 1349 against 215 images.  _gated/_agree/_disagree are
  # pinned to crop_num = 1.
+ # Every count here was per-CROP, so an 80-button sheet counted 80 gated
+ # "lots": it read 1349 against 215 images.  _gated/_agree/_disagree are
+ # pinned to crop_num = 1.
+ #
+ # Rows 4-7 split the same gate by lot shape.  The pooled number alone
+ # cannot say whether Stage B is blocked everywhere or only on dense lots,
+ # and those are very different conclusions: the first is a research
+ # programme (fusion — B21 refuted, B3 has no instrument for its real
+ # question, B19 is the hard track), the second is a rollout that can ship
+ # for small lots now with dense lots staying on Gemini.
  "E2": [("Gated lots (auto + scale_first, per image)", f'={_gated}'),
         ("Of those, unguided count == Gemini  ← the ≥98% gate",
          f'=IFERROR({_agree}/{_gated_scored},"—")'),
         ("Within ±1 of Gemini  ← the cheaper question, same columns",
-         f'=IFERROR({_agree1}/{_gated_scored},"—")')],
+         f'=IFERROR({_agree1}/{_gated_scored},"—")'),
+        ("\u21b3 small lots (1-6): gated n", _strat(_small)),
+        ("\u21b3 small lots: count == Gemini  ← the gate, this stratum",
+         _strat(_small, agree=True)),
+        ("\u21b3 dense lots (7+): gated n", _strat(_dense)),
+        ("\u21b3 dense lots: count == Gemini  ← the gate, this stratum",
+         _strat(_dense, agree=True))],
  "E3": [("Lots below gate=auto (what Gemini would still be called on)",
          f'=IFERROR(1-{_gate_auto}/{_images},"—")')],
  # "Confirmations accrued" was COUNTA over every confirm_log row, and 529 of
@@ -1232,17 +1267,25 @@ LIVE_ROW_BUDGET = {
     "A12": 2, "A13": 1, "A16": 2, "A23": 2, "A24": 1, "A25": 2,
     "B2": 2, "B3": 3, "B4": 2, "B5": 3, "B7": 3, "B9": 2, "B11": 2, "B14": 2,
     "B19": 3, "B20": 1, "B21": 1, "B22": 2, "B23": 2, "B25": 2, "B26": 2,
-    "B27": 2, "B28": 2, "B29": 1, "B30": 2, "C4": 1, "D2": 2, "E2": 3,
+    "B27": 2, "B28": 2, "B29": 1, "B30": 2, "C4": 1, "D2": 2, "E2": 7,
     "E3": 1, "E4": 3,
 }
 
 
 def check_live_row_budget():
-    """Raise if any front's LIVE block no longer fits the built workbook.
+    """Raise if a front's LIVE block height changed without this map saying so.
 
-    Adding a reading is not free once the workbook exists — see
-    emit_apps_script.  Either keep the count, or rebuild the workbook from
-    scratch and refresh this map (which costs the progress logs).
+    This used to mean "never change a block", because the repair script wrote
+    formulas in place and a taller block would have written straight over the
+    PROGRESS LOG.  It no longer does: the repair relays out a tab whose block
+    changed height, and refuses if that would strand a row the operator
+    typed.  So the map is now a DECLARATION of the shape the workbook should
+    have, not a freeze — change a block and change its entry in the same
+    commit, and the next repair migrates the deployed tab.
+
+    It is still a guard worth having.  The heights here are what the repair
+    script writes against, and a block that grew without the map growing
+    would have the script write a formula onto the "Pooled over…" note.
     """
     bad = []
     for fid, rows in LIVE.items():
@@ -1413,6 +1456,20 @@ def emit_apps_script(fronts, path):
         "    byId[want.match(/^([A-E]\\d+) /)[1]] = sh;",
         "  }",
         "",
+        "  // A LIVE block that changed height moves the PROGRESS LOG header,",
+        "  // so an existing tab has to be re-laid-out before anything is",
+        "  // written into it. This is what used to make the row budget a",
+        "  // freeze rather than a declaration. It refuses rather than",
+        "  // stranding a typed row above the new header.",
+        "  var relaid = [], stale = [];",
+        "  for (var i = 0; i < SCAFFOLD.length; i++) {",
+        "    var sh = ss.getSheetByName(SCAFFOLD[i][0]);",
+        "    if (!sh || created.indexOf(SCAFFOLD[i][0]) >= 0) { continue; }",
+        "    var r = relayout(sh, SCAFFOLD[i][1], SCAFFOLD[i][2]);",
+        "    if (r === 'moved') { relaid.push(SCAFFOLD[i][0]); }",
+        "    if (r === 'occupied') { stale.push(SCAFFOLD[i][0]); }",
+        "  }",
+        "",
         "  var missing = [], wrote = 0;",
         "  for (var i = 0; i < VALUES.length; i++) {",
         "    var sh = ss.getSheetByName(VALUES[i][0]);",
@@ -1471,6 +1528,12 @@ def emit_apps_script(fronts, path):
         "          + INDEX.length + ' fronts.';",
         "  if (created.length) { msg += '  TABS CREATED: ' "
         "+ created.join(' | '); }",
+        "  if (relaid.length) { msg += '  RELAID OUT: ' "
+        "+ relaid.join(' | '); }",
+        "  if (stale.length) {",
+        "    msg += '  LAYOUT STALE, NOT MOVED (typed log rows would be "
+        "stranded — move them by hand, then re-run): ' + stale.join(' | ');",
+        "  }",
         "  if (renamed.length) { msg += '  TABS RENAMED: ' "
         "+ renamed.join(' | '); }",
         "  if (missing.length) {",
@@ -1498,6 +1561,41 @@ def emit_apps_script(fronts, path):
         "  // 5m57s).  The unflushed status write was lost with it.  The log line",
         "  // above and the REPAIR tab are the report.",
         "  return msg;",
+        "",
+        "  function relayout(sh, liveRows, logRow) {",
+        "    // Rows 1..logRow belong to the generator; logRow+1 down belong",
+        "    // to the operator. Nothing to do if the header is already where",
+        "    // this build wants it -- the normal case, so this costs one",
+        "    // read per tab.",
+        "    if (sh.getRange(logRow, 1).getValue() === LOG_COLS[0]) {",
+        "      return 'ok';",
+        "    }",
+        "    var depth = Math.max(sh.getLastRow(), logRow + LOG_ROWS) ;",
+        "    var colA = sh.getRange(1, 1, depth, 1).getValues();",
+        "    var oldLog = -1;",
+        "    for (var r = 0; r < colA.length; r++) {",
+        "      if (colA[r][0] === BANDS.log) { oldLog = r + 2; break; }",
+        "    }",
+        "    if (oldLog < 0) { return 'ok'; }   // nothing recognisable to move",
+        "    // Refuse if the operator has typed anything into the old log.",
+        "    var typed = sh.getRange(oldLog + 1, 1, LOG_ROWS, LOG_COLS.length)",
+        "                  .getValues();",
+        "    for (var r = 0; r < typed.length; r++) {",
+        "      for (var k = 0; k < typed[r].length; k++) {",
+        "        if (typed[r][k] !== '' && typed[r][k] !== null) {",
+        "          return 'occupied';",
+        "        }",
+        "      }",
+        "    }",
+        "    // Clear the generator's old rows from the LIVE band down through",
+        "    // the empty log, then lay it out at the new height.",
+        "    var from = 17;",
+        "    var to = Math.max(oldLog + LOG_ROWS, logRow + LOG_ROWS);",
+        "    sh.getRange(from, 1, to - from + 1, LOG_COLS.length)",
+        "      .clearContent();",
+        "    scaffoldFront(sh, liveRows, logRow);",
+        "    return 'moved';",
+        "  }",
         "",
         "  function scaffoldFront(sh, liveRows, logRow) {",
         "    // Only the parts that are the same on every front tab; the",

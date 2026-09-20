@@ -354,3 +354,53 @@ def test_e4_and_a10_agree_on_what_a_confirmation_is():
     e4 = [f for l, f in b.LIVE["E4"] if "accrued" in l][0]
     a10 = [f for l, f in b.LIVE["A10"] if "Confirms total" in l][0]
     assert e4 == a10, f"E4 and A10 disagree:\n  {e4}\n  {a10}"
+
+
+def test_e2_splits_its_gate_by_lot_shape_and_the_two_halves_partition():
+    """E2's ≥98% gate sat at ~78% pooled across two different failure
+    regimes — 43% of dense lots fuse against 5.3% of small ones, and scale
+    confidence fails on the small ones instead. Pooled, the harder half can
+    hold the gate down forever while the easier half is already shippable.
+
+    The strata must cover the gated population exactly once: 1-6 and 7+,
+    both guarded by ISNUMBER so an un-scored row (an empty paste is TEXT,
+    which Sheets ranks above every number) lands in neither.
+    """
+    labels = [l for l, _f in b.LIVE["E2"]]
+    assert any("small lots" in l for l in labels), "E2 has no small stratum"
+    assert any("dense lots" in l for l in labels), "E2 has no dense stratum"
+    g = f'match_log!{b.M["gemini_button_count"]}2:{b.M["gemini_button_count"]}'
+    small = [f for l, f in b.LIVE["E2"] if "small lots" in l]
+    dense = [f for l, f in b.LIVE["E2"] if "dense lots" in l]
+    for f in small:
+        assert f'({g}>=1)*({g}<=6)' in f, f"small stratum is not 1-6: {f}"
+    for f in dense:
+        assert f'({g}>=7)' in f, f"dense stratum is not 7+: {f}"
+    for f in small + dense:
+        assert f'ISNUMBER({g})' in f, (
+            f"stratum counts un-scored rows: {f}")
+        # every stratum cell must still be inside the gated population
+        assert '"auto"' in f and '"scale_first"' in f, (
+            f"stratum is not restricted to gated lots: {f}")
+
+
+def test_the_repair_can_move_a_log_that_changed_height_but_refuses_to_strand():
+    """Growing a LIVE block moves the PROGRESS LOG header down.
+
+    That used to be impossible in place, which is what made LIVE_ROW_BUDGET a
+    freeze rather than a declaration: the only way to change a block was a
+    rebuild, and a rebuild costs the pasted Logger corpus. The repair now
+    relays a tab out — but a typed log row above the new header would be
+    silently orphaned, so it must check and refuse instead, and say so.
+    """
+    import tempfile
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    assert "function relayout(" in gs
+    assert "'occupied'" in gs, "the guard has no refusal path"
+    assert "LAYOUT STALE" in gs, "a refusal must be reported, not swallowed"
+    # and it must not relayout a tab it just created from scratch
+    assert "created.indexOf(SCAFFOLD[i][0]) >= 0" in gs
