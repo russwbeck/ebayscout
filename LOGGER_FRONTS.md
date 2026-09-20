@@ -477,12 +477,12 @@ its own pool has not been tested. Stage 4 → 5 is the full-data directive.
 
 - **Track:** Detection
 - **Status:** OPEN
-- **Stage:** 2
+- **Stage:** 3
 - **Volume:** 100 — pipeline fused lots, incl. ~20 with 7+ buttons
 - **Question:** on lots where buttons touch and fuse into one mask blob, can Hough be re-run at a DT-corrected radius to split them?
 - **Instrument:** `det_mask_components` < `gemini_button_count` (the fusion signature); `det_dt_peaks_total` as the radius source
 - **Gate:** adopt when `det_dt_peaks_total` is within ±1 (or ±10% on 13+ button lots) of Gemini's count on ≥80% of fused lots. Needs ~100 pipeline lots including ~20 with 7+ buttons; dense `/sort` lots are the fastest gold-standard source. If it passes, the blob-split half can ship shadow-first for one more batch before switching live.
-- **Standing:** largely covered by B2 — saturation was the fusion driver in both real lots. The design was revised: DT peaks are the radius/fusion signal, not the counter.
+- **Standing:** **the population is sized; the gate as written asks B21's question, not this one.** Read 2026-09-20, pooled over ~900 images: **162 fused lots** (`det_mask_components` < `gemini_button_count`, per image) against the 100 the gate asks for, and **332 lots with 7+ buttons** against the ~20 it asks for — the volume is met, so this front is no longer accruing. What it is NOT is answered. The gate measures `det_dt_peaks_total` against Gemini's COUNT and reads **38.3% within ±1** against its own ≥80% bar — but that is B21, which refuted DT peaks as a counter at scale and is closed; this reading only reproduces it. The revised design uses DT peaks as the RADIUS for a Hough re-run that splits the blob, and **nothing logs that**: no column records a split attempt, a recovered button, or a post-split count, so the front's real question still has zero data. The next move is rewriting the gate to match the revised design and instrumenting the split — not more accrual, which is now complete. (Earlier readings of 3601 fused and 5774 dense lots were per-CROP, so lot size was the weight on exactly the axis this front measures; fixed 2026-09-20.) Still largely covered by B2 — saturation was the fusion driver in both real lots.
 - **Source:** `AUTOMATION_ROADMAP.md` Phase 2b
 
 ### B4 — Small-lot overcount (defect B)
