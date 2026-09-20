@@ -404,3 +404,21 @@ def test_the_repair_can_move_a_log_that_changed_height_but_refuses_to_strand():
     assert "LAYOUT STALE" in gs, "a refusal must be reported, not swallowed"
     # and it must not relayout a tab it just created from scratch
     assert "created.indexOf(SCAFFOLD[i][0]) >= 0" in gs
+
+
+def test_no_formula_mixes_two_guards_on_the_same_column():
+    """A ratio must use ONE definition of "scored" on both halves.
+
+    E2's exact-agreement and within-1 cells guarded their numerators with
+    `<>""` while the denominator beside them used ISNUMBER, so the two halves
+    disagreed about which rows counted. It did not bite on the 2026-09-20
+    pool, but a ratio is the worst place to keep a latent guard mismatch:
+    the error is silent and shows up as a percentage that looks reasonable.
+    """
+    g = f'match_log!{b.M["gemini_button_count"]}2:{b.M["gemini_button_count"]}'
+    for fid, rows in b.LIVE.items():
+        for label, f in rows:
+            if f'ISNUMBER({g})' in f and f'({g}<>"")' in f:
+                raise AssertionError(
+                    f'{fid} {label!r} guards the same column two ways — '
+                    f'ISNUMBER and <>"" in one formula')

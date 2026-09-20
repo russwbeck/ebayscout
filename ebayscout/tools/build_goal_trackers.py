@@ -280,10 +280,17 @@ def _live():
     _gate_auto = f'COUNTIFS({CROP1},{_gate},"auto")'
     _gated = f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first")'
     _gated_scored = numeric(_gcount, f'{_gate}="auto"', f'{_path}="scale_first"')
+    # Numerator and denominator have to use ONE guard.  These two counted
+    # `<>""` while `_gated_scored` below counts ISNUMBER, so the ratio mixed
+    # two definitions of "scored" — a row carrying text in the count column
+    # could reach the numerator and not the denominator.  It did not bite on
+    # the 2026-09-20 pool (237/302 reconciles exactly against the strata),
+    # but it is the same text-ranks-above-numbers trap as the rest, and half
+    # a ratio is the worst place to keep it.
     _agree = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
-              f'*({_gcount}<>"")*({_nisel}={_gcount}))')
+              f'*{gnum}*({_nisel}={_gcount}))')
     _agree1 = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
-               f'*({_gcount}<>"")*(ABS({_nisel}-{_gcount})<=1))')
+               f'*{gnum}*(ABS({_nisel}-{_gcount})<=1))')
 
     # The gated stratum, split by lot shape.  E2's ≥98% gate has sat at ~78%
     # while the corpus turned out to hold two different failure regimes: on
