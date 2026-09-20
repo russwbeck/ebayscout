@@ -146,9 +146,12 @@ nothing until the data justifies training.
 ## 7. What we need
 
 - **No new budget.** The plan runs on the existing pay-per-use footprint.
-- **Continued reviewer discipline**: using the correction flow (rather than
-  silently fixing errors) is what produces the measured-precision numbers
-  Stages C and D are gated on.
+- **Continued reviewer discipline**: using the per-lot **Any of these wrong?**
+  button (rather than silently fixing errors) is what produces the
+  measured-precision numbers Stages C and D are gated on. Worth noting that
+  this ask was unmeetable until 2026-09-20: the flow the docs had been asking
+  for did not exist, which is why that number is still unmeasured. It is
+  buildable evidence now, not a discipline problem.
 - **Patience measured in weeks, not quarters**: the entry gates fill from
   the daily feed on their own.
 

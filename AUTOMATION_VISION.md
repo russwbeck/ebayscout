@@ -164,20 +164,29 @@ patched (`demote_auto_on_detector_bailout`). Everything is logged.
 **Stage B — detection stands alone on gated lots.** On lots where the shadow
 pass says `auto`+`scale_first`, use the unguided count as primary and demote
 Gemini's count to a cross-check.
-*Enter when:* gated unguided **count** agrees with Gemini's count on ≥98% of
-gated lots at real volume (passive accrual — no crawls needed; Gemini's
-count is a valid ruler in the reviewed flow, per the operator 2026-07-10 —
-the earlier "74% per-lot" objection measured pipeline cleanliness, not
-Gemini count error). Current standing: **0% gated disagreement on the
-post-patch organic feed**; 8/9 vs human (n=9); `scale_first` is ~33% of
-volume.
+*Enter when:* gated unguided **count** agrees with Gemini's count on ≥98%
+**per lot shape**, and the two shapes ship separately (restated 2026-09-20 —
+see `LOGGER_FRONTS.md` E2). Passive accrual, no crawls needed; Gemini's count
+is a valid ruler in the reviewed flow, per the operator 2026-07-10 — the
+earlier "74% per-lot" objection measured pipeline cleanliness, not Gemini
+count error.
+Current standing, 2026-09-20 over ~900 images (331 gated lots, 302 scored):
+**small lots (1–6) 125/127 = 98.4% — clears; dense lots (7+) 112/170 = 65.9%;
+pooled 78.5%.** Stage B is not blocked, it is blocked on DENSE lots, and the
+pooled number hid a passing stratum behind a failing one for as long as this
+front has existed. Two caveats hold the small-lot ship: n=127 is thin (95%
+Wilson ≈ [94.4%, 99.6%], straddling the gate — the §4.2 hold is written into
+the gate), and 5 gated lots carry a Gemini count of 0 and all disagree, which
+is a Gemini failure rather than a miscount and belongs in neither stratum.
+The earlier "0% gated disagreement" reading was n=9.
 *Blind spot a count gate cannot see:* misplaced circles and non-button
 objects — the operator's actual dominant error mode. Grade placement
 separately against Gemini's per-button x/y (the matching already runs in
 `plan_reconciliation`; log the Hough-only unmatched circles instead of
 discarding them) plus `not_a_button`/`missed_button` taps.
-*Rollback when:* gated count disagreement vs Gemini exceeds 2% over any 50
-lots (`auto_overridden` has no UI affordance yet, so it cannot be the
+*Rollback when:* disagreement in a SHIPPED stratum exceeds 2% over any 50
+lots of that shape — pooled, the rule would fire on dense lots and roll back
+small ones (`auto_overridden` has no UI affordance yet, so it cannot be the
 tripwire). *Prize:* radius/count independence; Gemini load unchanged but now
 redundant on ~⅓ of lots (growing as mask variants land).
 

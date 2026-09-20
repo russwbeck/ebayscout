@@ -326,8 +326,9 @@ gold-standard rows on top. No crawls required.
   rejected radii, and the DT-peak signal — joinable to `gemini_button_count`
   per `job_id`.
 - **Highest-value manual data:** dense (7+) lots through `/sort` with the typed
-  count (Phase 2's bottleneck — daily-feed lots are mostly singles), and using
-  the correction flow on any wrong auto-confirm (Phase 4c's only source).
+  count (Phase 2's bottleneck — daily-feed lots are mostly singles), and the
+  per-lot **Any of these wrong?** button on any wrong auto-confirm (Phase 4c's
+  only source; built 2026-09-20 — before that there was nothing to use).
 - **Do NOT** launch `/crawl`, `?year_crawl=1`, or `?ignore_seen=1` for data
   collection — real eBay-API + CPU cost, and the passive feed suffices.
 - **Grading query (any phase):** one row per `job_id` from `match_log`, bucket
@@ -416,10 +417,11 @@ instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
 
 **Still waiting on operator-side data (unchanged asks):**
 
-- First `correction` rows in confirm_log (Phase 4c is still at zero — the
-  auto-confirm error rate remains inferred, not measured). This was a MISSING
-  FEATURE, not a missing habit, until 2026-09-20; the **Any of these wrong?**
-  button on each lot now produces those rows.
+- First `correction` rows in confirm_log — Phase 4c is still at zero, so the
+  auto-confirm error rate remains inferred rather than measured. What changed
+  on 2026-09-20 is that it is now PRODUCIBLE: this was a missing FEATURE, not
+  a missing habit, and the per-lot **Any of these wrong?** button is the
+  producer. The ask is the same; it is answerable now.
 - A durable record of the 759/759 `gemini_auto` visual audit (currently only
   attested in chat; a one-line note in HANDOFF or the Sheet makes it citable).
 
