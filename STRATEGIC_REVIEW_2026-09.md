@@ -127,12 +127,20 @@ Two more facts sharpen this:
 
 ### 3.2 The Stage-D gate was blocked on a feature that did not exist
 
-> **RESOLVED 2026-09-20 (SR-05).** The affordance is built: a per-lot **Any of
-> these wrong?** button that logs `correction` / `skip_correction` and swaps
-> the sheet in the lot's own direction. A10 moves BLOCKED → OPEN; it stays at
-> stage 1 until rows actually land, because the instrument existing is not the
-> same as the number being measured. The diagnosis below stands as written —
-> it is why this sat still for months, and it is worth keeping.
+> **RESOLVED 2026-09-20 (SR-05), both halves.** The affordance is built: a
+> per-lot **Any of these wrong?** button that logs `correction` /
+> `skip_correction` and swaps the sheet in the lot's own direction. So is the
+> sample: a hash picks 1 pipeline lot in N (N=10,
+> `BUTTONMATCHER_AUDIT_SAMPLE_N`), withholds every auto-confirm on it —
+> `gemini_auto` and the A18 ladder alike — logs what each would have written as
+> `audit_shadow`, and grades the operator's answer `audit_hit` / `audit_miss`.
+> The two halves measure different populations on purpose and must not be
+> pooled: the button reads the autos someone *volunteered* a complaint about,
+> which is a floor on the error rate; the sample reads a population chosen by a
+> hash, which is a rate. A10 moves BLOCKED → OPEN; it stays at stage 1 until
+> rows actually land, because the instrument existing is not the same as the
+> number being measured. The diagnosis below stands as written — it is why this
+> sat still for months, and it is worth keeping.
 
 
 `LOGGER_FRONTS.md` A10, `AUTOMATION_ROADMAP.md` 4c and `AUTOMATION_VISION.md`
@@ -144,10 +152,23 @@ correction flow**." `match_logging.py` line 670 and `LOGGING.md` document the
 **Nothing in either `main.py` writes those sources.** A grep for `correction`
 in buttonmatcher's `main.py` finds only comments, the `/buy` Dussellbot path
 and a `slogan_correction` modal mode; no handler on an auto-confirmed line
-produces a `correction` row, and the register itself notes elsewhere that
-"`auto_overridden` has no UI affordance yet." The operator has been asked for
-months to use a flow that was never built, and the project's "only unmeasured
-load-bearing number" is unmeasured because of that, not because of discipline.
+produces a `correction` row. The operator has been asked for months to use a
+flow that was never built, and the project's "only unmeasured load-bearing
+number" is unmeasured because of that, not because of discipline.
+
+> **One piece of this diagnosis was wrong, and is corrected here (2026-09-20).**
+> The paragraph above originally leaned on the register's note that
+> "`auto_overridden` has no UI affordance yet" as a second example of the same
+> disease. It is not one. The affordance shipped 2026-07-19: ✏️ Fix count is on
+> every `gate=auto` post, the modal carries `count_source="auto_overridden"`,
+> and the submit handler downgrades it back to `auto` when the operator opens
+> it and keeps the number — so the column is written, and has been for two
+> months. The register's line was written 2026-07-18, was true for one day, and
+> was never updated; E2's 2026-09-07 restatement copied it forward and dropped
+> the "yet", hardening a stale fact into a gate condition. What `auto_overridden`
+> actually lacked was a *reader* — no tracker cell and no tool touched it — and
+> that is now fixed on E2's tab. The rest of this section stands: `correction`
+> genuinely had no producer, which is a different and worse problem.
 The 759/759 `gemini_auto` visual audit (C6) was done by hand for the same
 reason and survives only in chat.
 
@@ -157,7 +178,9 @@ Ticket SR-05 builds it. *(Built 2026-09-20. The grep was re-run first across
 every caller of `build_confirm_record`, both logging wrappers, and any source
 literal containing `correction`: the nearest thing that existed was
 `wrong_slogan`, which is on `/buy`, is `crop_num=1`, and logs
-`source="slogan_pick"`. The 1-in-N audit sample is still NOT built.)*
+`source="slogan_pick"`. The 1-in-N audit sample was still not built that
+morning; it is now — see SR-05's ticket for the one departure from the spec,
+which is that lots of 15+ buttons are never sampled.)*
 
 ### 3.3 Where the engineering effort went
 
@@ -219,7 +242,7 @@ Ranked. "Sev" is impact on data or money, not effort. Line numbers are as of
 | SR-02 | Med | ebayscout | `main.py` `_run_daily_scan` (2169, 2445, 2455) vs `_mark_item_seen_now` (1284) | The legacy CLIP path loads `seen` once and later does a wholesale `save_seen(seen)` outside `_seen_lock`; a pipeline confirmation that lands during a year/era/hunt crawl is erased from `seen_items.json` and the lot is re-fed and re-alerted. |
 | SR-03 | Med | buttonmatcher | `main.py` `_kick_pipeline_mode` (timeout 890) + `_run_pipeline_mode_now` | The per-lot confirm loop is one HTTP request against a 900 s Cloud Run limit. Observed ~6.8 s/button (353 buttons in 40 min) plus 1/3/8 s 429 backoffs; an 80-button lot (they occur) is at the edge, and past it the loop continues CPU-throttled with the claim held — the 15.5 h cliff pattern from `DECISIONS.md` #23. |
 | SR-04 | Med | ebayscout | `seen_items.append_scan_log` under `_scanlog_lock` | Every lot downloads and re-uploads the entire `scan_log.jsonl`. Unbounded growth, linear cost per lot, serialized across concurrent Gem results. |
-| SR-05 | Med (program) | buttonmatcher | no producer for `source=correction` / `skip_correction` | See §3.2. The Stage-D gate's only instrument did not exist. **DONE 2026-09-20** — the per-lot "Any of these wrong?" button; the 1-in-N audit sample remains open. |
+| SR-05 | Med (program) | buttonmatcher | no producer for `source=correction` / `skip_correction` | See §3.2. The Stage-D gate's only instrument did not exist. **DONE 2026-09-20, both halves** — the per-lot "Any of these wrong?" button and the 1-in-N audit sample (small lots only; see the ticket). |
 | SR-06 | Low-Med | buttonmatcher | `_inventory_written`, `_load_pipeline_job` | The write ledger is in-memory; a lot resumed from its GCS snapshot after a restart has no ledger, so stale review cards for already-written crops become live double-count traps (documented on the 2026-09-08 lot). Bot Writes is durable and holds exactly the keys needed to reseed it. |
 | SR-07 | Low | ebayscout | `config.ENABLE_UNDERVALUED_ALERTS` | Defined `False`, never read. `process_pipeline_lot` posts undervalued alerts whenever `lot_value > asking`. The flag and `DECISIONS.md`'s "deferred" note are wrong about live behavior. |
 | SR-08 | Low | ebayscout | `main.py` 1997–2110, `_post_yellow_review`, `_run_daily_scan`/`_evaluate_listing` | Dead or near-dead code left from PR #17 (`/scout` removed): `scout_verify_*`/`scout_count_*` handlers with nothing posting their cards; ~650 lines of CLIP-only scan reachable only by flags. `CLAUDE.md` still says ebayscout "serves a manual `/scout` mode." |
@@ -269,6 +292,21 @@ lot posts its cards as if not auto (N≈10), so precision is *sampled*, not just
 volunteered. *Done when:* the tap produces a `correction` row joined on
 `(job_id, crop_num)`, the sheet delta is visible on Bot Writes, and a tracker
 reads precision = 1 − corrections / sampled autos. This unblocks A10 and E4.
+
+**BUILT 2026-09-20, both halves.** The sample ships with one deliberate
+departure from the text above, at the operator's instruction: **lots of 15+
+buttons are never sampled** (`BUTTONMATCHER_AUDIT_SAMPLE_MAX_BUTTONS`), because
+a 1-in-10 roll landing on a 100-button lot costs 100 clicks and a sampler that
+expensive gets switched off inside a week. So the number it yields is
+**small-lot auto precision**, not the auto path's precision overall — dense-lot
+autos are outside the sampled population entirely. A10's gate can be read from
+it; **E4's cannot**, because E4 spans both shapes. Raise the cap to widen it, at
+a known price in clicks. The ladder's autos (`auto_pipeline_*`) are sampled too:
+it is the newer of the two no-click families and the one with the least evidence
+behind it, so exempting it would have sampled the path that needs sampling
+least. The sampled rows are bookkeeping, not confirmations, and every workbook
+cell whose denominator says "confirmations" now excludes them — otherwise
+turning the sampler on would have inflated E4's own ≥300 gate.
 
 **SR-06 — reseed the ledger from Bot Writes on resume.** In
 `_load_pipeline_job`, read the Bot Writes rows for that thread and add their
@@ -359,7 +397,7 @@ detectors and silent drift.
 
 | Ticket | Repo | Size | What / gate |
 |---|---|---|---|
-| ~~SR-05 correction affordance~~ **DONE 2026-09-20** — the 1-in-N audit sample is the remaining half | buttonmatcher | L | `correction` rows flow; precision readable |
+| ~~SR-05 correction affordance + 1-in-N audit sample~~ **DONE 2026-09-20** — both halves; the sample is small-lot only | buttonmatcher | L | `correction` rows flow; sampled precision readable on A10 |
 | SR-13 **two headline metrics** in the tracker: taps per confirmed button (from `confirm_log.source` — human sources vs machine) and buttons written per operator-hour (from Bot Writes timestamps); one tab, replacing nothing | ebayscout (tools) | S | tab reads from raw tabs, guarded by `test_goal_tracker_repair` |
 | SR-14 **inventory from a sort** — after a `/sort` or `/sort complete` lot settles, offer one tap "count these into inventory" that runs the identified list through `_record_inventory_change` (no re-photograph, no re-match) | buttonmatcher | M | the 2011–2016 case: 100 confirmed → 100 written with one tap per lot |
 | SR-15 **reference review load** — measure first: slogans queued per session, taps per slogan, share auto-resolved by the at-cap rule; then raise the auto-resolve share (e.g. auto-replace when the staged crop beats the weakest on resolution-normalized sharpness — C2's open question, decided by data rather than by asking again) | buttonmatcher | M | queue per session down by half at equal library quality (spot-audit 20) |
@@ -470,7 +508,7 @@ are the right tool for a module that cannot be imported here.*
 | SR-10 patch dir | main `102f74d` | Closed. |
 | SR-11 CI | main `ab898cb` / `14119a6` | **Runs, but skips 305 tests** — 10.4 |
 | SR-12 records | main `ab898cb` / `14119a6` | Closed, one leftover — 10.5 |
-| SR-05 correction affordance | **done 2026-09-20** | The button ships; the 1-in-N audit sample does not. |
+| SR-05 correction affordance | **done 2026-09-20** | Button and 1-in-N sample both ship. The sample skips lots of 15+, so it reads small-lot precision only. |
 
 ### 10.1 SR-01: the hook does not reach Slack click handlers
 

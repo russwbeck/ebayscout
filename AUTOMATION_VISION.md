@@ -186,8 +186,12 @@ separately against Gemini's per-button x/y (the matching already runs in
 discarding them) plus `not_a_button`/`missed_button` taps.
 *Rollback when:* disagreement in a SHIPPED stratum exceeds 2% over any 50
 lots of that shape — pooled, the rule would fire on dense lots and roll back
-small ones (`auto_overridden` has no UI affordance yet, so it cannot be the
-tripwire). *Prize:* radius/count independence; Gemini load unchanged but now
+small ones. The tripwire IS the `auto_overridden` rate: ✏️ Fix count has
+written it on every `gate=auto` post since 2026-07-19, and this line's
+"no UI affordance yet" went stale the next day (corrected 2026-09-20, with
+a reader added to E2's tab). It is a floor, not a rate — the one-tap default
+lets an unchecked count through as `auto` — so it may trip the rollback but
+cannot show a stratum is clean. *Prize:* radius/count independence; Gemini load unchanged but now
 redundant on ~⅓ of lots (growing as mask variants land).
 
 **Stage C — Gemini becomes an auditor, not a guide.** Call the Gem only when

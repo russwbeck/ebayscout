@@ -304,6 +304,19 @@ def _live():
     _small = f'({_gcount}>=1)*({_gcount}<=6)'
     _dense = f'({_gcount}>=7)'
 
+    # count_source, and the shape of what the auto path proposed.  Both are
+    # per-lot, so both ride the crop_num=1 row like the strata above.
+    _cs = f'{m}!{M["count_source"]}2:{M["count_source"]}'
+    _ni_small = f'({_nisel}>=1)*({_nisel}<=6)'
+    _ni_dense = f'({_nisel}>=7)'
+
+    def _override(shape):
+        """auto_overridden / (auto + auto_overridden), within one lot shape."""
+        base = f'({_crop1c})*{shape}'
+        return (f'=IFERROR(SUMPRODUCT({base}*({_cs}="auto_overridden"))'
+                f'/SUMPRODUCT({base}*(({_cs}="auto")+({_cs}="auto_overridden"))),'
+                f'"—")')
+
     def _strat(cond, agree=False):
         base = (f'({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
                 f'*{gnum}*{cond}')
@@ -317,7 +330,12 @@ def _live():
     # rows asks the board whether it agrees with itself — and they are ~75% of
     # confirmations.  Every machine source is `gemini*` or `auto*`; excluding
     # both leaves the rows a person actually decided.
-    HUMAN = f'{d}!B:B,"<>gemini*",{d}!B:B,"<>auto*"'
+    # `audit_*` rows are SR-05's sample bookkeeping, not a human tap: the
+    # shadow row carries what the auto would have written and the hit/miss row
+    # annotates a confirm that already logged its own row.  Counted as human, a
+    # sampled crop would land in these bands up to three times.
+    HUMAN = (f'{d}!B:B,"<>gemini*",{d}!B:B,"<>auto*",'
+             f'{d}!B:B,"<>audit_*"')
 
     def _band(col, lo, hi, human=False):
         src = f",{HUMAN}" if human else ""
@@ -341,9 +359,17 @@ def _live():
     # Confirmations a person or the auto path actually made.  `gemini_count`
     # rows are bookkeeping for a Gemini count, not a decision, and B23 already
     # excludes them from its denominator for the same reason.
-    real_confirms = (f'={typed(c, C["source"])}'
-                     f'-COUNTIF({c}!{C["source"]}2:{C["source"]},'
-                     f'"gemini_count")')
+    # Rows in confirm_log that are NOT a confirmation anyone or anything made.
+    # `gemini_count` is bookkeeping for a Gemini count; `audit_shadow` /
+    # `audit_hit` / `audit_miss` are SR-05's sample bookkeeping, and a sampled
+    # crop writes up to three of them around the ONE confirm the operator
+    # actually made.  Any cell whose denominator says "confirmations" has to
+    # take all of them out, or turning the sampler on inflates the very gate it
+    # exists to inform.
+    bookkeeping = (f'(COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")'
+                   f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"audit_*"))')
+
+    real_confirms = f'={typed(c, C["source"])}-{bookkeeping}'
 
     rows = f'=COUNTA({m}!{M["ts"]}2:{M["ts"]})'
     crows = f'=COUNTA({c}!{C["ts"]}2:{C["ts"]})'
@@ -420,11 +446,33 @@ def _live():
          f'{M["det_radius_mean"]},{CROP1})*2,"—")'),
         ("Crops in lots whose MEAN diameter is < 64px  ← lot-level proxy",
          f'=COUNTIF({m}!{M["det_radius_mean"]}2:{M["det_radius_mean"]},"<32")')],
- "A10": [("Correction rows logged  ← the whole front",
+ # The first two cells read the VOLUNTEERED half: corrections the operator
+ # chose to report.  That rate is biased by the thing it measures — a wrong
+ # auto is only reported if it is noticed, and an auto nobody eyeballs is
+ # never noticed — so it is a floor on the error rate, not a measurement of
+ # it.  The last two read the SAMPLED half (SR-05, 2026-09-20): a hash picks
+ # 1 lot in N, every auto on a picked lot is put to the operator, and the
+ # answer is graded against what the auto would have written.  That one is
+ # unbiased WITHIN ITS POPULATION, and its population is truncated: lots of
+ # 15+ buttons are never picked, because handing back a 100-button lot costs
+ # 100 clicks.  So this is SMALL-LOT auto precision.  Dense-lot autos are not
+ # in it and E4's gate spans both shapes — do not close E4 on this cell alone.
+ "A10": [("Correction rows logged  ← volunteered, a floor not a rate",
           f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"correction")'
           f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"skip_correction")'),
          # Same population as E4's gate — see there.
-         ("Confirms total (no bookkeeping)", real_confirms)],
+         ("Confirms total (no bookkeeping)", real_confirms),
+         ("Autos put to the operator  ← sampled, 1-in-N, lots under 15",
+          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"audit_shadow")'),
+         # Denominator is answered crops only, NOT audit_shadow: a sampled lot
+         # the operator walked away from leaves shadows with no verdict, and
+         # counting those as misses would read abandonment as imprecision.
+         # The gap between this pair and the cell above is how much of the
+         # sample went unanswered, which is worth seeing.
+         ("Sampled auto precision  ← the unbiased read",
+          f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"audit_hit")'
+          f'/(COUNTIF({c}!{C["source"]}2:{C["source"]},"audit_hit")'
+          f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"audit_miss")),"—")')],
  # Both cells divided by COUNTA, which counts the blank `chosen_type` a
  # confirmation writes when it resolved no type: the share read 0.804 against
  # 0.997, and "non-football confirms" read 483 against 5.  `typed` counts only
@@ -453,7 +501,8 @@ def _live():
  "A16": [("Distinct #1 phrases seen",
           f'=IFERROR(COUNTA(UNIQUE(FILTER({d}!F:F,{d}!F:F<>""))),"—")'),
          ("Wrong #1s (the swap-pair pool, no bookkeeping)",
-          f'=COUNTIFS({d}!J:J,FALSE,{d}!B:B,"<>gemini_count")')],
+          f'=COUNTIFS({d}!J:J,FALSE,{d}!B:B,"<>gemini_count",'
+          f'{d}!B:B,"<>audit_*")')],
  # The front is about TYPED rows, so the population comes first — the
  # all-confirms count read 152 against 5 typed rows that actually qualify.
  "A23": [("Typed rows carrying both ranks  ← the actual population",
@@ -470,9 +519,12 @@ def _live():
  "A25": [("edition_pick rank > 1",
           f'=COUNTIFS({c}!{C["source"]}2:{C["source"]},"edition_pick",'
           f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},">1")'),
+         # Denominator was a raw COUNTA of confirm_log, which already counted
+         # `gemini_count` bookkeeping; the audit sample would have added three
+         # more row types to it.  It says "of confirms", so it counts confirms.
          ("edition_pick share of confirms",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"edition_pick")'
-          f'/COUNTA({c}!{C["source"]}2:{C["source"]}),"—")')],
+          f'/({typed(c, C["source"])}-{bookkeeping}),"—")')],
  # Saturation is a property of the IMAGE — per crop it read 162 saturated rows
  # and 160 grid-fallback rows against 39 lots and 37.  Note what the column
  # holds: `det_mask_coverage` is the FINAL adopted mask, so a lot the
@@ -584,12 +636,10 @@ def _live():
  # 0.80%/1.59%.
  "B23": [("not_a_button rate (of real confirmations)",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")'
-          f'/({typed(c, C["source"])}'
-          f'-COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")),"—")'),
+          f'/({typed(c, C["source"])}-{bookkeeping}),"—")'),
          ("missed_button rate (of real confirmations)",
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"missed_button")'
-          f'/({typed(c, C["source"])}'
-          f'-COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")),"—")')],
+          f'/({typed(c, C["source"])}-{bookkeeping}),"—")')],
  # The whole front is "where is the boundary between the two lot shapes",
  # so counting crops put its thumb on exactly the scale it measures: 7+ read
  # 4227 and 1-6 read 82, a 52:1 split that is mostly just lot size.
@@ -670,7 +720,30 @@ def _live():
          _strat(_small, agree=True)),
         ("\u21b3 dense lots (7+): gated n", _strat(_dense)),
         ("\u21b3 dense lots: count == Gemini  ← the gate, this stratum",
-         _strat(_dense, agree=True))],
+         _strat(_dense, agree=True)),
+        # The rollback tripwire, which this front said it did not have.  It
+        # did: ✏️ Fix count has been on every gate=auto post since 2026-07-19
+        # and writes count_source=auto_overridden, downgraded back to `auto`
+        # when the operator opens the modal and keeps the number.  Nothing
+        # READ it, which is a different problem and is what these cells fix.
+        #
+        # It is a FLOOR on disagreement, not a measurement of it: the one-tap
+        # "Match these N" default lets an unchecked count through as `auto`,
+        # so a wrong count nobody looked at is not counted.  That is the right
+        # direction for a rollback rule — it can only fail to fire, never fire
+        # falsely — and the wrong direction for proving a stratum is under 2%.
+        # Do not close the gate with these cells; only trip it.
+        #
+        # Shape comes from ni_selected, the count the auto path actually put
+        # in front of the operator, not from Gemini's count as the strata
+        # above do: an override is a statement about what was shown.
+        ("Auto-count lots put to the operator (auto + auto_overridden)",
+         f'=COUNTIFS({CROP1},{_cs},"auto")'
+         f'+COUNTIFS({CROP1},{_cs},"auto_overridden")'),
+        ("\u21b3 small (1-6 detected): override rate  ← tripwire, a floor",
+         _override(_ni_small)),
+        ("\u21b3 dense (7+ detected): override rate  ← tripwire, a floor",
+         _override(_ni_dense))],
  "E3": [("Lots below gate=auto (what Gemini would still be called on)",
          f'=IFERROR(1-{_gate_auto}/{_images},"—")')],
  # "Confirmations accrued" was COUNTA over every confirm_log row, and 529 of
@@ -1271,11 +1344,11 @@ def emit_csv(fronts, path):
 # The Apps Script repair writes in place, so growing a block by even one row
 # silently overwrites the log.  Read off the built workbook 2026-09-09.
 LIVE_ROW_BUDGET = {
-    "A1": 2, "A2": 2, "A3": 7, "A4": 7, "A7": 3, "A8": 2, "A10": 2, "A11": 2,
+    "A1": 2, "A2": 2, "A3": 7, "A4": 7, "A7": 3, "A8": 2, "A10": 4, "A11": 2,
     "A12": 2, "A13": 1, "A16": 2, "A23": 2, "A24": 1, "A25": 2,
     "B2": 2, "B3": 3, "B4": 2, "B5": 3, "B7": 3, "B9": 2, "B11": 2, "B14": 2,
     "B19": 3, "B20": 1, "B21": 1, "B22": 2, "B23": 2, "B25": 2, "B26": 2,
-    "B27": 2, "B28": 2, "B29": 1, "B30": 2, "C4": 1, "D2": 2, "E2": 7,
+    "B27": 2, "B28": 2, "B29": 1, "B30": 2, "C4": 1, "D2": 2, "E2": 10,
     "E3": 1, "E4": 3,
 }
 

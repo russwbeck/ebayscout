@@ -408,9 +408,13 @@ instrumented lots vs Gemini; Layer 2 graded Logger_11 vs the operator's
   review's recommendation is to park Stage B/C rather than keep grinding at it
   (SR-20). See `STRATEGIC_REVIEW_2026-09.md` §3.
 - Rollback monitor once flipped: gated shadow-vs-truth disagreement **>2%
-  over any 50-lot window** reverts the flip (chosen because
-  `auto_overridden` has no UI affordance yet, so per-lot override rates
-  can't be the tripwire).
+  over any 50-lot window** reverts the flip — *alongside* the per-lot
+  override rate, which this line said could not be the tripwire and has
+  been writable since 2026-07-19 (✏️ Fix count →
+  `count_source=auto_overridden`; corrected 2026-09-20 and now read on
+  E2's tab, per lot shape). The override rate is a floor — the one-tap
+  default lets an unchecked count through as `auto` — so it trips the
+  rollback but does not close the gate.
 - Fastest path to volume (zero compute cost): dense + single lots through
   `/sort` — typed counts are gold truth and every row carries the full
   instrumentation.
