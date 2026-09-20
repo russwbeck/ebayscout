@@ -311,6 +311,13 @@ def _live():
     hgapband = lambda lo, hi: _band("E", lo, hi, human=True)
     hgapband_n = lambda lo, hi: _band_n("E", lo, hi, human=True)
 
+    # Confirmations a person or the auto path actually made.  `gemini_count`
+    # rows are bookkeeping for a Gemini count, not a decision, and B23 already
+    # excludes them from its denominator for the same reason.
+    real_confirms = (f'={typed(c, C["source"])}'
+                     f'-COUNTIF({c}!{C["source"]}2:{C["source"]},'
+                     f'"gemini_count")')
+
     rows = f'=COUNTA({m}!{M["ts"]}2:{M["ts"]})'
     crows = f'=COUNTA({c}!{C["ts"]}2:{C["ts"]})'
     share = lambda col, val: (
@@ -370,15 +377,27 @@ def _live():
          f'=COUNTIF(ARRAYFORMULA(IFERROR(VALUE(REGEXEXTRACT({m}!'
          f'{M["within_year_json"]}2:{M["within_year_json"]},'
          f'"""runner_up_margin"": ([0-9.eE-]+)")),"")),"<0.01")')],
- "A8": [("Mean rendered diameter, px",
-         f'=IFERROR(AVERAGE({m}!{M["det_radius_mean"]}2:'
-         f'{M["det_radius_mean"]})*2,"—")'),
-        ("Crops below the 64px floor",
+ # `det_radius_mean` is a per-PHOTO aggregate, so averaging it over crop rows
+ # weights each lot by its button count — and a dense lot's buttons are
+ # smaller, so the mean was pulled down by exactly the lots that drag it.
+ #
+ # The second cell is a different problem and is NOT fixed by a crop pin.
+ # A8's shipped rule acts on ONE CROP ("when rendered button diameter is
+ # below ~64px, downgrade gemini_auto"), but `MATCH_HEADER` carries no
+ # per-crop radius — `det_radius_min/max/mean/std` are all lot-level.  So the
+ # honest reading is the blast radius the guard would touch, under a lot-level
+ # proxy, and the caption has to say so rather than implying each crop was
+ # measured.  Instrumenting a per-crop radius would settle it properly.
+ "A8": [("Mean rendered diameter, px (per image)",
+         f'=IFERROR(AVERAGEIFS({m}!{M["det_radius_mean"]}2:'
+         f'{M["det_radius_mean"]},{CROP1})*2,"—")'),
+        ("Crops in lots whose MEAN diameter is < 64px  ← lot-level proxy",
          f'=COUNTIF({m}!{M["det_radius_mean"]}2:{M["det_radius_mean"]},"<32")')],
  "A10": [("Correction rows logged  ← the whole front",
           f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"correction")'
           f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"skip_correction")'),
-         ("Confirms total", crows)],
+         # Same population as E4's gate — see there.
+         ("Confirms total (no bookkeeping)", real_confirms)],
  # Both cells divided by COUNTA, which counts the blank `chosen_type` a
  # confirmation writes when it resolved no type: the share read 0.804 against
  # 0.997, and "non-football confirms" read 483 against 5.  `typed` counts only
@@ -395,9 +414,19 @@ def _live():
           beats(C["rank_centered"], C["rank_restricted"], ">"))],
  "A13": [("Correct #1s won with gap < 0.15  ← the shelf-fill list",
           f'=COUNTIFS({d}!E:E,"<0.15",{d}!J:J,TRUE)')],
+ # The wrong-#1 pool counted every `derived` row whose `correct` flag is
+ # FALSE, and a `gemini_count` row is bookkeeping, not a confirmation
+ # somebody made: it carries no `chosen_phrase`, so if it reaches the flag at
+ # all it reaches it as FALSE.  Whether it does depends on whether those rows
+ # carry a `restricted_top_json` — if they do not, the regex errors and the
+ # flag is "" rather than FALSE, and this filter is a harmless no-op.  Either
+ # way the cell is right afterwards, and the number says which it was: 820
+ # before, so a drop means the pool was inflated by bookkeeping and a hold
+ # means it never was.  Same exclusion B23 already applies to its denominator.
  "A16": [("Distinct #1 phrases seen",
           f'=IFERROR(COUNTA(UNIQUE(FILTER({d}!F:F,{d}!F:F<>""))),"—")'),
-         ("Wrong #1s (the swap-pair pool)", f'=COUNTIF({d}!J:J,FALSE)')],
+         ("Wrong #1s (the swap-pair pool, no bookkeeping)",
+          f'=COUNTIFS({d}!J:J,FALSE,{d}!B:B,"<>gemini_count")')],
  # The front is about TYPED rows, so the population comes first — the
  # all-confirms count read 152 against 5 typed rows that actually qualify.
  "A23": [("Typed rows carrying both ranks  ← the actual population",
@@ -464,9 +493,11 @@ def _live():
         ("Loophole check — auto on a bailed detector (must be 0)",
          per_image(f'{m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto"',
                    f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"'))],
- "B9": [("Lots on a rescue mask path",
-         f'=IFERROR(COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*+*")'
-         f'/COUNTA({m}!{M["det_mask_path"]}2:{M["det_mask_path"]}),"—")'),
+ # The first cell says "Lots" and counted CROPS — the distribution directly
+ # below it is per image, so the two rows of one block disagreed about their
+ # own unit (67.0% against ~73%).
+ "B9": [("Lots on a rescue mask path (per image)",
+         share(M["det_mask_path"], "*+*")),
         # `#REF!` since the build — same grouped-QUERY spill as A24.
         ("Mask path distribution (per image)",
          dist(m, M["det_mask_path"], limit=12, per_image=True))],
@@ -492,11 +523,14 @@ def _live():
          per_image(f'{m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0"')),
         ("not_a_button confirmations to grade against",
          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")')],
+ # `ni_scale_conf` is written once per PHOTO and repeated down the lot, so
+ # both readings were lot-size-weighted.
  "B19": [("scale_first share", share(M["ni_scale_path"], "scale_first")),
-         ("Mean scale confidence",
-          f'=IFERROR(AVERAGE({m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]}),"—")'),
-         ("Rows with zero scale confidence",
-          f'=COUNTIF({m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]},0)')],
+         ("Mean scale confidence (per image)",
+          f'=IFERROR(AVERAGEIFS({m}!{M["ni_scale_conf"]}2:'
+          f'{M["ni_scale_conf"]},{CROP1}),"—")'),
+         ("Lots with zero scale confidence (per image)",
+          per_image(f'{m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]},0'))],
  # `det_white_recovered` is written once per PHOTO but repeated on every
  # crop row, so SUM counted an 80-button sheet's recovery 80 times.  SUMIFS
  # pins it to crop 1 and ignores the empty strings a paste leaves behind.
@@ -596,7 +630,14 @@ def _live():
          f'=IFERROR({_agree1}/{_gated_scored},"—")')],
  "E3": [("Lots below gate=auto (what Gemini would still be called on)",
          f'=IFERROR(1-{_gate_auto}/{_images},"—")')],
- "E4": [("Confirmations accrued  ← the ≥300 gate", crows),
+ # "Confirmations accrued" was COUNTA over every confirm_log row, and 529 of
+ # them are `gemini_count` bookkeeping rather than a confirmation the auto
+ # path or a person made.  It does not change the verdict — 16x the gate
+ # instead of 17x — but it is the cell INDEX reads for E4's Evidence, and a
+ # gate should count the thing it names.  A10's "Confirms total" is the same
+ # population and moves with it, so the workbook cannot hold two different
+ # answers to "how many confirmations are there".
+ "E4": [("Confirmations accrued (no bookkeeping)  ← the ≥300 gate", real_confirms),
         ("Of those, auto-path",
          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"*auto*")'),
         ("Corrections logged (precision denominator)",

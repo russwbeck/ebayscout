@@ -92,8 +92,12 @@ def test_detection_readings_count_images_not_crops():
     # summed a per-photo recovery count once per crop.  Fused and dense lots
     # are the worst case for this bug, because the weight IS the lot size the
     # front is measuring.
-    for fid in ("B2", "B3", "B4", "B11", "B14", "B20", "B21", "B22", "B25",
-                "B27", "B28", "B30", "E2"):
+    # B9 and B19 were missed a third time, by the 2026-09-20 sweep: B9's first
+    # cell said "Lots" and counted crops while the distribution directly below
+    # it counted images, so one two-row block disagreed with itself (67.0% vs
+    # ~73%), and both of B19's readings were weighted by lot size.
+    for fid in ("B2", "B3", "B4", "B9", "B11", "B14", "B19", "B20", "B21",
+                "B22", "B25", "B27", "B28", "B30", "E2"):
         for _label, formula in b.LIVE[fid]:
             assert f'match_log!{crop_col}2:{crop_col}' in formula, (fid, formula)
 
@@ -296,3 +300,57 @@ def test_the_repair_never_touches_the_operators_rows():
         assert max(written) < log_row, (
             f"{f['id']}: the repair writes row {max(written)}, at or below "
             f"the PROGRESS LOG header on row {log_row}")
+
+
+def test_a8_measures_a_per_crop_rule_with_the_only_instrument_there_is():
+    """A8 is the one front where a crop-weighted cell is CORRECT, so it must
+    be excluded from the blanket rule above rather than quietly pinned.
+
+    Its shipped rule acts on one crop — downgrade `gemini_auto` when that
+    crop's rendered diameter is under ~64px — but MATCH_HEADER carries no
+    per-crop radius: `det_radius_min/max/mean/std` are all lot-level. So the
+    floor count is crops under a LOT-level proxy, and its caption has to say
+    so. The mean beside it is a per-photo fact and must be pinned, or dense
+    lots (more crops, smaller buttons) drag it down.
+    """
+    crop = f'match_log!{b.M["crop_num"]}2:{b.M["crop_num"]}'
+    mean_label, mean_f = b.LIVE["A8"][0]
+    floor_label, floor_f = b.LIVE["A8"][1]
+    assert crop in mean_f, "A8's mean is a per-photo fact and must be pinned"
+    assert crop not in floor_f, (
+        "A8's floor count is deliberately per-crop — pinning it would report "
+        "lots, which is not what the guard acts on")
+    assert "proxy" in floor_label.lower() or "MEAN" in floor_label, (
+        f"A8's floor caption must name the lot-level proxy: {floor_label!r}")
+    # and the day a per-crop radius column exists, this test should fail
+    assert not [c for c in b.ml.MATCH_HEADER
+                if "radius" in c and "crop" in c], (
+        "a per-crop radius column now exists — measure A8's rule directly")
+
+
+def test_bookkeeping_rows_are_not_counted_as_confirmations():
+    """`gemini_count` rows record a Gemini count, not a decision anybody made.
+
+    B23 already excluded them from its tap denominator. E4's gate counted
+    them anyway (5358 against 4829 real), A10 reported the same inflated
+    total beside it, and A16 counted them into the wrong-#1 pool because a
+    row with no `chosen_phrase` cannot match its own top-1. A workbook that
+    answers "how many confirmations are there" two different ways on two tabs
+    is worse than one that is wrong the same way everywhere.
+    """
+    for fid in ("A10", "E4", "B23"):
+        joined = " ".join(f for _l, f in b.LIVE[fid])
+        assert '"gemini_count"' in joined, (
+            f"{fid} counts bookkeeping rows as confirmations")
+    wrong = dict((l, f) for l, f in b.LIVE["A16"])
+    pool = [f for l, f in b.LIVE["A16"] if "swap-pair" in l]
+    assert pool and '"<>gemini_count"' in pool[0], (
+        "A16's wrong-#1 pool still counts bookkeeping rows")
+
+
+def test_e4_and_a10_agree_on_what_a_confirmation_is():
+    """They read the same population and are shown side by side; if they ever
+    diverge, one of the two tabs is lying about the same number."""
+    e4 = [f for l, f in b.LIVE["E4"] if "accrued" in l][0]
+    a10 = [f for l, f in b.LIVE["A10"] if "Confirms total" in l][0]
+    assert e4 == a10, f"E4 and A10 disagree:\n  {e4}\n  {a10}"
