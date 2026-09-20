@@ -8,6 +8,7 @@ hard constraint, not a style choice.
 Run: python ebayscout/tests/run_goal_tracker_repair_tests.py
 """
 
+import json
 import os
 import sys
 
@@ -85,9 +86,40 @@ def test_detection_readings_count_images_not_crops():
     # B2/B4/B11/B14/B28 were missed by the 2026-09-07 sweep and stayed
     # per-crop: B28 read 983 whitepass "lots" against 54, B14 51 swaps
     # against 5.
-    for fid in ("B2", "B4", "B11", "B14", "B22", "B27", "B28", "E2"):
+    # B3/B20/B21/B25/B30 were missed again by the 2026-09-12 build: B3 read
+    # 3601 fused "lots" and 5774 dense ones against a 100-LOT gate (INDEX
+    # showed 3601% complete), B30 7289 Hough "lots" on ~900 images, and B20
+    # summed a per-photo recovery count once per crop.  Fused and dense lots
+    # are the worst case for this bug, because the weight IS the lot size the
+    # front is measuring.
+    for fid in ("B2", "B3", "B4", "B11", "B14", "B20", "B21", "B22", "B25",
+                "B27", "B28", "B30", "E2"):
         for _label, formula in b.LIVE[fid]:
             assert f'match_log!{crop_col}2:{crop_col}' in formula, (fid, formula)
+
+
+def test_no_live_cell_can_spill_out_of_its_one_row():
+    """A grouped QUERY returns a row per value; a LIVE block budgets a fixed
+    number of rows. The two cannot both be true.
+
+    Three cells shipped with that contradiction and failed two different
+    ways: A24 and B9 were refused and rendered `#REF!` from the day the
+    workbook was built, while B29 FIT — so it spilled instead, writing its
+    counts down column C over the "Pooled over…" note and into the PROGRESS
+    LOG's `n` column. B29 is the reason this is a test and not a comment: a
+    spill that currently fits is one new value away from `#REF!`, and in the
+    meantime it is silently overwriting the log.
+
+    TEXTJOIN consumes an array rather than spilling it, so a distribution
+    collapsed that way is safe at any number of values.
+    """
+    for fid, rows in b.LIVE.items():
+        for label, formula in rows:
+            if "QUERY(" not in formula:
+                continue
+            assert "group by" not in formula, (
+                f"{fid} {label!r}: a grouped QUERY spills into the rows "
+                f"below it — collapse it with TEXTJOIN (see `dist`)")
 
 
 def test_confirm_type_counts_ignore_the_untyped_blank():
@@ -206,8 +238,10 @@ def test_the_repair_falls_back_to_the_front_id_when_a_title_changes():
     deployed tab, so its two LIVE cells would have been written nowhere —
     reported under MISSING TABS at best, and silently stale if nobody read the
     line. A front's ID never changes, so the script matches on the "A25 "
-    prefix as a fallback and names every tab it reached that way, so the
-    operator knows to rename it.
+    prefix as a fallback. It then RENAMES the tab to the canonical name
+    rather than just reporting it: every formula the script writes refers to
+    tabs by that name, Sheets rewrites existing references when a sheet is
+    renamed, and a mismatch left in place comes back on the next run.
     """
     import tempfile
     fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
@@ -216,6 +250,49 @@ def test_the_repair_falls_back_to_the_front_id_when_a_title_changes():
         b.emit_apps_script(fronts, fh.name)
         gs = open(fh.name).read()
     assert "byId" in gs, "no front-ID fallback in the emitted script"
-    assert "MATCHED BY FRONT ID" in gs, "the fallback must report itself"
+    assert "setName(want)" in gs, "the fallback must fix the name, not just find it"
+    assert "TABS RENAMED" in gs, "the fallback must report itself"
     # the fallback must not silently replace the MISSING TABS report
     assert "MISSING TABS" in gs
+
+
+def test_the_repair_syncs_what_the_register_owns():
+    """The drift this whole path exists to fix.
+
+    The workbook built 2026-09-12 froze every Status, Stage, Gate and
+    Standing at build time, because the repair wrote LIVE formulas and
+    nothing else. Nineteen fronts had drifted by 2026-09-20 and three had no
+    tab at all, and the only fix anyone had was a rebuild — which costs the
+    pasted Logger corpus.
+    """
+    import tempfile
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    for f in fronts:
+        for cell, value in b.register_fields(f):
+            if isinstance(value, str) and value:
+                assert json.dumps(value, ensure_ascii=False) in gs, (
+                    f"{f['id']} {cell} is not written by the repair script")
+    # and a front the workbook has never seen must be raisable from nothing
+    assert "insertSheet(want)" in gs and "scaffoldFront" in gs
+
+
+def test_the_repair_never_touches_the_operators_rows():
+    """A resync that ate a typed PROGRESS LOG line, an Owner or a Next action
+    would be a worse bug than the drift it fixes. Those rows belong to the
+    operator; the register owns everything else."""
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    owned = {c for f in fronts for c, _v in b.register_fields(f)}
+    assert not owned & {"B13", "B14"}, "Owner/Next action are not the register's"
+    for f in fronts:
+        log_row = b.log_row_for(f)
+        written = [int(c[1:]) for c, _v in b.register_fields(f)]
+        written += [b.LIVE_FIRST_ROW + k
+                    for k in range(len(b.LIVE.get(f["id"], [])))]
+        assert max(written) < log_row, (
+            f"{f['id']}: the repair writes row {max(written)}, at or below "
+            f"the PROGRESS LOG header on row {log_row}")
