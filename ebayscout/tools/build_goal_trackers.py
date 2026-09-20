@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 
@@ -177,6 +178,7 @@ def _live():
     #    per image; E2 read "1349 gated lots" against 215.  `per_image` pins
     #    the count to crop_num = 1.
     CROP1 = f'{m}!{M["crop_num"]}2:{M["crop_num"]},1'
+    CROPR = f'{m}!{M["crop_num"]}2:{M["crop_num"]}'
 
     def populated(tab, col):
         """Rows where a JSON column actually carries a leaderboard."""
@@ -191,6 +193,38 @@ def _live():
     def per_image(*conds):
         """COUNTIFS over IMAGES, not crops."""
         return f'=COUNTIFS({CROP1},' + ",".join(conds) + ")"
+
+    def dist(tab, col, limit=12, per_image=False):
+        """A value distribution in ONE cell.
+
+        A grouped QUERY returns a row per value, and a LIVE block budgets one
+        row, so the spill has nowhere to go.  It failed two different ways at
+        once: A24 and B9 were refused outright and rendered `#REF!` for the
+        whole life of the workbook, while B29 — which happened to have few
+        enough variants to fit — SPILLED, writing its counts down column C
+        across the "Pooled over…" note and into the PROGRESS LOG's `n`
+        column.  One more distinct variant and it would have flipped to
+        `#REF!` like the others.
+
+        Same lesson as C4, but these three fronts want the distribution
+        itself, not a scalar, so collapse it to a string one cell can hold.
+        TEXTJOIN consumes the array instead of spilling it, which is what
+        makes this structurally safe rather than merely currently-fitting.
+        """
+        r = f'{tab}!{col}2:{col}'
+        if per_image:
+            # Mask path and preprocessing variant are facts about the PHOTO,
+            # so an 80-button sheet must not vote 80 times — the same pin the
+            # rest of the detection cells carry.
+            keys = f'UNIQUE(FILTER({r},{r}<>"",{CROPR}=1))'
+            cnt = f'ARRAYFORMULA(COUNTIFS({CROPR},1,{r},k))'
+        else:
+            keys = f'UNIQUE(FILTER({r},{r}<>""))'
+            cnt = f'ARRAYFORMULA(COUNTIF({r},k))'
+        return (f'=IFERROR(LET(k,{keys},n,{cnt},'
+                f't,ARRAY_CONSTRAIN(SORT({{k,n}},2,FALSE),{limit},2),'
+                f'TEXTJOIN(" · ",TRUE,'
+                f'ARRAYFORMULA(INDEX(t,,1)&" "&INDEX(t,,2)))),"—")')
 
     def typed(tab, col):
         """Cells carrying actual text.
@@ -222,6 +256,18 @@ def _live():
         return (f'SUMPRODUCT(({_crop1c})*ISNUMBER({rng})'
                 + ''.join(f'*({e})' for e in extra) + ')')
 
+    # The same trap as `numeric`, on the other side of the comparison.  A
+    # pasted empty field is a zero-length STRING, and Sheets ranks text above
+    # every number, so `gemini_button_count >= 7` is TRUE on every row that
+    # never got a count.  A comparison with a bound above it (`>0` AND `<7`)
+    # is already safe because text fails the upper half; one with nothing
+    # above it needs this guard.
+    gnum = f'ISNUMBER({m}!{M["gemini_button_count"]}2:'\
+           f'{M["gemini_button_count"]})'
+    _comp = f'{m}!{M["det_mask_components"]}2:{M["det_mask_components"]}'
+    _dt = f'{m}!{M["det_dt_peaks_total"]}2:{M["det_dt_peaks_total"]}'
+    _hough = f'{m}!{M["det_hough_pass1"]}2:{M["det_hough_pass1"]}'
+
     _gem = f'{m}!{M["det_gem_unmatched"]}2:{M["det_gem_unmatched"]}'
     _gem_lots = f'COUNTIFS({CROP1},{_gem},">0")'
     _gem_scored = numeric(_gem)
@@ -235,10 +281,36 @@ def _live():
     _gate_auto = f'COUNTIFS({CROP1},{_gate},"auto")'
     _gated = f'COUNTIFS({CROP1},{_gate},"auto",{_path},"scale_first")'
     _gated_scored = numeric(_gcount, f'{_gate}="auto"', f'{_path}="scale_first"')
+    # Numerator and denominator have to use ONE guard.  These two counted
+    # `<>""` while `_gated_scored` below counts ISNUMBER, so the ratio mixed
+    # two definitions of "scored" — a row carrying text in the count column
+    # could reach the numerator and not the denominator.  It did not bite on
+    # the 2026-09-20 pool (237/302 reconciles exactly against the strata),
+    # but it is the same text-ranks-above-numbers trap as the rest, and half
+    # a ratio is the worst place to keep it.
     _agree = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
-              f'*({_gcount}<>"")*({_nisel}={_gcount}))')
+              f'*{gnum}*({_nisel}={_gcount}))')
     _agree1 = (f'SUMPRODUCT(({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
-               f'*({_gcount}<>"")*(ABS({_nisel}-{_gcount})<=1))')
+               f'*{gnum}*(ABS({_nisel}-{_gcount})<=1))')
+
+    # The gated stratum, split by lot shape.  E2's ≥98% gate has sat at ~78%
+    # while the corpus turned out to hold two different failure regimes: on
+    # 2026-09-20, 43% of dense lots are fused against 5.3% of small ones, the
+    # sub-64px crops are all in dense lots, and scale confidence fails on
+    # SMALL lots instead.  A gate pooled across both can be missed forever by
+    # the harder half while the easier half is already shippable, so measure
+    # them apart before concluding Stage B is blocked.  Same axis C7's gate
+    # already names ("the rate, split by lot shape").
+    _small = f'({_gcount}>=1)*({_gcount}<=6)'
+    _dense = f'({_gcount}>=7)'
+
+    def _strat(cond, agree=False):
+        base = (f'({_crop1c})*({_gate}="auto")*({_path}="scale_first")'
+                f'*{gnum}*{cond}')
+        if not agree:
+            return f'=SUMPRODUCT({base})'
+        return (f'=IFERROR(SUMPRODUCT({base}*({_nisel}={_gcount}))'
+                f'/SUMPRODUCT({base}),"—")')
 
     # Bands: `src` restricts to human-confirmed rows.  gemini_auto fires only
     # when CLIP already agreed with Gemini, so grading a band against those
@@ -265,6 +337,13 @@ def _live():
     gapband = lambda lo, hi: _band("E", lo, hi)
     hgapband = lambda lo, hi: _band("E", lo, hi, human=True)
     hgapband_n = lambda lo, hi: _band_n("E", lo, hi, human=True)
+
+    # Confirmations a person or the auto path actually made.  `gemini_count`
+    # rows are bookkeeping for a Gemini count, not a decision, and B23 already
+    # excludes them from its denominator for the same reason.
+    real_confirms = (f'={typed(c, C["source"])}'
+                     f'-COUNTIF({c}!{C["source"]}2:{C["source"]},'
+                     f'"gemini_count")')
 
     rows = f'=COUNTA({m}!{M["ts"]}2:{M["ts"]})'
     crows = f'=COUNTA({c}!{C["ts"]}2:{C["ts"]})'
@@ -312,23 +391,40 @@ def _live():
         ("[0.00, 0.05) (human)", hgapband("0", "0.05"))],
  "A7": [("Rows with a within-year read",
          populated(m, M["within_year_json"])),
+        # Read "—" since the build: without ARRAYFORMULA, REGEXEXTRACT
+        # evaluates the FIRST cell only, so MEDIAN got one value or an
+        # error, never the distribution.  The row below it already wrapped
+        # correctly and always worked — which is why only this one was
+        # blank.  MEDIAN ignores the "" that IFERROR leaves on a miss.
         ("Median runner-up margin",
-         f'=IFERROR(MEDIAN(IFERROR(VALUE(REGEXEXTRACT({m}!'
+         f'=IFERROR(MEDIAN(ARRAYFORMULA(IFERROR(VALUE(REGEXEXTRACT({m}!'
          f'{M["within_year_json"]}2:{M["within_year_json"]},'
-         f'"""runner_up_margin"": ([0-9.eE-]+)")),"")),"—")'),
+         f'"""runner_up_margin"": ([0-9.eE-]+)")),""))),"—")'),
         ("Margins below 0.01 (the incident read ~0.001)",
          f'=COUNTIF(ARRAYFORMULA(IFERROR(VALUE(REGEXEXTRACT({m}!'
          f'{M["within_year_json"]}2:{M["within_year_json"]},'
          f'"""runner_up_margin"": ([0-9.eE-]+)")),"")),"<0.01")')],
- "A8": [("Mean rendered diameter, px",
-         f'=IFERROR(AVERAGE({m}!{M["det_radius_mean"]}2:'
-         f'{M["det_radius_mean"]})*2,"—")'),
-        ("Crops below the 64px floor",
+ # `det_radius_mean` is a per-PHOTO aggregate, so averaging it over crop rows
+ # weights each lot by its button count — and a dense lot's buttons are
+ # smaller, so the mean was pulled down by exactly the lots that drag it.
+ #
+ # The second cell is a different problem and is NOT fixed by a crop pin.
+ # A8's shipped rule acts on ONE CROP ("when rendered button diameter is
+ # below ~64px, downgrade gemini_auto"), but `MATCH_HEADER` carries no
+ # per-crop radius — `det_radius_min/max/mean/std` are all lot-level.  So the
+ # honest reading is the blast radius the guard would touch, under a lot-level
+ # proxy, and the caption has to say so rather than implying each crop was
+ # measured.  Instrumenting a per-crop radius would settle it properly.
+ "A8": [("Mean rendered diameter, px (per image)",
+         f'=IFERROR(AVERAGEIFS({m}!{M["det_radius_mean"]}2:'
+         f'{M["det_radius_mean"]},{CROP1})*2,"—")'),
+        ("Crops in lots whose MEAN diameter is < 64px  ← lot-level proxy",
          f'=COUNTIF({m}!{M["det_radius_mean"]}2:{M["det_radius_mean"]},"<32")')],
  "A10": [("Correction rows logged  ← the whole front",
           f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"correction")'
           f'+COUNTIF({c}!{C["source"]}2:{C["source"]},"skip_correction")'),
-         ("Confirms total", crows)],
+         # Same population as E4's gate — see there.
+         ("Confirms total (no bookkeeping)", real_confirms)],
  # Both cells divided by COUNTA, which counts the blank `chosen_type` a
  # confirmation writes when it resolved no type: the share read 0.804 against
  # 0.997, and "non-football confirms" read 483 against 5.  `typed` counts only
@@ -345,9 +441,19 @@ def _live():
           beats(C["rank_centered"], C["rank_restricted"], ">"))],
  "A13": [("Correct #1s won with gap < 0.15  ← the shelf-fill list",
           f'=COUNTIFS({d}!E:E,"<0.15",{d}!J:J,TRUE)')],
+ # The wrong-#1 pool counted every `derived` row whose `correct` flag is
+ # FALSE, and a `gemini_count` row is bookkeeping, not a confirmation
+ # somebody made: it carries no `chosen_phrase`, so if it reaches the flag at
+ # all it reaches it as FALSE.  Whether it does depends on whether those rows
+ # carry a `restricted_top_json` — if they do not, the regex errors and the
+ # flag is "" rather than FALSE, and this filter is a harmless no-op.  Either
+ # way the cell is right afterwards, and the number says which it was: 820
+ # before, so a drop means the pool was inflated by bookkeeping and a hold
+ # means it never was.  Same exclusion B23 already applies to its denominator.
  "A16": [("Distinct #1 phrases seen",
           f'=IFERROR(COUNTA(UNIQUE(FILTER({d}!F:F,{d}!F:F<>""))),"—")'),
-         ("Wrong #1s (the swap-pair pool)", f'=COUNTIF({d}!J:J,FALSE)')],
+         ("Wrong #1s (the swap-pair pool, no bookkeeping)",
+          f'=COUNTIFS({d}!J:J,FALSE,{d}!B:B,"<>gemini_count")')],
  # The front is about TYPED rows, so the population comes first — the
  # all-confirms count read 152 against 5 typed rows that actually qualify.
  "A23": [("Typed rows carrying both ranks  ← the actual population",
@@ -356,11 +462,11 @@ def _live():
           f'*ISNUMBER({c}!{C["rank_restricted"]}2:{C["rank_restricted"]}))'),
          ("image_only better than live (all confirms)",
           beats(C["rank_image_only"], C["rank_restricted"], "<"))],
- "A24": [("Confirms by source",
-          f'=IFERROR(QUERY({c}!{C["source"]}1:{C["source"]},"select {C["source"]}, '
-          f'count({C["source"]}) where {C["source"]} is not null group by '
-          f'{C["source"]} order by count({C["source"]}) desc '
-          f'label count({C["source"]}) \'rows\'",1),"—")')],
+ # Was a grouped QUERY in a one-row block: `#REF!` since the workbook was
+ # built, so the front whose whole question is "what do the picker clicks
+ # cost?" has never shown a single number.  See `dist`.
+ "A24": [("Confirms by source  ← the click economics",
+          dist(c, C["source"], limit=14))],
  "A25": [("edition_pick rank > 1",
           f'=COUNTIFS({c}!{C["source"]}2:{C["source"]},"edition_pick",'
           f'{c}!{C["rank_restricted"]}2:{C["rank_restricted"]},">1")'),
@@ -379,20 +485,23 @@ def _live():
         ("Of those, how many fell to the grid  ← the gate",
          per_image(f'{m}!{M["det_mask_coverage"]}2:{M["det_mask_coverage"]},">0.75"',
                    f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"'))],
- "B3": [("Fused lots (components < Gemini count)",
-         f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
-         f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'),
+ # Every cell here counted CROPS while the gate counts LOTS ("~100 pipeline
+ # fused lots, incl. ~20 with 7+ buttons") — and a fused lot is a dense lot
+ # by definition, so the denser the lot the more times it voted.  Fused read
+ # 3601 and dense 5774 against a 100-lot gate, which is what put 3601% in
+ # INDEX's Evidence column.  Same pin as B2/B4/B27/E2.
+ "B3": [("Fused lots (components < Gemini count, per image)",
+         f'=SUMPRODUCT(({_crop1c})*({_gcount}<>"")*'
+         f'({_comp}<{_gcount}))'),
+        # The numerator needs {gnum} in its own right: without it a row whose
+        # Gemini count never landed counts as fused, because a component
+        # count is a number and Sheets ranks every number below text.
         ("Of those, DT peaks within ±1 of Gemini  ← the ≥80% gate",
-         f'=IFERROR(SUMPRODUCT(({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})*'
-         f'(ABS({m}!{M["det_dt_peaks_total"]}2:{M["det_dt_peaks_total"]}-'
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})<=1))'
-         f'/SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<>"")*'
-         f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
-         f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})),"—")'),
-        ("Dense lots (7+ buttons) seen",
-         f'=COUNTIF({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]},">=7")')],
+         f'=IFERROR(SUMPRODUCT(({_crop1c})*{gnum}*({_comp}<{_gcount})*'
+         f'(ABS({_dt}-{_gcount})<=1))'
+         f'/SUMPRODUCT(({_crop1c})*{gnum}*({_comp}<{_gcount})),"—")'),
+        ("Dense lots (7+ buttons) seen (per image)",
+         per_image(f'{_gcount},">=7"'))],
  # Second cell used to average `det_overlap_removed`, which reads 0 on every
  # row — and would whatever the fix did.  That counter belongs to the GUIDED
  # dedup in `_detect_buttons_once`; B4 shipped its radius-band + concentric
@@ -411,15 +520,14 @@ def _live():
         ("Loophole check — auto on a bailed detector (must be 0)",
          per_image(f'{m}!{M["ni_gate"]}2:{M["ni_gate"]},"auto"',
                    f'{m}!{M["det_detector_used"]}2:{M["det_detector_used"]},"grid"'))],
- "B9": [("Lots on a rescue mask path",
-         f'=IFERROR(COUNTIF({m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*+*")'
-         f'/COUNTA({m}!{M["det_mask_path"]}2:{M["det_mask_path"]}),"—")'),
-        ("Mask path distribution",
-         f'=IFERROR(QUERY({m}!{M["det_mask_path"]}1:{M["det_mask_path"]},'
-         f'"select {M["det_mask_path"]}, count({M["det_mask_path"]}) where '
-         f'{M["det_mask_path"]} is not null group by {M["det_mask_path"]} '
-         f'order by count({M["det_mask_path"]}) desc limit 12 '
-         f'label count({M["det_mask_path"]}) \'rows\'",1),"—")')],
+ # The first cell says "Lots" and counted CROPS — the distribution directly
+ # below it is per image, so the two rows of one block disagreed about their
+ # own unit (67.0% against ~73%).
+ "B9": [("Lots on a rescue mask path (per image)",
+         share(M["det_mask_path"], "*+*")),
+        # `#REF!` since the build — same grouped-QUERY spill as A24.
+        ("Mask path distribution (per image)",
+         dist(m, M["det_mask_path"], limit=12, per_image=True))],
  # Both per-image: coverage is one fact per photo, and a dense sheet used to
  # contribute its coverage once per button (read 162 lots against 39).
  "B11": [("Mean mask coverage (per image)",
@@ -442,21 +550,28 @@ def _live():
          per_image(f'{m}!{M["det_n_swapped"]}2:{M["det_n_swapped"]},">0"')),
         ("not_a_button confirmations to grade against",
          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"not_a_button")')],
+ # `ni_scale_conf` is written once per PHOTO and repeated down the lot, so
+ # both readings were lot-size-weighted.
  "B19": [("scale_first share", share(M["ni_scale_path"], "scale_first")),
-         ("Mean scale confidence",
-          f'=IFERROR(AVERAGE({m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]}),"—")'),
-         ("Rows with zero scale confidence",
-          f'=COUNTIF({m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]},0)')],
- "B20": [("Buttons recovered by the rim pass",
-          f'=IFERROR(SUM({m}!{M["det_white_recovered"]}2:'
-          f'{M["det_white_recovered"]}),"—")')],
- "B21": [("DT peaks within ±1 of Gemini",
-          f'=IFERROR(SUMPRODUCT(({m}!{M["gemini_button_count"]}2:'
-          f'{M["gemini_button_count"]}<>"")*'
-          f'(ABS({m}!{M["det_dt_peaks_total"]}2:{M["det_dt_peaks_total"]}-'
-          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]})<=1))'
-          f'/COUNT({m}!{M["gemini_button_count"]}2:'
-          f'{M["gemini_button_count"]}),"—")')],
+         ("Mean scale confidence (per image)",
+          f'=IFERROR(AVERAGEIFS({m}!{M["ni_scale_conf"]}2:'
+          f'{M["ni_scale_conf"]},{CROP1}),"—")'),
+         ("Lots with zero scale confidence (per image)",
+          per_image(f'{m}!{M["ni_scale_conf"]}2:{M["ni_scale_conf"]},0'))],
+ # `det_white_recovered` is written once per PHOTO but repeated on every
+ # crop row, so SUM counted an 80-button sheet's recovery 80 times.  SUMIFS
+ # pins it to crop 1 and ignores the empty strings a paste leaves behind.
+ "B20": [("Buttons recovered by the rim pass (per image)",
+          f'=IFERROR(SUMIFS({m}!{M["det_white_recovered"]}2:'
+          f'{M["det_white_recovered"]},{CROP1}),"—")')],
+ # Both halves were crop-weighted, so the ratio was a lot-size-weighted
+ # average rather than the per-lot accuracy the front is about.
+ # Both halves were crop-weighted, so the ratio was a lot-size-weighted
+ # average rather than the per-lot accuracy the front is about.
+ "B21": [("DT peaks within ±1 of Gemini (per image)",
+          f'=IFERROR(SUMPRODUCT(({_crop1c})*{gnum}*'
+          f'(ABS({_dt}-{_gcount})<=1))/'
+          + numeric(_gcount) + ',"—")')],
  "B22": [("Lots with an unbacked Hough circle",
           f'=IFERROR({_gem_lots}/{_gem_scored},"—")'),
          # COUNTBLANK over an open range counted every empty row in the grid,
@@ -475,15 +590,21 @@ def _live():
           f'=IFERROR(COUNTIF({c}!{C["source"]}2:{C["source"]},"missed_button")'
           f'/({typed(c, C["source"])}'
           f'-COUNTIF({c}!{C["source"]}2:{C["source"]},"gemini_count")),"—")')],
- "B25": [("Fused lots by size — 7+ buttons",
-          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>=7)*'
-          f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
-          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))'),
-         ("Fused lots — 1-6 buttons",
-          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
-          f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<7)*'
-          f'({m}!{M["det_mask_components"]}2:{M["det_mask_components"]}<'
-          f'{m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}))')],
+ # The whole front is "where is the boundary between the two lot shapes",
+ # so counting crops put its thumb on exactly the scale it measures: 7+ read
+ # 4227 and 1-6 read 82, a 52:1 split that is mostly just lot size.
+ # The whole front is "where is the boundary between the two lot shapes",
+ # so counting crops put its thumb on exactly the scale it measures: 7+ read
+ # 4227 and 1-6 read 82, a 52:1 split that is mostly just lot size.  The 7+
+ # cell also needs {gnum} — it is the one comparison here with nothing above
+ # it, so an un-scored row's empty string satisfied ">= 7".  The 1-6 cell is
+ # already safe: text fails its "< 7" half.
+ "B25": [("Fused lots by size — 7+ buttons (per image)",
+          f'=SUMPRODUCT(({_crop1c})*{gnum}*({_gcount}>=7)*'
+          f'({_comp}<{_gcount}))'),
+         ("Fused lots — 1-6 buttons (per image)",
+          f'=SUMPRODUCT(({_crop1c})*({_gcount}>0)*({_gcount}<7)*'
+          f'({_comp}<{_gcount}))')],
  "B26": [("scale_first share of the feed", share(M["ni_scale_path"], "scale_first")),
          ("Rows", rows)],
  "B27": [("Grid fallback rate (per image)", share(M["det_detector_used"], "grid")),
@@ -499,17 +620,19 @@ def _live():
           per_image(f'{m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*whitepass*"')),
          ("Lots taking a saturation fallback (per image)",
           per_image(f'{m}!{M["det_mask_path"]}2:{M["det_mask_path"]},"*satfallback*"'))],
- "B29": [("Preprocessing variant distribution",
-          f'=IFERROR(QUERY({m}!{M["ni_variant"]}1:{M["ni_variant"]},'
-          f'"select {M["ni_variant"]}, count({M["ni_variant"]}) where '
-          f'{M["ni_variant"]} is not null group by {M["ni_variant"]} '
-          f'label count({M["ni_variant"]}) \'rows\'",1),"—")')],
- "B30": [("Lots where Hough engaged",
-          f'=COUNTIF({m}!{M["det_hough_pass1"]}2:{M["det_hough_pass1"]},">0")'),
-         ("Small lots (1-3) where it engaged",
-          f'=SUMPRODUCT(({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}>0)*'
-          f'({m}!{M["gemini_button_count"]}2:{M["gemini_button_count"]}<=3)*'
-          f'({m}!{M["det_hough_pass1"]}2:{M["det_hough_pass1"]}>0))')],
+ # The dangerous one: this QUERY FIT, so it spilled instead of erroring and
+ # wrote `clahe_lab 471` / `hsv 7347` down column C — on top of the "Pooled
+ # over…" note and the PROGRESS LOG header, in the log's own `n` column.  A
+ # third variant would have pushed it onto the first log row.
+ "B29": [("Preprocessing variant distribution (per image)",
+          dist(m, M["ni_variant"], limit=10, per_image=True))],
+ # "Lots where Hough engaged" read 7289 against a corpus of ~900 images.
+ # "Lots where Hough engaged" read 7289 against a corpus of ~900 images.
+ "B30": [("Lots where Hough engaged (per image)",
+          per_image(f'{_hough},">0"')),
+         ("Small lots (1-3) where it engaged (per image)",
+          f'=SUMPRODUCT(({_crop1c})*({_gcount}>0)*({_gcount}<=3)*'
+          f'({_hough}>0))')],
  # A grouped QUERY returns one row per sport and the tab budgets ONE row, so
  # the spill hit the "Pooled over…" note below it and the cell rendered #REF!
  # for the whole life of the workbook.  The front's question is accrual on the
@@ -527,14 +650,37 @@ def _live():
  # Every count here was per-CROP, so an 80-button sheet counted 80 gated
  # "lots": it read 1349 against 215 images.  _gated/_agree/_disagree are
  # pinned to crop_num = 1.
+ # Every count here was per-CROP, so an 80-button sheet counted 80 gated
+ # "lots": it read 1349 against 215 images.  _gated/_agree/_disagree are
+ # pinned to crop_num = 1.
+ #
+ # Rows 4-7 split the same gate by lot shape.  The pooled number alone
+ # cannot say whether Stage B is blocked everywhere or only on dense lots,
+ # and those are very different conclusions: the first is a research
+ # programme (fusion — B21 refuted, B3 has no instrument for its real
+ # question, B19 is the hard track), the second is a rollout that can ship
+ # for small lots now with dense lots staying on Gemini.
  "E2": [("Gated lots (auto + scale_first, per image)", f'={_gated}'),
         ("Of those, unguided count == Gemini  ← the ≥98% gate",
          f'=IFERROR({_agree}/{_gated_scored},"—")'),
         ("Within ±1 of Gemini  ← the cheaper question, same columns",
-         f'=IFERROR({_agree1}/{_gated_scored},"—")')],
+         f'=IFERROR({_agree1}/{_gated_scored},"—")'),
+        ("\u21b3 small lots (1-6): gated n", _strat(_small)),
+        ("\u21b3 small lots: count == Gemini  ← the gate, this stratum",
+         _strat(_small, agree=True)),
+        ("\u21b3 dense lots (7+): gated n", _strat(_dense)),
+        ("\u21b3 dense lots: count == Gemini  ← the gate, this stratum",
+         _strat(_dense, agree=True))],
  "E3": [("Lots below gate=auto (what Gemini would still be called on)",
          f'=IFERROR(1-{_gate_auto}/{_images},"—")')],
- "E4": [("Confirmations accrued  ← the ≥300 gate", crows),
+ # "Confirmations accrued" was COUNTA over every confirm_log row, and 529 of
+ # them are `gemini_count` bookkeeping rather than a confirmation the auto
+ # path or a person made.  It does not change the verdict — 16x the gate
+ # instead of 17x — but it is the cell INDEX reads for E4's Evidence, and a
+ # gate should count the thing it names.  A10's "Confirms total" is the same
+ # population and moves with it, so the workbook cannot hold two different
+ # answers to "how many confirmations are there".
+ "E4": [("Confirmations accrued (no bookkeeping)  ← the ≥300 gate", real_confirms),
         ("Of those, auto-path",
          f'=COUNTIF({c}!{C["source"]}2:{C["source"]},"*auto*")'),
         ("Corrections logged (precision denominator)",
@@ -545,7 +691,15 @@ def _live():
 LIVE = _live()
 
 # front id -> index into LIVE[id] whose value IS the gate's accrual count.
-VOLUME_LIVE = {"A10": 0, "E4": 0, "B3": 0, "B4": 0, "A13": 0}
+#
+# A13 was listed here and must not be: its gate counts "50 slogans whose
+# shelves are filled to the 4-cap" and its LIVE row counts CONFIRMATIONS won
+# with a low gap — different units entirely, so INDEX read 2237/50 = 4474%
+# for a front on which nothing has been filled.  Shelf depth is not in the
+# Logger at all; it is an offline count, so A13 falls to the typed-log path
+# like every other front whose gate a cell cannot see.  A number in the wrong
+# unit is worse than a blank: the blank asks to be filled.
+VOLUME_LIVE = {"A10": 0, "E4": 0, "B3": 0, "B4": 0}
 
 
 # --- parsing ----------------------------------------------------------------
@@ -618,8 +772,97 @@ def _kv(ws, row, key, value, height=None):
 
 LOG_COLS = ["Date", "Logger export", "n", "Reading", "Meets gate?",
             "Status after", "Note"]
+
+# (row, register_fields key, the label in column A) — the THE FRONT block.
+FRONT_ROWS = [(5, "B5", "Track"), (6, "B6", "Status"), (7, "B7", "Stage"),
+              (8, "B8", "Volume needed"), (9, "B9", "Instrument"),
+              (10, "B10", "Gate"), (11, "B11", "Standing"),
+              (12, "B12", "Source"), (13, None, "Owner"),
+              (14, None, "Next action")]
+FRONT_ROW_HEIGHT = {9: 46, 10: 60, 11: 74, 12: 30}
+STAGE_BAR = '=REPT("\u2588",B7)&REPT("\u2591",6-B7)'
+BUMP_NOTE = ("Bump Stage when the evidence moves; log the reading that "
+             "moved it below.")
+LIVE_BAND = "LIVE — recomputed from the pasted Logger tabs"
+LIVE_NONE_BAND = "LIVE — none; this front is graded offline"
+LIVE_NONE_NOTE = ("No cell formula can grade this one — see Instrument "
+                  "above. Record the reading from the offline analysis in "
+                  "the log below.")
+POOLED_NOTE = "Pooled over whatever is currently in match_log / confirm_log."
+LOG_BAND = "PROGRESS LOG — one line per Logger export graded against the gate"
 LOG_HEADER_ROW = 18
 LOG_ROWS = 14
+
+
+LIVE_FIRST_ROW = 18
+
+
+def live_rows(front):
+    return LIVE.get(front["id"], [])
+
+
+def log_row_for(front):
+    """Where the PROGRESS LOG header lands, from the LIVE block's height.
+
+    Both the builder and the repair script need this and must agree: the
+    builder to place the log, the repair script to know which rows it must
+    never touch.
+    """
+    live = live_rows(front)
+    return LIVE_FIRST_ROW + (len(live) + 2 if live else 2)
+
+
+def register_fields(front):
+    """The cells on a front tab that come from the REGISTER, as (cell, value).
+
+    The single definition the builder and the repair script both write from.
+    It exists because they disagreed: the workbook built 2026-09-12 carried
+    A1 as `SHADOW`/stage 4 and A25 as `DECIDED-HOLD`/stage 6 long after the
+    register had moved them to `SETTLED-REFUTED`/5 and `SHADOW`/3, and no
+    repair could pull them back — `emit_apps_script` wrote LIVE formulas and
+    nothing else, so every status, stage, gate and standing in the deployed
+    workbook was frozen at build time. Nineteen of the register's fronts had
+    drifted by 2026-09-20.
+
+    Everything here is a plain value. The derived cells beside them — the
+    stage bar in C7, INDEX's `Stage`, `Progress`, `Toward`, `Owner` and
+    `Next action` — are formulas pointing at these, so they follow on their
+    own once these are written.
+    """
+    vol = (f'{front["VolumeN"]} {front["VolumeOf"]}' if front["VolumeN"]
+           else "— the gate names no n")
+    return [
+        ("A1", f'{front["id"]} — {front["title"]}'),
+        ("A2", front["Question"]),
+        ("B5", front["Track"]),
+        ("B6", front["Status"]),
+        ("B7", front["Stage"]),
+        ("D7", LADDER[front["Stage"]]),
+        ("B8", vol),
+        ("B9", front["Instrument"]),
+        ("B10", front["Gate"]),
+        ("B11", front["Standing"]),
+        ("B12", front["Source"]),
+    ]
+
+
+def volume_formula(front):
+    """C8 — progress against the n the gate names, or "" where it names none.
+
+    Two sources. A front whose accrual a cell can count reads it straight off
+    its own LIVE block; the rest read the newest `n` a human typed into the
+    PROGRESS LOG. A13 used to be in the first group with a LIVE row counting
+    a different unit than its gate — see VOLUME_LIVE.
+    """
+    if not front["VolumeN"]:
+        return ""
+    if front["id"] in VOLUME_LIVE and live_rows(front):
+        src = f"B{LIVE_FIRST_ROW + VOLUME_LIVE[front['id']]}"
+        return f'=IFERROR({src}/{front["VolumeN"]},"")'
+    lo = log_row_for(front) + 1
+    hi = log_row_for(front) + LOG_ROWS
+    return (f'=IFERROR(LOOKUP(2,1/(C{lo}:C{hi}<>""),'
+            f'C{lo}:C{hi})/{front["VolumeN"]},"")')
 
 
 def write_front_tab(wb, front):
@@ -629,53 +872,41 @@ def write_front_tab(wb, front):
     for L in "CDEFG":
         ws.column_dimensions[L].width = 18
 
-    _band(ws, 1, f"{front['id']} — {front['title']}", 7, font=H1, fill=NAVY)
-    ws.cell(row=2, column=1, value=front["Question"]).alignment = WRAP
+    # Every register-sourced value comes from register_fields, so a tab the
+    # builder writes and a tab the repair script refreshes carry the same
+    # thing in the same cell.
+    f = dict(register_fields(front))
+    _band(ws, 1, f["A1"], 7, font=H1, fill=NAVY)
+    ws.cell(row=2, column=1, value=f["A2"]).alignment = WRAP
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=7)
     ws.row_dimensions[2].height = 44
 
     _band(ws, 4, "THE FRONT", 7)
-    _kv(ws, 5, "Track", front["Track"])
-    _kv(ws, 6, "Status", front["Status"])
-    _kv(ws, 7, "Stage", front["Stage"])
-    ws.cell(row=7, column=3, value=f'=REPT("\u2588",B7)&REPT("\u2591",6-B7)')
-    ws.cell(row=7, column=4, value=LADDER[front["Stage"]]).font = DIM
-    if front["VolumeN"]:
-        _kv(ws, 8, "Volume needed", f'{front["VolumeN"]} {front["VolumeOf"]}')
-        vol_cell = ws.cell(row=8, column=3)  # filled once log_row is known
-    else:
-        _kv(ws, 8, "Volume needed", "— the gate names no n")
-    _kv(ws, 9, "Instrument", front["Instrument"], height=46)
-    _kv(ws, 10, "Gate", front["Gate"], height=60)
-    _kv(ws, 11, "Standing", front["Standing"], height=74)
-    _kv(ws, 12, "Source", front["Source"], height=30)
+    for row, key, label in FRONT_ROWS:
+        _kv(ws, row, label, f.get(key, ""), height=FRONT_ROW_HEIGHT.get(row))
+    ws.cell(row=7, column=3, value=STAGE_BAR)
+    ws.cell(row=7, column=4, value=f["D7"]).font = DIM
+    vol_cell = ws.cell(row=8, column=3)
     _kv(ws, 13, "Owner", "")
     _kv(ws, 14, "Next action", "")
-    ws.cell(row=15, column=2, value=(
-        "Bump Stage when the evidence moves; log the reading that moved it "
-        "below.")).font = DIM
+    ws.cell(row=15, column=2, value=BUMP_NOTE).font = DIM
 
     live = LIVE.get(front["id"])
     if live:
-        _band(ws, 17, "LIVE — recomputed from the pasted Logger tabs", 7)
+        _band(ws, 17, LIVE_BAND, 7)
         for k, (label, formula) in enumerate(live):
-            r = 18 + k
+            r = LIVE_FIRST_ROW + k
             lab = ws.cell(row=r, column=1, value=label)
             lab.alignment = WRAP
             ws.cell(row=r, column=2, value=formula)
-        ws.cell(row=18 + len(live), column=1, value=(
-            "Pooled over whatever is currently in match_log / confirm_log.")
-        ).font = DIM
+        ws.cell(row=LIVE_FIRST_ROW + len(live), column=1,
+                value=POOLED_NOTE).font = DIM
     else:
-        _band(ws, 17, "LIVE — none; this front is graded offline", 7)
-        ws.cell(row=18, column=1, value=(
-            "No cell formula can grade this one — see Instrument above. Record "
-            "the reading from the offline analysis in the log below.")
-        ).font = DIM
+        _band(ws, 17, LIVE_NONE_BAND, 7)
+        ws.cell(row=LIVE_FIRST_ROW, column=1, value=LIVE_NONE_NOTE).font = DIM
 
-    log_row = 18 + (len(live) + 2 if live else 2)
-    _band(ws, log_row - 1,
-          "PROGRESS LOG — one line per Logger export graded against the gate", 7)
+    log_row = log_row_for(front)
+    _band(ws, log_row - 1, LOG_BAND, 7)
     for i, h in enumerate(LOG_COLS, start=1):
         c = ws.cell(row=log_row, column=i, value=h)
         c.font = BOLD
@@ -685,14 +916,9 @@ def write_front_tab(wb, front):
         ws.cell(row=log_row + 1 + k, column=1).number_format = "yyyy-mm-dd"
     front["_log_row"] = log_row
     if front["VolumeN"]:
+        vol_cell.value = volume_formula(front)
         if front["id"] in VOLUME_LIVE and live:
-            src = f"B{18 + VOLUME_LIVE[front['id']]}"
-            vol_cell.value = f'=IFERROR({src}/{front["VolumeN"]},"")'
             ws.cell(row=8, column=4, value="counts itself — no typing").font = DIM
-        else:
-            lo, hi = log_row + 1, log_row + LOG_ROWS
-            vol_cell.value = (f'=IFERROR(LOOKUP(2,1/(C{lo}:C{hi}<>""),'
-                              f'C{lo}:C{hi})/{front["VolumeN"]},"")')
         vol_cell.number_format = "0%"
     ws.freeze_panes = "A4"
 
@@ -700,6 +926,48 @@ def write_front_tab(wb, front):
 IDX_COLS = ["Front", "Title", "Track", "Stage", "Progress", "Toward",
             "Evidence", "Status", "Latest reading", "As of", "Owner",
             "Next action", "Gate"]
+IDX_WIDTHS = [8, 34, 26, 7, 10, 40, 10, 18, 22, 12, 12, 28, 70]
+IDX_HEADER_ROW = 6
+
+
+def index_row(front, r):
+    """The 13 INDEX cells for one front, on sheet row `r`.
+
+    Shared by the builder and the repair script for the same reason as
+    register_fields: INDEX is the landing page, and a landing page that
+    disagrees with the tabs it links to is worse than no landing page. The
+    deployed workbook said 69 fronts and carried A1 as SHADOW long after the
+    register had refuted it.
+
+    Everything derived lives in a formula pointing at the front's own tab —
+    Stage, the bar, the ladder text, Evidence, Owner, Next action — so those
+    follow when the tab is synced. Only Title, Track, Status and Gate are
+    values, and they are the four this returns from the register.
+    """
+    q = f"'{tab_name(front)}'"
+    first, last = log_row_for(front) + 1, log_row_for(front) + LOG_ROWS
+    # LOOKUP(2, 1/(range<>""), range) returns the LAST non-empty cell.
+    def newest(letter):
+        rng = f"{q}!{letter}{first}:{letter}{last}"
+        return f'=IFERROR(LOOKUP(2,1/({rng}<>""),{rng}),"—")'
+    return [
+        front["id"],
+        front["title"],
+        front["Track"],
+        # Stage lives on the front tab so bumping it there moves the landing
+        # tab; the bar and the ladder text are derived, never typed.
+        f"={q}!B7",
+        f'=REPT("\u2588",D{r})&REPT("\u2591",6-D{r})',
+        f'=IFERROR(VLOOKUP(D{r},ROLLUP!$E$3:$F$9,2,FALSE),"")',
+        # Evidence: latest logged n against the volume the gate names.
+        (f"={q}!C8" if front["VolumeN"] else "—"),
+        front["Status"],
+        newest("D"),
+        newest("A"),
+        f"={q}!B13",
+        f"={q}!B14",
+        front["Gate"],
+    ]
 
 
 def write_index(wb, fronts):
@@ -726,42 +994,27 @@ def write_index(wb, fronts):
         c.font = WHITE_F
         c.fill = PatternFill("solid", fgColor=NAVY)
         c.border = BOX
-    for i, w in enumerate([8, 34, 26, 7, 10, 40, 10, 18, 22, 12, 12, 28, 70],
-                          start=1):
+    for i, w in enumerate(IDX_WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     for k, f in enumerate(fronts):
-        first = f["_log_row"] + 1
-        last = f["_log_row"] + LOG_ROWS
         r = hr + 1 + k
-        q = f"'{tab_name(f)}'"
-        c = ws.cell(row=r, column=1, value=f["id"])
-        c.hyperlink = Hyperlink(ref=c.coordinate, location=f"{q}!A1")
-        c.font = LINK
-        ws.cell(row=r, column=2, value=f["title"])
-        ws.cell(row=r, column=3, value=f["Track"])
-        # Stage lives on the front tab so bumping it there moves the landing
-        # tab; the bar and the ladder text are derived, never typed.
-        ws.cell(row=r, column=4, value=f"={q}!B7")
-        ws.cell(row=r, column=5,
-                value=f'=REPT("\u2588",D{r})&REPT("\u2591",6-D{r})')
-        ws.cell(row=r, column=6,
-                value=f'=IFERROR(VLOOKUP(D{r},ROLLUP!$E$3:$F$9,2,FALSE),"")'
-                ).alignment = TOP
-        # Evidence: latest logged n against the volume the gate names.
-        ws.cell(row=r, column=7,
-                value=(f"={q}!C8" if f["VolumeN"] else "—")
-                ).number_format = "0%" if f["VolumeN"] else "General"
-        ws.cell(row=r, column=8, value=f["Status"])
-        # LOOKUP(2, 1/(range<>""), range) returns the LAST non-empty cell.
-        for col, letter in ((9, "D"), (10, "A")):
-            rng = f"{q}!{letter}{first}:{letter}{last}"
-            ws.cell(row=r, column=col,
-                    value=f'=IFERROR(LOOKUP(2,1/({rng}<>""),{rng}),"—")')
+        for col, value in enumerate(index_row(f, r), start=1):
+            if col == 1:
+                # The one cell the repair script cannot reproduce as-is: a
+                # real .xlsx hyperlink here, a HYPERLINK() formula there,
+                # because only Apps Script can resolve a tab's gid.
+                c = ws.cell(row=r, column=col, value=f["id"])
+                c.hyperlink = Hyperlink(
+                    ref=c.coordinate, location=f"'{tab_name(f)}'!A1")
+                c.font = LINK
+                continue
+            ws.cell(row=r, column=col, value=value)
+        ws.cell(row=r, column=6).alignment = TOP
+        ws.cell(row=r, column=7).number_format = (
+            "0%" if f["VolumeN"] else "General")
         ws.cell(row=r, column=10).number_format = "yyyy-mm-dd"
-        ws.cell(row=r, column=11, value=f"={q}!B13")
-        ws.cell(row=r, column=12, value=f"={q}!B14")
-        ws.cell(row=r, column=13, value=f["Gate"]).alignment = WRAP
+        ws.cell(row=r, column=13).alignment = WRAP
     ws.freeze_panes = f"C{hr + 1}"
     ws.auto_filter.ref = (f"A{hr}:{get_column_letter(len(IDX_COLS))}"
                           f"{hr + len(fronts)}")
@@ -975,8 +1228,11 @@ def write_readme(wb, fronts, register):
          "_normalize_key). Every band front reads it. ARRAYFORMULA, so it "
          "extends itself. Do not type in it."),
         ("What is live vs typed",
-         "38 of the 69 fronts have a LIVE block that recomputes on every "
-         "paste. The other 31 have no cell formula that can grade them — the "
+         f"{sum(1 for f in fronts if LIVE.get(f['id']))} of the "
+         f"{len(fronts)} fronts have a LIVE block that recomputes on "
+         f"every paste. The other "
+         f"{sum(1 for f in fronts if not LIVE.get(f['id']))} have no "
+         "cell formula that can grade them — the "
          "instrument is a Cloud Run stdout line, a GCS sidecar, or an "
          "operator decision — and their readings are typed into the progress "
          "log from the offline analysis."),
@@ -1019,17 +1275,25 @@ LIVE_ROW_BUDGET = {
     "A12": 2, "A13": 1, "A16": 2, "A23": 2, "A24": 1, "A25": 2,
     "B2": 2, "B3": 3, "B4": 2, "B5": 3, "B7": 3, "B9": 2, "B11": 2, "B14": 2,
     "B19": 3, "B20": 1, "B21": 1, "B22": 2, "B23": 2, "B25": 2, "B26": 2,
-    "B27": 2, "B28": 2, "B29": 1, "B30": 2, "C4": 1, "D2": 2, "E2": 3,
+    "B27": 2, "B28": 2, "B29": 1, "B30": 2, "C4": 1, "D2": 2, "E2": 7,
     "E3": 1, "E4": 3,
 }
 
 
 def check_live_row_budget():
-    """Raise if any front's LIVE block no longer fits the built workbook.
+    """Raise if a front's LIVE block height changed without this map saying so.
 
-    Adding a reading is not free once the workbook exists — see
-    emit_apps_script.  Either keep the count, or rebuild the workbook from
-    scratch and refresh this map (which costs the progress logs).
+    This used to mean "never change a block", because the repair script wrote
+    formulas in place and a taller block would have written straight over the
+    PROGRESS LOG.  It no longer does: the repair relays out a tab whose block
+    changed height, and refuses if that would strand a row the operator
+    typed.  So the map is now a DECLARATION of the shape the workbook should
+    have, not a freeze — change a block and change its entry in the same
+    commit, and the next repair migrates the deployed tab.
+
+    It is still a guard worth having.  The heights here are what the repair
+    script writes against, and a block that grew without the map growing
+    would have the script write a formula onto the "Pooled over…" note.
     """
     bad = []
     for fid, rows in LIVE.items():
@@ -1042,98 +1306,283 @@ def check_live_row_budget():
             "script would overwrite the PROGRESS LOG:\n  " + "\n  ".join(bad))
 
 
+def deploy_tables(fronts):
+    """Everything the repair script writes: (formulas, values).
+
+    One definition, because `build_fingerprint` has to hash exactly what
+    `emit_apps_script` emits — a fingerprint computed over anything else
+    would be a second source of truth and could agree while the scripts
+    differed, which is the failure it exists to catch.
+    """
+    # Formulas, written with setFormula.  C7 and C8 sit in the THE FRONT
+    # block but are derived from it, so they ride along here.
+    cells = [(DER, "A3", derived_formula(), None)]
+    for f in fronts:
+        tab = tab_name(f)
+        for k, (label, formula) in enumerate(LIVE.get(f["id"], [])):
+            cells.append((tab, f"B{LIVE_FIRST_ROW + k}", formula, label))
+        cells.append((tab, "C7", STAGE_BAR, None))
+        # "" clears C8 on a front whose gate has stopped naming an n.
+        cells.append((tab, "C8", volume_formula(f), None))
+
+    # Values from the register, written with setValue.
+    values = []
+    for f in fronts:
+        tab = tab_name(f)
+        values += [(tab, cell, v) for cell, v in register_fields(f)]
+        values += [(tab, f"A{row}", label) for row, _k, label in FRONT_ROWS]
+    return cells, values
+
+
+def build_fingerprint(fronts):
+    """Eight hex characters identifying what a build deploys."""
+    cells, values = deploy_tables(fronts)
+    return hashlib.sha256(
+        repr((values, cells)).encode("utf-8")).hexdigest()[:8]
+
+
 def emit_apps_script(fronts, path):
-    """A repair script for a workbook that is already in Sheets.
+    """A full resync of a workbook that is already in Sheets.
 
     Pasting formulas by hand goes wrong in ways that have nothing to do with
     the formulas: Sheets splits pasted text on commas, an array formula will
     not overwrite a non-empty neighbour, and the .xlsx import drops every
-    Google-only function.  setFormula() has none of those problems — it writes
-    the string straight into the cell.  Idempotent: re-run it any time.
+    Google-only function.  setFormula() has none of those problems -- it
+    writes the string straight into the cell.  Idempotent: re-run it any time.
 
-    Writes the LABEL (column A) beside every formula (column B).  A repair that
-    corrects what a cell computes but leaves the old caption is worse than no
-    repair: A3's bands are graded human-confirmed now, and a row still captioned
-    "[0.82, 0.85)" would read as the pooled number it no longer is.
+    It used to write LIVE formulas and nothing else, and that was the hole the
+    workbook fell through.  A front's Status, Stage, Gate and Standing are
+    written once at build time, the register keeps moving, and there was no
+    way to pull them back: by 2026-09-20 nineteen of the register's fronts
+    disagreed with the deployed workbook -- A1 shown as an open SHADOW three
+    stages after it was refuted, A25 shown closed after it had reopened --
+    and three fronts added since the build (B32, B33, C7) had no tab at all.
+    The only repair anyone had was a rebuild, which costs the pasted Logger
+    corpus and every typed PROGRESS LOG line.
+
+    So it now writes everything the register owns, and only what the register
+    owns:
+
+      * the THE FRONT block on every tab (register_fields),
+      * the LIVE formulas and the two derived cells beside the stage,
+      * INDEX whole -- the header count, the per-stage strip, and every row,
+      * a scaffolded tab for any front the workbook has never seen.
+
+    It never touches a PROGRESS LOG row, the raw Logger tabs, or Owner and
+    Next action -- those are the operator's, and a resync that ate them would
+    be a worse bug than the drift it fixes.
 
     Every front's LIVE block must keep the row count it was BUILT with.  The
-    script writes in place from row 18, and the "Pooled over…" note, the
-    PROGRESS LOG header and the operator's typed readings sit directly below —
-    one extra row per front would overwrite the log this workbook exists to
-    keep.  ``check_live_row_budget`` enforces that."""
+    script writes in place from row 18, and the "Pooled over..." note, the
+    PROGRESS LOG header and the operator's typed readings sit directly below
+    -- one extra row per front would overwrite the log this workbook exists
+    to keep.  ``check_live_row_budget`` enforces that.
+
+    Writes the LABEL (column A) beside every LIVE formula.  A repair that
+    corrects what a cell computes but leaves the old caption is worse than no
+    repair: A3's bands are graded human-confirmed now, and a row still
+    captioned "[0.82, 0.85)" would read as the pooled number it no longer is.
+    """
     check_live_row_budget()
-    cells = [(DER, "A3", derived_formula(), None)]
-    for f in fronts:
-        for k, (label, formula) in enumerate(LIVE.get(f["id"], [])):
-            cells.append((tab_name(f), f"B{18 + k}", formula, label))
+    cells, values = deploy_tables(fronts)
+
+    # [tab, live rows, log header row] -- enough to raise a front tab from
+    # nothing.  Only used when the tab is absent; an existing tab is never
+    # re-scaffolded, because its log rows are below the scaffold.
+    scaffold = [[tab_name(f), len(LIVE.get(f["id"], [])), log_row_for(f)]
+                for f in fronts]
+
+    index = [index_row(f, IDX_HEADER_ROW + 1 + k)
+             for k, f in enumerate(fronts)]
+    strip = [f'{st}: {sum(1 for f in fronts if f["Stage"] == st)}'
+             for st in range(7)]
+    below = (f'{sum(1 for f in fronts if f["Stage"] <= 2)} fronts are below '
+             f'stage 3 — not yet graded at volume.')
+
+    # A fingerprint of everything this script deploys.  Two builds with the
+    # same one write the same workbook; a different one means the register or
+    # a formula moved.
+    #
+    # It exists because a stale paste is otherwise invisible.  On 2026-09-20
+    # a run reported "1747 of 1747 cells written across 72 fronts" and had
+    # deployed the PREVIOUS script: the file has a fixed name, the cell count
+    # does not change when a register VALUE changes, and the status line said
+    # nothing that could tell the two apart.  The register edits looked
+    # applied and were not.  Now the line carries the build, so re-running a
+    # stale paste shows a fingerprint that does not match the one the build
+    # printed.
+    fingerprint = build_fingerprint(fronts)
+
+    bands = {"front": "THE FRONT", "bump": BUMP_NOTE, "live": LIVE_BAND,
+             "liveNone": LIVE_NONE_BAND, "liveNoneNote": LIVE_NONE_NOTE,
+             "pooled": POOLED_NOTE, "log": LOG_BAND}
+
+    def js(x):
+        return json.dumps(x, ensure_ascii=False)
 
     lines = [
         "/**",
-        " * Rewrites every computed formula in the Progress Trackers workbook.",
+        " * Resyncs the Progress Trackers workbook with LOGGER_FRONTS.md.",
         " *",
-        " * Run once after importing the .xlsx: Extensions > Apps Script,",
-        " * paste this in, Run, approve the permission prompt. It repairs the",
-        " * cells the import mangled and is safe to re-run at any time.",
+        " * Run after importing the .xlsx, and again whenever the register",
+        " * moves: Extensions > Apps Script, paste this in, Run, approve the",
+        " * permission prompt. Safe to re-run at any time.",
         " *",
-        f" * {len(cells)} cells across {len(set(c[0] for c in cells))} tabs.",
+        " * It writes the register's cells and the computed ones. It does NOT",
+        " * touch the PROGRESS LOG, the pasted Logger tabs, or Owner/Next",
+        " * action.",
+        " *",
+        f" * {len(cells)} formulas and {len(values)} values across "
+        f"{len(fronts)} fronts.",
+        f" * Build {fingerprint}. The status line repeats it — if the REPAIR",
+        " * tab shows a different one after a run, the editor still holds an",
+        " * older paste and the newest changes were NOT deployed.",
         " * Generated by ebayscout/tools/build_goal_trackers.py -- do not edit.",
         " */",
         "function repairFormulas() {",
         "  var ss = SpreadsheetApp.getActiveSpreadsheet();",
-        "  var written = 0, missing = [], renamed = [];",
-        "  var CELLS = [",
+        f"  var LIVE_FIRST_ROW = {LIVE_FIRST_ROW}, LOG_ROWS = {LOG_ROWS};",
+        f"  var IDX_HEADER_ROW = {IDX_HEADER_ROW};",
+        f"  var LOG_COLS = {js(LOG_COLS)};",
+        f"  var BANDS = {js(bands)};",
+        f"  var SCAFFOLD = {js(scaffold)};",
+        f"  var STRIP = {js(strip)};",
+        f"  var BELOW = {js(below)};",
+        f"  var IDX_WIDTHS = {js(IDX_WIDTHS)};",
+        "  var INDEX = [",
     ]
+    for row in index:
+        lines.append(f"    {js(row)},")
+    lines.append("  ];")
+    lines.append("  var VALUES = [")
+    for tab, cell, value in values:
+        lines.append(f"    [{js(tab)}, {js(cell)}, {js(value)}],")
+    lines.append("  ];")
+    lines.append("  var CELLS = [")
     for tab, cell, formula, label in cells:
-        lines.append(f"    [{json.dumps(tab)}, {json.dumps(cell)}, "
-                     f"{json.dumps(formula)}, {json.dumps(label)}],")
+        lines.append(f"    [{js(tab)}, {js(cell)}, {js(formula)}, "
+                     f"{js(label)}],")
     lines += [
         "  ];",
+        "",
         "  // Tab names are derived from a front's TITLE, and titles change:",
         "  // A25 was renamed 'Edition-twin wrong-year picks' ->",
         "  // 'Edition-twin resolution' on 2026-09-09, so the generated name",
         "  // stopped matching the deployed tab and its two LIVE cells would",
-        "  // have gone quietly stale.  A front's ID never changes, so fall",
-        "  // back to the 'A25 ...' prefix and say so.",
+        "  // have gone quietly stale.  A front's ID never changes, so match",
+        "  // on the 'A25 ' prefix and RENAME the tab to the canonical name:",
+        "  // every formula below refers to tabs by that name, and Sheets",
+        "  // rewrites existing references when a sheet is renamed.",
         "  var byId = {};",
         "  var all = ss.getSheets();",
         "  for (var s = 0; s < all.length; s++) {",
         "    var m = all[s].getName().match(/^([A-E]\\d+) /);",
         "    if (m) { byId[m[1]] = all[s]; }",
         "  }",
-        "  for (var i = 0; i < CELLS.length; i++) {",
-        "    var want = CELLS[i][0];",
+        "  var created = [], renamed = [];",
+        "  for (var i = 0; i < SCAFFOLD.length; i++) {",
+        "    var want = SCAFFOLD[i][0];",
         "    var sh = ss.getSheetByName(want);",
         "    if (!sh) {",
         "      var idm = want.match(/^([A-E]\\d+) /);",
         "      if (idm && byId[idm[1]]) {",
         "        sh = byId[idm[1]];",
-        "        if (renamed.indexOf(want) < 0) {",
-        "          renamed.push(want + '  ->  ' + sh.getName());",
-        "        }",
+        "        renamed.push(sh.getName() + '  ->  ' + want);",
+        "        sh.setName(want);",
         "      }",
         "    }",
-        "    if (!sh) { missing.push(want); continue; }",
+        "    if (!sh) {",
+        "      sh = ss.insertSheet(want);",
+        "      scaffoldFront(sh, SCAFFOLD[i][1], SCAFFOLD[i][2]);",
+        "      created.push(want);",
+        "    }",
+        "    byId[want.match(/^([A-E]\\d+) /)[1]] = sh;",
+        "  }",
+        "",
+        "  // A LIVE block that changed height moves the PROGRESS LOG header,",
+        "  // so an existing tab has to be re-laid-out before anything is",
+        "  // written into it. This is what used to make the row budget a",
+        "  // freeze rather than a declaration. It refuses rather than",
+        "  // stranding a typed row above the new header.",
+        "  var relaid = [], stale = [];",
+        "  for (var i = 0; i < SCAFFOLD.length; i++) {",
+        "    var sh = ss.getSheetByName(SCAFFOLD[i][0]);",
+        "    if (!sh || created.indexOf(SCAFFOLD[i][0]) >= 0) { continue; }",
+        "    var r = relayout(sh, SCAFFOLD[i][1], SCAFFOLD[i][2]);",
+        "    if (r === 'moved') { relaid.push(SCAFFOLD[i][0]); }",
+        "    if (r === 'occupied') { stale.push(SCAFFOLD[i][0]); }",
+        "  }",
+        "",
+        "  var missing = [], wrote = 0;",
+        "  for (var i = 0; i < VALUES.length; i++) {",
+        "    var sh = ss.getSheetByName(VALUES[i][0]);",
+        "    if (!sh) { missing.push(VALUES[i][0]); continue; }",
+        "    sh.getRange(VALUES[i][1]).setValue(VALUES[i][2]);",
+        "    wrote++;",
+        "  }",
+        "  for (var i = 0; i < CELLS.length; i++) {",
+        "    var sh = ss.getSheetByName(CELLS[i][0]);",
+        "    if (!sh) { missing.push(CELLS[i][0]); continue; }",
+        "    // setFormula('') clears the cell, which is what a front whose",
+        "    // gate no longer names an n needs to happen to its C8.",
         "    sh.getRange(CELLS[i][1]).setFormula(CELLS[i][2]);",
         "    if (CELLS[i][3] !== null) {",
         "      // Keep the caption truthful about what the cell now computes.",
         "      sh.getRange('A' + CELLS[i][1].substring(1))"
         ".setValue(CELLS[i][3]);",
         "    }",
-        "    written++;",
+        "    wrote++;",
         "  }",
+        "",
+        "  // INDEX is rebuilt whole: it said '69 fronts' with three tabs",
+        "  // missing, and its A4 label had been overwritten by an earlier",
+        "  // version of this script's own status line.",
+        "  var idx = ss.getSheetByName('INDEX');",
+        "  if (idx) {",
+        "    idx.getRange('A1').setValue('INDEX — ' + INDEX.length "
+        "+ ' fronts');",
+        "    idx.getRange('A4').setValue('Fronts per stage');",
+        "    for (var s = 0; s < STRIP.length; s++) {",
+        "      idx.getRange(4, 2 + s).setValue(STRIP[s]);",
+        "    }",
+        "    idx.getRange(4, 10).setValue(BELOW);",
+        "    idx.getRange(IDX_HEADER_ROW + 1, 1, INDEX.length, "
+        "INDEX[0].length).setValues(INDEX);",
+        "    for (var i = 0; i < INDEX.length; i++) {",
+        "      // Only Apps Script can resolve a tab's gid, so column A is a",
+        "      // HYPERLINK() here where the .xlsx carries a real link.",
+        "      var t = ss.getSheetByName(SCAFFOLD[i][0]);",
+        "      if (!t) { continue; }",
+        "      idx.getRange(IDX_HEADER_ROW + 1 + i, 1).setFormula(",
+        "        '=HYPERLINK(\"#gid=' + t.getSheetId() + '\",\"'",
+        "        + INDEX[i][0] + '\")');",
+        "    }",
+        "    // A register that lost a front would otherwise leave its row.",
+        "    var extra = idx.getLastRow() - IDX_HEADER_ROW - INDEX.length;",
+        "    if (extra > 0) {",
+        "      idx.getRange(IDX_HEADER_ROW + INDEX.length + 1, 1, extra,",
+        "                   INDEX[0].length).clearContent();",
+        "    }",
+        "  } else { missing.push('INDEX'); }",
+        "",
         "  SpreadsheetApp.flush();",
-        "  var msg = new Date().toISOString() + ' — ' + written",
-        "          + ' of ' + CELLS.length + ' formulas written.';",
+        "  var msg = new Date().toISOString() + ' — ' + wrote + ' of '",
+        "          + (VALUES.length + CELLS.length) + ' cells written across '",
+        f"          + INDEX.length + ' fronts. [build {fingerprint}]';",
+        "  if (created.length) { msg += '  TABS CREATED: ' "
+        "+ created.join(' | '); }",
+        "  if (relaid.length) { msg += '  RELAID OUT: ' "
+        "+ relaid.join(' | '); }",
+        "  if (stale.length) {",
+        "    msg += '  LAYOUT STALE, NOT MOVED (typed log rows would be "
+        "stranded — move them by hand, then re-run): ' + stale.join(' | ');",
+        "  }",
+        "  if (renamed.length) { msg += '  TABS RENAMED: ' "
+        "+ renamed.join(' | '); }",
         "  if (missing.length) {",
         "    var uniq = missing.filter(function (v, k, a) "
         "{ return a.indexOf(v) === k; });",
         "    msg += '  MISSING TABS: ' + uniq.join(' | ');",
-        "  }",
-        "  if (renamed.length) {",
-        "    // Written, but to a tab whose title has since changed in the",
-        "    // register.  Rename the tab to match and this line goes away.",
-        "    msg += '  MATCHED BY FRONT ID (rename the tab): '",
-        "         + renamed.join(' | ');",
         "  }",
         "  Logger.log(msg);",
         "  // Status goes to a tab of its own, CREATED if absent.  It used to",
@@ -1143,7 +1592,8 @@ def emit_apps_script(fronts, path):
         "  // into a tab that carries content.",
         "  var out = ss.getSheetByName('REPAIR');",
         "  if (!out) { out = ss.insertSheet('REPAIR'); }",
-        "  out.getRange('A1').setValue('Repair log — written by repairFormulas().');",
+        "  out.getRange('A1').setValue("
+        "'Repair log — written by repairFormulas().');",
         "  out.getRange('A2').setValue(msg);",
         "  SpreadsheetApp.flush();",
         "  // NO getUi().alert() here.  When the script IS container-bound it",
@@ -1154,10 +1604,67 @@ def emit_apps_script(fronts, path):
         "  // 5m57s).  The unflushed status write was lost with it.  The log line",
         "  // above and the REPAIR tab are the report.",
         "  return msg;",
+        "",
+        "  function relayout(sh, liveRows, logRow) {",
+        "    // Rows 1..logRow belong to the generator; logRow+1 down belong",
+        "    // to the operator. Nothing to do if the header is already where",
+        "    // this build wants it -- the normal case, so this costs one",
+        "    // read per tab.",
+        "    if (sh.getRange(logRow, 1).getValue() === LOG_COLS[0]) {",
+        "      return 'ok';",
+        "    }",
+        "    var depth = Math.max(sh.getLastRow(), logRow + LOG_ROWS) ;",
+        "    var colA = sh.getRange(1, 1, depth, 1).getValues();",
+        "    var oldLog = -1;",
+        "    for (var r = 0; r < colA.length; r++) {",
+        "      if (colA[r][0] === BANDS.log) { oldLog = r + 2; break; }",
+        "    }",
+        "    if (oldLog < 0) { return 'ok'; }   // nothing recognisable to move",
+        "    // Refuse if the operator has typed anything into the old log.",
+        "    var typed = sh.getRange(oldLog + 1, 1, LOG_ROWS, LOG_COLS.length)",
+        "                  .getValues();",
+        "    for (var r = 0; r < typed.length; r++) {",
+        "      for (var k = 0; k < typed[r].length; k++) {",
+        "        if (typed[r][k] !== '' && typed[r][k] !== null) {",
+        "          return 'occupied';",
+        "        }",
+        "      }",
+        "    }",
+        "    // Clear the generator's old rows from the LIVE band down through",
+        "    // the empty log, then lay it out at the new height.",
+        "    var from = 17;",
+        "    var to = Math.max(oldLog + LOG_ROWS, logRow + LOG_ROWS);",
+        "    sh.getRange(from, 1, to - from + 1, LOG_COLS.length)",
+        "      .clearContent();",
+        "    scaffoldFront(sh, liveRows, logRow);",
+        "    return 'moved';",
+        "  }",
+        "",
+        "  function scaffoldFront(sh, liveRows, logRow) {",
+        "    // Only the parts that are the same on every front tab; the",
+        "    // register's own cells are written by the VALUES pass above.",
+        "    sh.getRange('A4').setValue(BANDS.front);",
+        "    sh.getRange('B15').setValue(BANDS.bump);",
+        "    if (liveRows > 0) {",
+        "      sh.getRange('A17').setValue(BANDS.live);",
+        "      sh.getRange('A' + (LIVE_FIRST_ROW + liveRows))"
+        ".setValue(BANDS.pooled);",
+        "    } else {",
+        "      sh.getRange('A17').setValue(BANDS.liveNone);",
+        "      sh.getRange('A' + LIVE_FIRST_ROW).setValue(BANDS.liveNoneNote);",
+        "    }",
+        "    sh.getRange('A' + (logRow - 1)).setValue(BANDS.log);",
+        "    sh.getRange(logRow, 1, 1, LOG_COLS.length).setValues([LOG_COLS]);",
+        "    sh.getRange(logRow + 1, 1, LOG_ROWS, 1)"
+        ".setNumberFormat('yyyy-mm-dd');",
+        "    sh.setColumnWidth(1, 120);",
+        "    sh.setColumnWidth(2, 700);",
+        "    sh.setFrozenRows(3);",
+        "  }",
         "}",
     ]
     open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
-    return len(cells)
+    return len(cells) + len(values)
 
 
 def main():
@@ -1178,7 +1685,9 @@ def main():
 
     if args.apps_script:
         n = emit_apps_script(fronts, args.apps_script)
-        print(f"{n} formulas → {args.apps_script}")
+        print(f"{n} cells → {args.apps_script}")
+        print(f"  build {build_fingerprint(fronts)} — the REPAIR tab must "
+              f"show this after the run, or the paste is stale")
 
     if args.csv:
         emit_csv(fronts, args.csv)

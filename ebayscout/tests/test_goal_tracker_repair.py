@@ -8,6 +8,7 @@ hard constraint, not a style choice.
 Run: python ebayscout/tests/run_goal_tracker_repair_tests.py
 """
 
+import json
 import os
 import sys
 
@@ -85,9 +86,44 @@ def test_detection_readings_count_images_not_crops():
     # B2/B4/B11/B14/B28 were missed by the 2026-09-07 sweep and stayed
     # per-crop: B28 read 983 whitepass "lots" against 54, B14 51 swaps
     # against 5.
-    for fid in ("B2", "B4", "B11", "B14", "B22", "B27", "B28", "E2"):
+    # B3/B20/B21/B25/B30 were missed again by the 2026-09-12 build: B3 read
+    # 3601 fused "lots" and 5774 dense ones against a 100-LOT gate (INDEX
+    # showed 3601% complete), B30 7289 Hough "lots" on ~900 images, and B20
+    # summed a per-photo recovery count once per crop.  Fused and dense lots
+    # are the worst case for this bug, because the weight IS the lot size the
+    # front is measuring.
+    # B9 and B19 were missed a third time, by the 2026-09-20 sweep: B9's first
+    # cell said "Lots" and counted crops while the distribution directly below
+    # it counted images, so one two-row block disagreed with itself (67.0% vs
+    # ~73%), and both of B19's readings were weighted by lot size.
+    for fid in ("B2", "B3", "B4", "B9", "B11", "B14", "B19", "B20", "B21",
+                "B22", "B25", "B27", "B28", "B30", "E2"):
         for _label, formula in b.LIVE[fid]:
             assert f'match_log!{crop_col}2:{crop_col}' in formula, (fid, formula)
+
+
+def test_no_live_cell_can_spill_out_of_its_one_row():
+    """A grouped QUERY returns a row per value; a LIVE block budgets a fixed
+    number of rows. The two cannot both be true.
+
+    Three cells shipped with that contradiction and failed two different
+    ways: A24 and B9 were refused and rendered `#REF!` from the day the
+    workbook was built, while B29 FIT — so it spilled instead, writing its
+    counts down column C over the "Pooled over…" note and into the PROGRESS
+    LOG's `n` column. B29 is the reason this is a test and not a comment: a
+    spill that currently fits is one new value away from `#REF!`, and in the
+    meantime it is silently overwriting the log.
+
+    TEXTJOIN consumes an array rather than spilling it, so a distribution
+    collapsed that way is safe at any number of values.
+    """
+    for fid, rows in b.LIVE.items():
+        for label, formula in rows:
+            if "QUERY(" not in formula:
+                continue
+            assert "group by" not in formula, (
+                f"{fid} {label!r}: a grouped QUERY spills into the rows "
+                f"below it — collapse it with TEXTJOIN (see `dist`)")
 
 
 def test_confirm_type_counts_ignore_the_untyped_blank():
@@ -206,8 +242,10 @@ def test_the_repair_falls_back_to_the_front_id_when_a_title_changes():
     deployed tab, so its two LIVE cells would have been written nowhere —
     reported under MISSING TABS at best, and silently stale if nobody read the
     line. A front's ID never changes, so the script matches on the "A25 "
-    prefix as a fallback and names every tab it reached that way, so the
-    operator knows to rename it.
+    prefix as a fallback. It then RENAMES the tab to the canonical name
+    rather than just reporting it: every formula the script writes refers to
+    tabs by that name, Sheets rewrites existing references when a sheet is
+    renamed, and a mismatch left in place comes back on the next run.
     """
     import tempfile
     fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
@@ -216,6 +254,208 @@ def test_the_repair_falls_back_to_the_front_id_when_a_title_changes():
         b.emit_apps_script(fronts, fh.name)
         gs = open(fh.name).read()
     assert "byId" in gs, "no front-ID fallback in the emitted script"
-    assert "MATCHED BY FRONT ID" in gs, "the fallback must report itself"
+    assert "setName(want)" in gs, "the fallback must fix the name, not just find it"
+    assert "TABS RENAMED" in gs, "the fallback must report itself"
     # the fallback must not silently replace the MISSING TABS report
     assert "MISSING TABS" in gs
+
+
+def test_the_repair_syncs_what_the_register_owns():
+    """The drift this whole path exists to fix.
+
+    The workbook built 2026-09-12 froze every Status, Stage, Gate and
+    Standing at build time, because the repair wrote LIVE formulas and
+    nothing else. Nineteen fronts had drifted by 2026-09-20 and three had no
+    tab at all, and the only fix anyone had was a rebuild — which costs the
+    pasted Logger corpus.
+    """
+    import tempfile
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    for f in fronts:
+        for cell, value in b.register_fields(f):
+            if isinstance(value, str) and value:
+                assert json.dumps(value, ensure_ascii=False) in gs, (
+                    f"{f['id']} {cell} is not written by the repair script")
+    # and a front the workbook has never seen must be raisable from nothing
+    assert "insertSheet(want)" in gs and "scaffoldFront" in gs
+
+
+def test_the_repair_never_touches_the_operators_rows():
+    """A resync that ate a typed PROGRESS LOG line, an Owner or a Next action
+    would be a worse bug than the drift it fixes. Those rows belong to the
+    operator; the register owns everything else."""
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    owned = {c for f in fronts for c, _v in b.register_fields(f)}
+    assert not owned & {"B13", "B14"}, "Owner/Next action are not the register's"
+    for f in fronts:
+        log_row = b.log_row_for(f)
+        written = [int(c[1:]) for c, _v in b.register_fields(f)]
+        written += [b.LIVE_FIRST_ROW + k
+                    for k in range(len(b.LIVE.get(f["id"], [])))]
+        assert max(written) < log_row, (
+            f"{f['id']}: the repair writes row {max(written)}, at or below "
+            f"the PROGRESS LOG header on row {log_row}")
+
+
+def test_a8_measures_a_per_crop_rule_with_the_only_instrument_there_is():
+    """A8 is the one front where a crop-weighted cell is CORRECT, so it must
+    be excluded from the blanket rule above rather than quietly pinned.
+
+    Its shipped rule acts on one crop — downgrade `gemini_auto` when that
+    crop's rendered diameter is under ~64px — but MATCH_HEADER carries no
+    per-crop radius: `det_radius_min/max/mean/std` are all lot-level. So the
+    floor count is crops under a LOT-level proxy, and its caption has to say
+    so. The mean beside it is a per-photo fact and must be pinned, or dense
+    lots (more crops, smaller buttons) drag it down.
+    """
+    crop = f'match_log!{b.M["crop_num"]}2:{b.M["crop_num"]}'
+    mean_label, mean_f = b.LIVE["A8"][0]
+    floor_label, floor_f = b.LIVE["A8"][1]
+    assert crop in mean_f, "A8's mean is a per-photo fact and must be pinned"
+    assert crop not in floor_f, (
+        "A8's floor count is deliberately per-crop — pinning it would report "
+        "lots, which is not what the guard acts on")
+    assert "proxy" in floor_label.lower() or "MEAN" in floor_label, (
+        f"A8's floor caption must name the lot-level proxy: {floor_label!r}")
+    # and the day a per-crop radius column exists, this test should fail
+    assert not [c for c in b.ml.MATCH_HEADER
+                if "radius" in c and "crop" in c], (
+        "a per-crop radius column now exists — measure A8's rule directly")
+
+
+def test_bookkeeping_rows_are_not_counted_as_confirmations():
+    """`gemini_count` rows record a Gemini count, not a decision anybody made.
+
+    B23 already excluded them from its tap denominator. E4's gate counted
+    them anyway (5358 against 4829 real), A10 reported the same inflated
+    total beside it, and A16 counted them into the wrong-#1 pool because a
+    row with no `chosen_phrase` cannot match its own top-1. A workbook that
+    answers "how many confirmations are there" two different ways on two tabs
+    is worse than one that is wrong the same way everywhere.
+    """
+    for fid in ("A10", "E4", "B23"):
+        joined = " ".join(f for _l, f in b.LIVE[fid])
+        assert '"gemini_count"' in joined, (
+            f"{fid} counts bookkeeping rows as confirmations")
+    wrong = dict((l, f) for l, f in b.LIVE["A16"])
+    pool = [f for l, f in b.LIVE["A16"] if "swap-pair" in l]
+    assert pool and '"<>gemini_count"' in pool[0], (
+        "A16's wrong-#1 pool still counts bookkeeping rows")
+
+
+def test_e4_and_a10_agree_on_what_a_confirmation_is():
+    """They read the same population and are shown side by side; if they ever
+    diverge, one of the two tabs is lying about the same number."""
+    e4 = [f for l, f in b.LIVE["E4"] if "accrued" in l][0]
+    a10 = [f for l, f in b.LIVE["A10"] if "Confirms total" in l][0]
+    assert e4 == a10, f"E4 and A10 disagree:\n  {e4}\n  {a10}"
+
+
+def test_e2_splits_its_gate_by_lot_shape_and_the_two_halves_partition():
+    """E2's ≥98% gate sat at ~78% pooled across two different failure
+    regimes — 43% of dense lots fuse against 5.3% of small ones, and scale
+    confidence fails on the small ones instead. Pooled, the harder half can
+    hold the gate down forever while the easier half is already shippable.
+
+    The strata must cover the gated population exactly once: 1-6 and 7+,
+    both guarded by ISNUMBER so an un-scored row (an empty paste is TEXT,
+    which Sheets ranks above every number) lands in neither.
+    """
+    labels = [l for l, _f in b.LIVE["E2"]]
+    assert any("small lots" in l for l in labels), "E2 has no small stratum"
+    assert any("dense lots" in l for l in labels), "E2 has no dense stratum"
+    g = f'match_log!{b.M["gemini_button_count"]}2:{b.M["gemini_button_count"]}'
+    small = [f for l, f in b.LIVE["E2"] if "small lots" in l]
+    dense = [f for l, f in b.LIVE["E2"] if "dense lots" in l]
+    for f in small:
+        assert f'({g}>=1)*({g}<=6)' in f, f"small stratum is not 1-6: {f}"
+    for f in dense:
+        assert f'({g}>=7)' in f, f"dense stratum is not 7+: {f}"
+    for f in small + dense:
+        assert f'ISNUMBER({g})' in f, (
+            f"stratum counts un-scored rows: {f}")
+        # every stratum cell must still be inside the gated population
+        assert '"auto"' in f and '"scale_first"' in f, (
+            f"stratum is not restricted to gated lots: {f}")
+
+
+def test_the_repair_can_move_a_log_that_changed_height_but_refuses_to_strand():
+    """Growing a LIVE block moves the PROGRESS LOG header down.
+
+    That used to be impossible in place, which is what made LIVE_ROW_BUDGET a
+    freeze rather than a declaration: the only way to change a block was a
+    rebuild, and a rebuild costs the pasted Logger corpus. The repair now
+    relays a tab out — but a typed log row above the new header would be
+    silently orphaned, so it must check and refuse instead, and say so.
+    """
+    import tempfile
+    fronts = b.parse_register(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "LOGGER_FRONTS.md"))
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    assert "function relayout(" in gs
+    assert "'occupied'" in gs, "the guard has no refusal path"
+    assert "LAYOUT STALE" in gs, "a refusal must be reported, not swallowed"
+    # and it must not relayout a tab it just created from scratch
+    assert "created.indexOf(SCAFFOLD[i][0]) >= 0" in gs
+
+
+def test_no_formula_mixes_two_guards_on_the_same_column():
+    """A ratio must use ONE definition of "scored" on both halves.
+
+    E2's exact-agreement and within-1 cells guarded their numerators with
+    `<>""` while the denominator beside them used ISNUMBER, so the two halves
+    disagreed about which rows counted. It did not bite on the 2026-09-20
+    pool, but a ratio is the worst place to keep a latent guard mismatch:
+    the error is silent and shows up as a percentage that looks reasonable.
+    """
+    g = f'match_log!{b.M["gemini_button_count"]}2:{b.M["gemini_button_count"]}'
+    for fid, rows in b.LIVE.items():
+        for label, f in rows:
+            if f'ISNUMBER({g})' in f and f'({g}<>"")' in f:
+                raise AssertionError(
+                    f'{fid} {label!r} guards the same column two ways — '
+                    f'ISNUMBER and <>"" in one formula')
+
+
+def test_a_stale_paste_is_visible_in_the_status_line():
+    """A run that deployed the previous script must not look like a fresh one.
+
+    On 2026-09-20 a run reported "1747 of 1747 cells written across 72
+    fronts" and had deployed the script from before the register edits. The
+    file has a fixed name, the cell COUNT does not move when a register value
+    changes, and nothing else in the line differed — so the edits looked
+    applied and were not, and it took reading the deployed Gate text to
+    notice. The fingerprint must therefore cover VALUES, not just CELLS.
+    """
+    import tempfile
+    reg = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "LOGGER_FRONTS.md")
+    fronts = b.parse_register(reg)
+    fp = b.build_fingerprint(fronts)
+    assert len(fp) == 8, fp
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    assert f"[build {fp}]" in gs, "the status line does not carry the build"
+
+    # a changed register VALUE must change it — the case that went unnoticed
+    moved = b.parse_register(reg)
+    moved[0]["Stage"] = (moved[0]["Stage"] + 1) % 7
+    assert b.build_fingerprint(moved) != fp, (
+        "a stage change leaves the fingerprint alone — a stale paste would "
+        "still be invisible")
+    # and so must a changed formula
+    original = b.LIVE["E2"]
+    b.LIVE["E2"] = original[:-1] + [(original[-1][0], "=42")]
+    try:
+        assert b.build_fingerprint(fronts) != fp, (
+            "a formula change leaves the fingerprint alone")
+    finally:
+        b.LIVE["E2"] = original
