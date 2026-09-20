@@ -422,3 +422,40 @@ def test_no_formula_mixes_two_guards_on_the_same_column():
                 raise AssertionError(
                     f'{fid} {label!r} guards the same column two ways — '
                     f'ISNUMBER and <>"" in one formula')
+
+
+def test_a_stale_paste_is_visible_in_the_status_line():
+    """A run that deployed the previous script must not look like a fresh one.
+
+    On 2026-09-20 a run reported "1747 of 1747 cells written across 72
+    fronts" and had deployed the script from before the register edits. The
+    file has a fixed name, the cell COUNT does not move when a register value
+    changes, and nothing else in the line differed — so the edits looked
+    applied and were not, and it took reading the deployed Gate text to
+    notice. The fingerprint must therefore cover VALUES, not just CELLS.
+    """
+    import tempfile
+    reg = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "LOGGER_FRONTS.md")
+    fronts = b.parse_register(reg)
+    fp = b.build_fingerprint(fronts)
+    assert len(fp) == 8, fp
+    with tempfile.NamedTemporaryFile("r+", suffix=".gs") as fh:
+        b.emit_apps_script(fronts, fh.name)
+        gs = open(fh.name).read()
+    assert f"[build {fp}]" in gs, "the status line does not carry the build"
+
+    # a changed register VALUE must change it — the case that went unnoticed
+    moved = b.parse_register(reg)
+    moved[0]["Stage"] = (moved[0]["Stage"] + 1) % 7
+    assert b.build_fingerprint(moved) != fp, (
+        "a stage change leaves the fingerprint alone — a stale paste would "
+        "still be invisible")
+    # and so must a changed formula
+    original = b.LIVE["E2"]
+    b.LIVE["E2"] = original[:-1] + [(original[-1][0], "=42")]
+    try:
+        assert b.build_fingerprint(fronts) != fp, (
+            "a formula change leaves the fingerprint alone")
+    finally:
+        b.LIVE["E2"] = original
