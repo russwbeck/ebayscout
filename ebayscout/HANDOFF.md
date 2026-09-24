@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-09-14)
+# eBay Scout — Session Handoff (latest entry 2026-09-24)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,21 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-09-24 — carpet guard + shared-file sync (buttonmatcher's large-lot work)
+
+buttonmatcher's 128-crop Mellon lot showed that crops cut at Gemini points can
+land on bare carpet and still resolve (anchored by construction). ebayscout now
+stamps `off_board` on any Gemini-positioned crop whose button-mask fill is
+< 0.30: AUTO refused and DB-direct skipped, so a phantom never adds value to a
+deal. Kill switch `BUTTONMATCHER_CARPET_GUARD=0`. `gemini_geometry.py` and
+`pipeline_ingest.py` are byte-identical with buttonmatcher again;
+`pipeline_ingest` now carries the pure split/merge helpers, but **ebayscout
+does not split large lots yet** (buttonmatcher does; see its
+`GEMINI_PIPELINE.md` → *Large lots*). The revised Gem prompt of record lives
+in buttonmatcher's `GEMINI_PIPELINE.md`.
 
 ---
 
