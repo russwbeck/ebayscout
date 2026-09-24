@@ -135,9 +135,13 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         crop_idx → CLIP top-N candidates, best first.  Each candidate is at least
         ``{"year", "slogan", "type"}`` (``overall`` optional, used for logging).
     crop_to_slogan : dict[int, dict]
-        crop_idx → {slogan, confidence, index, gemini_idx, dist, anchored}
+        crop_idx → {slogan, confidence, index, gemini_idx, dist, anchored,
+        off_board}
         (gemini_geometry; ``anchored`` is optional and defaults True — fail-open
-        for callers that predate the anchoring gate).
+        for callers that predate the anchoring gate.  ``off_board`` is the
+        carpet guard, gemini_geometry.assoc_off_board: a crop cut at a Gemini
+        point that sits off the button mask.  Optional, defaults False; True
+        refuses AUTO exactly like an unanchored pair.)
     slogan_years : dict[str, set]
         normalized slogan → set of DB years (the duplicate multimap).  Used only
         as a hint; the actual disambiguation uses the years present in the crop's
@@ -179,6 +183,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
     per_crop = []
     n_low_confidence = 0
     n_unanchored = 0
+    n_off_board = 0
     n_synth_db_direct = 0
 
     # --- Pass 1: Scenario A (unique year) + collect anchors ------------------
@@ -199,11 +204,15 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         conf = assoc.get("confidence")
         anchored = assoc.get("anchored", True)
         synthesized = bool(assoc.get("synthesized"))
+        off_board = bool(assoc.get("off_board"))
         gate_ok = ((conf is None or conf >= conf_min)
                    and assoc.get("index") not in flagged_indices
-                   and anchored)
+                   and anchored
+                   and not off_board)
         if not anchored:
             n_unanchored += 1
+        elif off_board:
+            n_off_board += 1
         elif not gate_ok:
             n_low_confidence += 1
 
@@ -318,6 +327,7 @@ def resolve_with_gemini_slogans(crop_candidates, crop_to_slogan, slogan_years,
         "n_printed_year_gamematch": n_printed_year_gamematch,
         "n_low_confidence": n_low_confidence,
         "n_unanchored": n_unanchored,
+        "n_off_board": n_off_board,
         "n_synth_db_direct_refused": n_synth_db_direct,
         "n_manual": len(crop_candidates) - len(resolutions),
         "majority_year": anchor_year,

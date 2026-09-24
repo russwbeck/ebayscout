@@ -146,6 +146,17 @@ def _twin_guard_enabled() -> bool:
     )
 
 
+def _carpet_guard_enabled() -> bool:
+    """Carpet guard (2026-09-24, buttonmatcher's 128-crop Mellon lot): a crop
+    cut at a Gemini point that reads as background on the button mask never
+    AUTO-confirms and never takes the DB-direct tier, so a phantom on carpet
+    cannot add value to a deal (gemini_geometry.assoc_off_board).  Kill switch
+    BUTTONMATCHER_CARPET_GUARD=0 (shared convention with buttonmatcher)."""
+    return os.environ.get("BUTTONMATCHER_CARPET_GUARD", "1").strip() not in (
+        "0", "false", "False",
+    )
+
+
 def _anchor_gate_enabled() -> bool:
     """Physical anchoring gate on crop→slogan associations (2026-07-16
     shifted-lot incident, buttonmatcher lot "1979 front").  associate_slogans
@@ -925,6 +936,32 @@ def process_pipeline_lot(job_id: str) -> None:
                   f"construction) — AUTO requires a candidate CLIP's own "
                   f"ranking surfaced, not DB-direct.", flush=True)
 
+    # Carpet guard: a crop cut at a Gemini point (recovered or Gemini-led) is
+    # anchored by construction, so the button mask is the one independent look
+    # at whether a button is there. Off-mask → AUTO refused + DB-direct skipped.
+    # Fail-open: a mask failure stamps nothing.
+    _n_off_board = 0
+    if _carpet_guard_enabled():
+        _gp = [ci for ci in crop_to_slogan
+               if ci < len(circle_info) and ggeo.gemini_positioned(circle_info[ci])]
+        if _gp:
+            try:
+                _cg_mask = _dp._prepare_detection_image(_det_img)["mask"]
+                for _ci in _gp:
+                    _c = circle_info[_ci]
+                    _fill = _dp._circle_fill(_cg_mask, _c["x"], _c["y"],
+                                             _c.get("r") or 1)
+                    if ggeo.assoc_off_board(_c, _fill):
+                        crop_to_slogan[_ci]["off_board"] = True
+                        _n_off_board += 1
+            except Exception as _cg_err:
+                print(f"!!! CARPET_GUARD: skipped ({_cg_err})", flush=True)
+        if _n_off_board:
+            print(f">>> PIPELINE CARPET_GUARD: {_n_off_board}/{len(_gp)} "
+                  f"Gemini-positioned crop(s) sit off the button mask "
+                  f"(fill < {ggeo.OFF_BOARD_FILL_MAX}) — AUTO refused.",
+                  flush=True)
+
     # Training-label sidecar (AUTOMATION_VISION / Logger_10 §10): persist the
     # detection-space image + final circle set (with provenance) + Gemini's
     # independent reading to pipeline/labels/, so every pipeline lot becomes a
@@ -1014,7 +1051,7 @@ def process_pipeline_lot(job_id: str) -> None:
             for _ci, _assoc in crop_to_slogan.items():
                 # No CLIP-rank corroboration in this tier, so never act on an
                 # unanchored association (the shifted-lot failure class).
-                if not _assoc.get("anchored", True):
+                if not _assoc.get("anchored", True) or _assoc.get("off_board"):
                     continue
                 _pool = crop_candidates.get(_ci) or []
                 _dbc = pipeline_classify.gemini_db_candidates(

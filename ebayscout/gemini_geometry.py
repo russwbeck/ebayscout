@@ -550,6 +550,45 @@ def assoc_synthesized(circle):
     return str(circle.get("source") or "") in SYNTHESIZED_SOURCES
 
 
+# --- Carpet guard (2026-09-24, the 128-crop Mellon lot) ----------------------
+# Every crop CUT AT A GEMINI POINT — reconcile's recovered misses and the
+# Gemini-led layout the grid fallback builds — is centred on that point, so
+# nothing about its position is independent evidence that a button is there.
+# When Gemini's frame drifts (the 128-crop lot: rows spread up into bare
+# carpet), those crops land on background and are still anchored by
+# construction.  The button mask is evidence that did NOT come from Gemini:
+# measured on that lot's photo, 14 real buttons read fill 0.91–1.00 and 15 of
+# the 21 carpet points read ≤ 0.28 (the other 6 sat where the mask leaks into
+# the carpet, fill 0.59–1.0 — this guard cannot see those).  A Gemini-positioned
+# crop below OFF_BOARD_FILL_MAX never AUTO-confirms: the operator still gets its
+# card, so a real button on a blue-blind mask (measured 0.2 once) costs a click,
+# never a lost button.  ``gemini_led`` is included here although it is not in
+# SYNTHESIZED_SOURCES: it is cut at a Gemini point exactly the same way.
+OFF_BOARD_FILL_MAX = 0.30
+GEMINI_POSITIONED_SOURCES = SYNTHESIZED_SOURCES + ("gemini_led",)
+
+
+def gemini_positioned(circle):
+    """Was this crop cut at a Gemini point (recovered or Gemini-led)?"""
+    if not isinstance(circle, dict):
+        return False
+    return str(circle.get("source") or "") in GEMINI_POSITIONED_SOURCES
+
+
+def assoc_off_board(circle, fill, max_fill=OFF_BOARD_FILL_MAX):
+    """True when a Gemini-positioned crop sits off the button mask — the
+    carpet guard's verdict.  A detected (Hough) crop is never judged here:
+    its position is already independent of Gemini.  Fail-open: an unknown
+    fill (mask unavailable) is NOT off-board, so a lot where the probe fails
+    behaves exactly as before the guard."""
+    if not gemini_positioned(circle) or fill is None:
+        return False
+    try:
+        return float(fill) < float(max_fill)
+    except (TypeError, ValueError):
+        return False
+
+
 def plan_anchor_recovery(final_centers, final_radii, crop_to_slogan, gemini_px,
                          gemini_slogans, median_r, max_frac=0.75):
     """Gemini indices whose slogans should get a SYNTHESIZED crop because their

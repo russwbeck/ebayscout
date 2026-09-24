@@ -402,3 +402,212 @@ def parse_gemini_response(json_text):
         "coord_scale_x": coord_scale_x,
         "coord_scale_y": coord_scale_y,
     }
+
+
+# --- Large-lot split-and-merge (2026-09-24) ----------------------------------
+# One Gem read of a ~90-button lot came back with 128 buttons listed, its rows
+# spread up into bare carpet; the same photo cut into two halves by hand read
+# almost exactly right (43 + 52 crops, 9 skipped).  Fewer buttons per read and
+# less empty frame for Gemini to spread into.  So a large lot is re-read as
+# overlapping strips along its LONG side, and the strip reads are merged back
+# into one analysis in the whole photo's percent frame.  A button on a seam is
+# read twice (the overlap guarantees it is whole in at least one strip); the
+# merge keeps the copy farthest from its own strip's cut edge.
+#
+# Pure and stdlib-only like the rest of this module; the caller owns the pixels
+# and the GCS round-trip.
+
+SPLIT_OVERLAP_FRAC = 0.14
+
+
+def plan_split_tiles(w, h, n_tiles=2, overlap_frac=SPLIT_OVERLAP_FRAC):
+    """Pixel boxes ``(x1, y1, x2, y2)`` for ``n_tiles`` strips along the long
+    side of a ``w`` x ``h`` image.  Each seam is widened by ``overlap_frac`` of
+    the long side (half on each side), so a button up to that size is whole in
+    at least one strip.  Strips never extend past the frame."""
+    w, h = int(w), int(h)
+    n = max(1, int(n_tiles))
+    long_len = h if h >= w else w
+    half = int(round(overlap_frac * long_len / 2.0))
+    boxes = []
+    for i in range(n):
+        a = int(round(i * long_len / n))
+        b = int(round((i + 1) * long_len / n))
+        a = max(0, a - (half if i > 0 else 0))
+        b = min(long_len, b + (half if i < n - 1 else 0))
+        boxes.append((0, a, w, b) if h >= w else (a, 0, b, h))
+    return boxes
+
+
+def _inner_margin(px, py, box, full_w, full_h):
+    """Distance from a point to its strip's nearest CUT edge (an edge that is
+    not the photo's own border); inf when the strip has none."""
+    x1, y1, x2, y2 = box
+    d = []
+    if x1 > 0:
+        d.append(px - x1)
+    if y1 > 0:
+        d.append(py - y1)
+    if x2 < full_w:
+        d.append(x2 - px)
+    if y2 < full_h:
+        d.append(y2 - py)
+    return min(d) if d else float("inf")
+
+
+def _median(vals):
+    v = sorted(vals)
+    if not v:
+        return None
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2.0
+
+
+def merge_tile_analyses(tiles, full_w, full_h):
+    """Merge per-strip analyses into one analysis for the whole photo.
+
+    ``tiles`` is a list of ``{"box": (x1, y1, x2, y2), "analysis": <parsed>}``
+    where each analysis is ``parse_gemini_response`` output for that strip (so
+    each strip's percent/permille scale was already normalized on its own).
+
+    Returns ``(response, telemetry)``: ``response`` is a raw Gem-shaped object
+    (percent coordinates in the WHOLE photo's frame, 1-based indices in reading
+    order) that ``parse_gemini_response`` reads back unchanged; ``telemetry``
+    says what the merge did.
+
+    Duplicates: two points from DIFFERENT strips closer than about one button
+    radius (half the median nearest-neighbour spacing — adjacent real buttons
+    sit about a diameter apart) are one button read twice.  The copy farther
+    from its own strip's cut edge is kept, since the other one is the more
+    likely to be cut off.  Points without x/y cannot be matched and are kept.
+    Flagged entries follow their slogan's index (to the survivor, for a dropped
+    duplicate); a flagged index that names no located slogan is dropped, since
+    it cannot be placed on the photo and a seam cut-off produces exactly that.
+    """
+    fw, fh = float(full_w), float(full_h)
+    pts = []          # located: dict(tile, s, px, py, margin)
+    unlocated = []    # (tile, s)
+    spacings = []
+    for ti, t in enumerate(tiles):
+        x1, y1, x2, y2 = t["box"]
+        tw, th = float(x2 - x1), float(y2 - y1)
+        an = t.get("analysis") or {}
+        tile_pts = []
+        for s in an.get("detected_slogans") or []:
+            if s.get("x") is None or s.get("y") is None:
+                unlocated.append((ti, s))
+                continue
+            px = x1 + s["x"] / 100.0 * tw
+            py = y1 + s["y"] / 100.0 * th
+            e = {"tile": ti, "s": s, "px": px, "py": py,
+                 "margin": _inner_margin(px, py, t["box"], fw, fh)}
+            if s.get("edge_x") is not None and s.get("edge_y") is not None:
+                e["ex"] = x1 + s["edge_x"] / 100.0 * tw
+                e["ey"] = y1 + s["edge_y"] / 100.0 * th
+            if s.get("size") is not None:
+                e["r"] = s["size"] / 100.0 * min(tw, th)
+            tile_pts.append(e)
+        if len(tile_pts) >= 2:
+            nn = [min(((a["px"] - b["px"]) ** 2 + (a["py"] - b["py"]) ** 2) ** 0.5
+                      for b in tile_pts if b is not a) for a in tile_pts]
+            spacings.append(_median(nn))
+        pts.extend(tile_pts)
+
+    sp = _median([v for v in spacings if v])
+    dup_px = 0.5 * sp if sp else 0.04 * min(fw, fh)
+
+    # Cross-strip pairs within dup_px, closest first, one-to-one.
+    cands = []
+    for i, a in enumerate(pts):
+        for j in range(i + 1, len(pts)):
+            b = pts[j]
+            if a["tile"] == b["tile"]:
+                continue
+            d = ((a["px"] - b["px"]) ** 2 + (a["py"] - b["py"]) ** 2) ** 0.5
+            if d <= dup_px:
+                cands.append((d, i, j))
+    cands.sort()
+    survivor = {}     # dropped pts index -> kept pts index
+    used = set()
+    for _d, i, j in cands:
+        if i in used or j in used:
+            continue
+        used.update((i, j))
+        keep, drop = (i, j) if pts[i]["margin"] >= pts[j]["margin"] else (j, i)
+        survivor[drop] = keep
+
+    kept = [k for k in range(len(pts)) if k not in survivor]
+    kept.sort(key=lambda k: (pts[k]["py"], pts[k]["px"]))
+    new_index = {k: n + 1 for n, k in enumerate(kept)}
+    for drop, keep in survivor.items():
+        new_index[drop] = new_index[keep]
+
+    def _pct(v, full):
+        return round(min(100.0, max(0.0, v / full * 100.0)), 3)
+
+    out = []
+    for k in kept:
+        e = pts[k]
+        s = e["s"]
+        o = {"index": new_index[k], "slogan": s.get("slogan"),
+             "x": _pct(e["px"], fw), "y": _pct(e["py"], fh)}
+        if "ex" in e:
+            o["edge_x"] = _pct(e["ex"], fw)
+            o["edge_y"] = _pct(e["ey"], fh)
+        if "r" in e:
+            o["radius"] = round(e["r"] / min(fw, fh) * 100.0, 3)
+        for key in ("size_class", "confidence", "printed_year"):
+            if s.get(key) is not None:
+                o[key] = s[key]
+        out.append(o)
+    nxt = len(out)
+    for _ti, s in unlocated:
+        nxt += 1
+        o = {"index": nxt, "slogan": s.get("slogan")}
+        for key in ("size_class", "confidence", "printed_year"):
+            if s.get(key) is not None:
+                o[key] = s[key]
+        out.append(o)
+
+    # Flagged entries: strip-local index -> merged index via that strip's slogan.
+    by_tile_index = {}
+    for k, e in enumerate(pts):
+        by_tile_index.setdefault((e["tile"], e["s"].get("index")), k)
+    flagged, n_flag_dropped = [], 0
+    for ti, t in enumerate(tiles):
+        for f in (t.get("analysis") or {}).get("flagged_problem_slogans") or []:
+            if not isinstance(f, dict):
+                continue
+            k = by_tile_index.get((ti, f.get("index")))
+            if k is None:
+                n_flag_dropped += 1
+                continue
+            nf = dict(f)
+            nf["index"] = new_index[k]
+            if nf not in flagged:
+                flagged.append(nf)
+
+    response = {
+        "total_button_count": len(out),
+        "blue_background_count": sum(
+            int((t.get("analysis") or {}).get("blue_background_count") or 0)
+            for t in tiles),
+        "white_background_count": sum(
+            int((t.get("analysis") or {}).get("white_background_count") or 0)
+            for t in tiles),
+        "detected_slogans": out,
+        "flagged_problem_slogans": flagged,
+    }
+    telemetry = {
+        "n_tiles": len(tiles),
+        "per_tile": [len((t.get("analysis") or {}).get("detected_slogans") or [])
+                     for t in tiles],
+        "coord_scale": [(t.get("analysis") or {}).get("coord_scale") for t in tiles],
+        "n_merged": len(out),
+        "n_seam_dupes": len(survivor),
+        "dup_px": round(dup_px, 2),
+        "n_flagged_dropped": n_flag_dropped,
+        "blank_tiles": [i for i, t in enumerate(tiles)
+                        if not (t.get("analysis") or {}).get("detected_slogans")],
+    }
+    return response, telemetry
