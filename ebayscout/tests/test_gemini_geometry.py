@@ -509,3 +509,35 @@ def test_synthesized_crop_is_anchored_by_construction():
     assert dist <= 1.0                                   # centred on the point
     assert gg.assoc_anchored(dist, r) is True
     assert gg.assoc_anchored(dist, r, max_frac=0.01) is True   # even absurdly tight
+
+
+# --- Carpet guard (2026-09-24) -------------------------------------------------
+
+def test_off_board_only_judges_crops_cut_at_a_gemini_point():
+    import gemini_geometry as g
+    rec = {"source": "gemini_recovered", "x": 1, "y": 1, "r": 5}
+    led = {"source": "gemini_led", "x": 1, "y": 1, "r": 5}
+    hough = {"x": 1, "y": 1, "r": 5}
+    # measured on the 128-crop lot: carpet ≤ 0.28, real buttons ≥ 0.91
+    assert g.assoc_off_board(rec, 0.0) is True
+    assert g.assoc_off_board(rec, 0.28) is True
+    assert g.assoc_off_board(led, 0.13) is True     # grid-fallback crops too
+    assert g.assoc_off_board(rec, 0.91) is False
+    assert g.assoc_off_board(hough, 0.0) is False   # Hough found it: not Gemini's word
+    assert g.gemini_positioned(led) and not g.gemini_positioned(hough)
+
+
+def test_off_board_fails_open_without_a_fill():
+    import gemini_geometry as g
+    rec = {"source": "gemini_recovered"}
+    assert g.assoc_off_board(rec, None) is False
+    assert g.assoc_off_board(rec, "n/a") is False
+    assert g.assoc_off_board(None, 0.0) is False
+
+
+def test_gemini_led_is_not_silently_added_to_synthesized_sources():
+    """B33's db_direct rule keys on SYNTHESIZED_SOURCES; widening it to the
+    Gemini-led layout is a separate decision from the carpet guard."""
+    import gemini_geometry as g
+    assert g.SYNTHESIZED_SOURCES == ("gemini_recovered",)
+    assert set(g.GEMINI_POSITIONED_SOURCES) == {"gemini_recovered", "gemini_led"}

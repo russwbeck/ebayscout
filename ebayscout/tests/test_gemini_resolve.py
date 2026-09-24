@@ -428,3 +428,41 @@ def test_the_2026_09_16_lot_shape_autos_nothing():
     assert all(res[i]["auto"] is False for i in range(len(slogans)))
     assert res["telemetry"]["n_gemini_confirmed"] == 0
     assert res["telemetry"]["n_synth_db_direct_refused"] == 10
+
+
+# --- Carpet guard: an off-board crop never AUTO-confirms ------------------------
+
+def test_off_board_crop_resolves_but_never_autos():
+    """The 128-crop lot: a crop cut at a Gemini point on bare carpet, whose
+    slogan CLIP happens to rank.  It still resolves (a pre-filled card, never a
+    lost button) but AUTO is refused and it is counted as off-board."""
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_cand("1987", "Soup's On")]},
+        {0: {"slogan": "Soup's On", "confidence": 0.9, "index": 4,
+             "anchored": True, "synthesized": True, "off_board": True}},
+        {"soupson": {"1987"}}, set(), normalize_fn=_norm)
+    assert res[0]["year"] == "1987"
+    assert res[0]["auto"] is False
+    t = res["telemetry"]
+    assert t["n_gemini_confirmed"] == 0
+    assert t["n_off_board"] == 1
+    assert t["n_low_confidence"] == 0 and t["n_unanchored"] == 0
+
+
+def test_off_board_absent_is_the_old_behaviour():
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_cand("1987", "Soup's On")]},
+        {0: {"slogan": "Soup's On", "confidence": 0.9, "index": 4}},
+        {"soupson": {"1987"}}, set(), normalize_fn=_norm)
+    assert res[0]["auto"] is True
+    assert res["telemetry"]["n_off_board"] == 0
+
+
+def test_off_board_repeated_slogan_never_autos_either():
+    """Scenario B (a repeated slogan, pass 2) goes through the same gate."""
+    res = gr.resolve_with_gemini_slogans(
+        {0: [_cand("1987", "Soup's On"), _cand("1999", "Soup's On")]},
+        {0: {"slogan": "Soup's On", "confidence": 0.9, "index": 4,
+             "off_board": True}},
+        {"soupson": {"1987", "1999"}}, set(), normalize_fn=_norm)
+    assert res[0]["auto"] is False

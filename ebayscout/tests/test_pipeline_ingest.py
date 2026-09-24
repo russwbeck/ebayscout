@@ -452,3 +452,159 @@ def test_printed_year_two_digit_marker_forms():
     assert pi._parse_printed_year("00") == 2000
     assert pi._parse_printed_year(90) is None      # no 1990 marker exists
     assert pi._parse_printed_year("'86") is None
+
+
+# --- Large-lot split-and-merge (2026-09-24) ----------------------------------
+
+def _split_an(slogans, flagged=None):
+    """A parse_gemini_response-shaped analysis (percent coords, tile frame)."""
+    return {"detected_slogans": slogans, "flagged_problem_slogans": flagged or [],
+            "blue_background_count": len(slogans), "white_background_count": 0,
+            "coord_scale": "percent"}
+
+
+def _sl(i, slogan, x, y, **kw):
+    d = {"index": i, "slogan": slogan, "x": x, "y": y, "size": None,
+         "size_class": None, "edge_x": None, "edge_y": None,
+         "confidence": 0.9, "printed_year": None}
+    d.update(kw)
+    return d
+
+
+def test_split_tiles_cut_the_long_side_and_overlap_the_seam():
+    import pipeline_ingest as pi
+    # portrait 1500x2000: strips stacked top/bottom, 14% of 2000 = 280 overlap
+    boxes = pi.plan_split_tiles(1500, 2000, 2)
+    assert boxes == [(0, 0, 1500, 1140), (0, 860, 1500, 2000)]
+    # landscape: strips side by side
+    boxes = pi.plan_split_tiles(2000, 1500, 2)
+    assert boxes == [(0, 0, 1140, 1500), (860, 0, 2000, 1500)]
+    # never past the frame, whole frame covered
+    b3 = pi.plan_split_tiles(900, 1600, 3)
+    assert b3[0][1] == 0 and b3[-1][3] == 1600
+    assert all(0 <= y1 < y2 <= 1600 for _x1, y1, _x2, y2 in b3)
+    assert all(b3[i][3] > b3[i + 1][1] for i in range(2))   # every seam overlaps
+
+
+def _lot_tiles(W=1000, H=1000, rows=6, cols=5, jitter=0.0):
+    """A synthetic lot read perfectly by two strips — the seam row(s) are read
+    by BOTH strips.  Returns (tiles, true_centres_px)."""
+    import pipeline_ingest as pi
+    # row 3 sits at y=430, inside the 430..570 seam band: both strips read it
+    true = [(100 + c * 190, 100 + r * 165) for r in range(rows) for c in range(cols)]
+    boxes = pi.plan_split_tiles(W, H, 2)
+    tiles = []
+    for ti, (x1, y1, x2, y2) in enumerate(boxes):
+        sl = []
+        for k, (x, y) in enumerate(true):
+            if y1 <= y < y2:
+                j = jitter if ti else -jitter
+                sl.append(_sl(len(sl) + 1, f"S{k}", (x - x1) / (x2 - x1) * 100,
+                              (y + j - y1) / (y2 - y1) * 100))
+        tiles.append({"box": boxes[ti], "analysis": _split_an(sl)})
+    return tiles, true
+
+
+def test_merge_maps_back_to_the_whole_photo_and_drops_seam_duplicates():
+    import pipeline_ingest as pi
+    tiles, true = _lot_tiles(jitter=6.0)       # the two reads disagree by 12px
+    per_tile = [len(t["analysis"]["detected_slogans"]) for t in tiles]
+    assert sum(per_tile) > len(true)           # the seam row really was read twice
+    resp, tel = pi.merge_tile_analyses(tiles, 1000, 1000)
+    got = resp["detected_slogans"]
+    assert len(got) == len(true) == resp["total_button_count"]
+    assert tel["n_seam_dupes"] == sum(per_tile) - len(true)
+    assert sorted(s["slogan"] for s in got) == sorted(f"S{k}" for k in range(len(true)))
+    for s in got:
+        k = int(s["slogan"][1:])
+        tx, ty = true[k]
+        assert abs(s["x"] * 10 - tx) < 1.0 and abs(s["y"] * 10 - ty) < 7.0
+    assert [s["index"] for s in got] == list(range(1, len(got) + 1))
+
+
+def test_merge_keeps_the_seam_copy_farther_from_its_cut_edge():
+    """A button near a strip's cut edge may be cut off in that strip; the other
+    strip sees it whole.  The whole read is the one to keep."""
+    import pipeline_ingest as pi
+    boxes = pi.plan_split_tiles(1000, 1000, 2)          # cut edges at y=570 / 430
+    (ax1, ay1, ax2, ay2), (bx1, by1, bx2, by2) = boxes
+    y = 555.0                                           # 15px above A's cut edge
+    a = _split_an([_sl(1, "Cut Off", 50, (y - ay1) / (ay2 - ay1) * 100)])
+    b = _split_an([_sl(1, "Whole Read", 50, (y + 4 - by1) / (by2 - by1) * 100),
+                   _sl(2, "Far", 50, 90)])
+    resp, tel = pi.merge_tile_analyses(
+        [{"box": boxes[0], "analysis": a}, {"box": boxes[1], "analysis": b}],
+        1000, 1000)
+    names = [s["slogan"] for s in resp["detected_slogans"]]
+    assert "Whole Read" in names and "Cut Off" not in names
+    assert tel["n_seam_dupes"] == 1
+
+
+def test_merge_never_collapses_two_real_neighbours_in_one_strip():
+    """Dedup is cross-strip only: two touching buttons read by the SAME strip
+    are two buttons, however close."""
+    import pipeline_ingest as pi
+    boxes = pi.plan_split_tiles(1000, 1000, 2)
+    a = _split_an([_sl(1, "L", 40, 50), _sl(2, "R", 42, 50), _sl(3, "Far", 90, 10)])
+    b = _split_an([_sl(1, "Z", 50, 90)])
+    resp, tel = pi.merge_tile_analyses(
+        [{"box": boxes[0], "analysis": a}, {"box": boxes[1], "analysis": b}],
+        1000, 1000)
+    assert len(resp["detected_slogans"]) == 4 and tel["n_seam_dupes"] == 0
+
+
+def test_merged_response_round_trips_through_the_parser():
+    """The merged object is written to GCS and read back by the normal build —
+    it must parse to the same points (percent scale, not re-scaled), and keep
+    confidence / printed year / radius / rim point."""
+    import json as _json
+    import pipeline_ingest as pi
+    boxes = pi.plan_split_tiles(1000, 2000, 2)          # portrait: top/bottom
+    a = _split_an([_sl(1, "Top", 30, 20, size=5.0, edge_x=35.0, edge_y=20.0,
+                       printed_year=1998, confidence=0.6, size_class="large")])
+    b = _split_an([_sl(1, "Bottom", 70, 80)])
+    resp, _tel = pi.merge_tile_analyses(
+        [{"box": boxes[0], "analysis": a}, {"box": boxes[1], "analysis": b}],
+        1000, 2000)
+    out = pi.parse_gemini_response(_json.dumps({"response": resp}))
+    assert out["coord_scale"] == "percent"
+    top, bottom = out["detected_slogans"]
+    assert (top["slogan"], bottom["slogan"]) == ("Top", "Bottom")
+    th = boxes[0][3] - boxes[0][1]                      # 1140
+    assert abs(top["y"] - 0.20 * th / 2000 * 100) < 0.01
+    assert abs(top["x"] - 30) < 0.01
+    assert top["printed_year"] == 1998 and top["confidence"] == 0.6
+    assert top["size_class"] == "large"
+    # radius 5% of the strip's min side (1000) = 50px = 5% of the photo's 1000
+    assert abs(top["size"] - 5.0) < 0.01
+    assert abs(top["edge_x"] - 35.0) < 0.01
+    by1, bh = boxes[1][1], boxes[1][3] - boxes[1][1]
+    assert abs(bottom["y"] - (by1 + 0.8 * bh) / 2000 * 100) < 0.01
+
+
+def test_merge_remaps_flagged_indices_and_drops_unplaceable_ones():
+    import pipeline_ingest as pi
+    boxes = pi.plan_split_tiles(1000, 1000, 2)
+    a = _split_an([_sl(1, "A1", 50, 10), _sl(2, "A2", 20, 10)],
+                  flagged=[{"index": 2, "reason": "smudged"},
+                           {"index": 7, "reason": "cut off at edge"}])
+    b = _split_an([_sl(1, "B1", 50, 90)], flagged=[{"index": 1, "reason": "glare"}])
+    resp, tel = pi.merge_tile_analyses(
+        [{"box": boxes[0], "analysis": a}, {"box": boxes[1], "analysis": b}],
+        1000, 1000)
+    idx = {s["slogan"]: s["index"] for s in resp["detected_slogans"]}
+    flagged = {f["reason"]: f["index"] for f in resp["flagged_problem_slogans"]}
+    assert flagged == {"smudged": idx["A2"], "glare": idx["B1"]}
+    assert tel["n_flagged_dropped"] == 1
+
+
+def test_merge_reports_a_blank_strip():
+    """A strip whose read came back empty must be visible to the caller, which
+    then falls back to the whole-photo read instead of posting half a lot."""
+    import pipeline_ingest as pi
+    boxes = pi.plan_split_tiles(1000, 1000, 2)
+    _resp, tel = pi.merge_tile_analyses(
+        [{"box": boxes[0], "analysis": _split_an([_sl(1, "A", 50, 50)])},
+         {"box": boxes[1], "analysis": pi.parse_gemini_response("not json")}],
+        1000, 1000)
+    assert tel["blank_tiles"] == [1]
