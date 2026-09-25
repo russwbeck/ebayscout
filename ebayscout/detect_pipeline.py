@@ -436,6 +436,11 @@ def _buttons_as_holes(mask, h, w):
     return kept, n_kept, coverage
 
 
+# Saturated-mask fallback: how far above the background's own saturation a
+# pixel must sit to count as a blue button (variant 1b, blue_strict).
+_BG_SAT_MARGIN = 40
+
+
 def _prepare_detection_image(image_bgr, diag_out=None):
     """Shared preprocessing for BOTH the guided and unguided detectors.
 
@@ -591,6 +596,14 @@ def _prepare_detection_image(image_bgr, diag_out=None):
         # buttons on a gray mat), where blue-only keeps only the slogan text
         # (~5% speck coverage) and detection hunted text fragments.
         _fb1, _cov1 = _fb_finish(cv2.inRange(hsv, lower_blue, upper_blue))
+        # Variant 1b — blue, saturation floor ABOVE the background's own: a
+        # white mat under a blue glare cast reads blue at S 67-99 (the 12-button
+        # framed lot, 2026-09-25), inside lower_blue's S>=70, so blue-only
+        # floods with the mat; its buttons read S 134-254.  Lifting the floor
+        # to bg + _BG_SAT_MARGIN keeps the buttons and drops the tinted mat.
+        _lb_strict = lower_blue.copy()
+        _lb_strict[1] = max(int(lower_blue[1]), min(200, int(bg_mean_s) + _BG_SAT_MARGIN))
+        _fb1b, _cov1b = _fb_finish(cv2.inRange(hsv, _lb_strict, upper_blue))
         _fb2, _cov2 = _fb_finish(((hsv[:, :, 2] > bg_mean_v + 60)
                                   & (hsv[:, :, 1] < 80)).astype(np.uint8) * 255)
         # B2: what the two candidate variants actually scored at this fork.
@@ -603,13 +616,21 @@ def _prepare_detection_image(image_bgr, diag_out=None):
         if diag_out is not None:
             diag_out["satfb_blue_cov"]   = round(float(_cov1), 4)
             diag_out["satfb_bright_cov"] = round(float(_cov2), 4)
+            diag_out["satfb_blue_strict_cov"] = round(float(_cov1b), 4)
         # Adopt the first PLAUSIBLE variant: buttons occupy a real fraction of
         # a lot photo, so require >= 8% coverage (the old 2% floor let the
         # text-specks mask through on the white-button lot) and stay below
         # the saturation bound.  Blue-only preferred (dominant button colour).
         _adopt = None
-        for _fb_lbl, _fbm, _fbc in (("blue", _fb1, _cov1),
-                                    ("bright", _fb2, _cov2)):
+        # blue_strict only on a BRIGHT background (the white_bg brightness bar):
+        # a white mat under a colour cast.  On mid-tone / dark backgrounds the
+        # tinted-mat story does not apply, and trying it there regressed five
+        # cast/navy fixture lots (one to an auto-gated miscount).
+        _variants = [("blue", _fb1, _cov1)]
+        if bg_mean_v > 170:
+            _variants.append(("blue_strict", _fb1b, _cov1b))
+        _variants.append(("bright", _fb2, _cov2))
+        for _fb_lbl, _fbm, _fbc in _variants:
             if 0.08 <= _fbc <= _SAT_COVERAGE:
                 _adopt = (_fb_lbl, _fbm, _fbc)
                 break
