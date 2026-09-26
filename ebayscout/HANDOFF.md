@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-09-24)
+# eBay Scout — Session Handoff (latest entry 2026-09-26)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,23 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-09-26 — glare-mat detection fix (shared with buttonmatcher)
+
+PR #104 (merged): `detect_pipeline.py` got buttonmatcher's `detect.py` fix. A
+white mat under a blue glare cast reads S≈74, inside `lower_blue`'s S≥70, so
+the saturated-mask fallback adopted the mat as "buttons". New fallback variant
+`blue_strict` (saturation floor = background S + 40), tried only when the
+background is bright (`bg_mean_v > 170`); ungated it regressed five cast/navy
+fixtures. The fixture (`tinted_white_frame_12.jpg`) and its regression test
+live in buttonmatcher. `diff` the two detectors before touching either.
+
+Everything else from that session was buttonmatcher-only (reference curation
+now runs itself: `/reference refresh`, toss-ups retired, `stop` / `reindex`
+retired) — see buttonmatcher's `HANDOFF.md`, 2026-09-26. The value rule and
+`/reference` do not exist in this service.
 
 ---
 
