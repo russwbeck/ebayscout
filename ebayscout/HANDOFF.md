@@ -9,6 +9,45 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-09-26 (later) — cost review: the ID "secrets" become plain env vars
+
+Branch `claude/save-money-ideas-rearde`, both repos. September's bill through
+~09-25 is $3.93: Artifact Registry $1.82, Cloud Storage $1.38, Secret Manager
+$0.74. Cloud Run's $2.13 is fully covered by its free tier.
+
+**Code.** Secret Manager bills every stored version past the free six (~$0.06 a
+month each). `CHANNEL_ID_EBAY`, `SPREADSHEET_ID` and `LOGGER_ID` are a channel
+ID and two sheet keys, not credentials, so `_get_secret` now returns a
+same-named Cloud Run env var when one is set and falls back to Secret Manager
+otherwise (`_PLAIN_ENV_IDS`, `tests/test_plain_env_ids.py`). Tokens and API keys
+still come only from Secret Manager. The values live on the service config,
+never in this repo (it is public). buttonmatcher does the same for its five.
+
+**Operator, after both merges have deployed, in this order:**
+1. Copy the values onto the services, straight from Secret Manager:
+   ```bash
+   v() { gcloud secrets versions access latest --secret="$1"; }
+   gcloud run services update button-inventory --region=us-east1 \
+     --update-env-vars="CHANNEL_ID_BOT=$(v CHANNEL_ID_BOT),CHANNEL_ID_BUY=$(v CHANNEL_ID_BUY),CHANNEL_ID_DEBUG=$(v CHANNEL_ID_DEBUG),SPREADSHEET_ID=$(v SPREADSHEET_ID),LOGGER_ID=$(v LOGGER_ID)"
+   gcloud run services update ebay-scout --region=us-east1 \
+     --update-env-vars="CHANNEL_ID_EBAY=$(v CHANNEL_ID_EBAY),SPREADSHEET_ID=$(v SPREADSHEET_ID),LOGGER_ID=$(v LOGGER_ID)"
+   ```
+2. Check that both services list them with values, then delete the six
+   secrets. Deleting one before its env var is set breaks the next cold start:
+   the fallback read fails and the import raises.
+
+**Found, not code (operator actions; check whether they were done):**
+- Cloud Storage is 91% Class A operations: 126,062 in ~25 days on a
+  multi-region `US` bucket, which pays $0.01 per 1,000 and gets no free tier.
+  The data itself is 1.4 GB. Neither service polls the bucket; the Chromebook
+  watcher's `pipeline/input/` poll is the likely source.
+- Artifact Registry grew 117% in September: every merge stores a full image and
+  nothing appears to delete old ones (a keep-3-newest cleanup policy was
+  recommended).
+- Unused secrets: `GEMINI_API`, `DRIVE_SA_JSON`, `DRIVE_FOLDER_ID`, `BUCKET_NAME`.
+
+---
+
 ## 2026-09-26 — glare-mat detection fix (shared with buttonmatcher)
 
 PR #104 (merged): `detect_pipeline.py` got buttonmatcher's `detect.py` fix. A
