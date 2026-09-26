@@ -64,7 +64,19 @@ from .utils import (
 # process before forking, so these calls happen once)
 # ---------------------------------------------------------------------------
 
+# Slack channel IDs and Google Sheet keys, not credentials. Secret Manager bills
+# every stored version past the free six, so these are read from a plain Cloud
+# Run env var of the same name when one is set, with Secret Manager as the
+# fallback. Tokens and API keys always come from Secret Manager. The values stay
+# on the service config, not in this repo, which is public.
+_PLAIN_ENV_IDS = frozenset({"CHANNEL_ID_EBAY", "SPREADSHEET_ID", "LOGGER_ID"})
+
+
 def _get_secret(secret_id: str) -> str:
+    if secret_id in _PLAIN_ENV_IDS:
+        value = os.environ.get(secret_id, "").strip()
+        if value:
+            return value
     client = secretmanager.SecretManagerServiceClient()
     name   = f"projects/{config.PROJECT_NUMBER}/secrets/{secret_id}/versions/latest"
     resp   = client.access_secret_version(request={"name": name})

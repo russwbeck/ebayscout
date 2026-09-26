@@ -74,7 +74,7 @@ is two steps: upload a photo → reply `$price | source` → the bot replies
 
 ### 3. GCP Secrets (add to existing Secret Manager)
 ```bash
-# New secrets — EBAY_BOT_TOKEN, SIGNING_SECRET_ES, CHANNEL_ID_EBAY
+# New secrets — EBAY_BOT_TOKEN, SIGNING_SECRET_ES
 # already created via the GCP Console.
 
 # eBay Browse API credentials (both required):
@@ -82,8 +82,17 @@ echo -n "YOUR_EBAY_APP_ID"  | gcloud secrets create EBAY_APP_ID  --data-file=-
 echo -n "YOUR_EBAY_CERT_ID" | gcloud secrets create EBAY_CERT_ID --data-file=-
 
 # The following already exist (created for the original buybot, since decommissioned) — no action needed:
-# GOOGLE_SHEETS_JSON, SPREADSHEET_ID
+# GOOGLE_SHEETS_JSON
 ```
+
+> **IDs are plain env vars, not secrets.** `CHANNEL_ID_EBAY`, `SPREADSHEET_ID`
+> and `LOGGER_ID` are a Slack channel ID and two Google Sheet keys. Secret
+> Manager bills every version past the free six, so they are set on the service
+> (`gcloud run services update ebay-scout --region=us-east1
+> --update-env-vars=CHANNEL_ID_EBAY=…,SPREADSHEET_ID=…,LOGGER_ID=…`) and
+> `_get_secret` reads them ahead of Secret Manager. Keep the values out of this
+> repo, which is public. `cloudbuild.yaml` deploys with `--update-env-vars`,
+> which leaves them in place.
 
 > **Note:** `SIGNING_SECRET_ES` is not used by the batch job (it's only
 > needed for a Slack server that receives and verifies incoming events).
@@ -105,7 +114,7 @@ gcloud storage buckets add-iam-policy-binding \
   --role="roles/storage.objectAdmin"
 
 # Secret Manager access
-for SECRET in EBAY_APP_ID EBAY_CERT_ID EBAY_BOT_TOKEN CHANNEL_ID_EBAY GOOGLE_SHEETS_JSON SPREADSHEET_ID; do
+for SECRET in EBAY_APP_ID EBAY_CERT_ID EBAY_BOT_TOKEN GOOGLE_SHEETS_JSON; do
   gcloud secrets add-iam-policy-binding ${SECRET} \
     --member="serviceAccount:${SA}" \
     --role="roles/secretmanager.secretAccessor"
