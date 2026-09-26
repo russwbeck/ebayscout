@@ -9,6 +9,40 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-09-26 (later) — security pass: every public route now checks auth
+
+A stress test of both services (fuzzing, hostile images, route review,
+`pip-audit`) found these; all patched with tests that fail on the old code.
+Branch `claude/bot-context-window-check-liwewp`.
+
+- **`/run-scan` checked nothing.** The service is public (Slack and eBay call
+  it), so anyone could POST `?year_crawl=1&ignore_seen=1`. It now takes Cloud
+  Scheduler's OIDC token — from this service's runtime account, or
+  `SCHEDULER_SA_EMAIL` — or the `X-Pipeline-Secret` header. **Before the first
+  deploy:** run the `gcloud scheduler jobs describe` check in `DEPLOY.md`; a
+  job on a different account or audience would get 403 and the daily scan
+  would stop. Manual curls now use the secret header (`DEPLOY.md`).
+- **`/test-clip` checked nothing** and fetched any URL, unbounded, then ran
+  CLIP. Now `X-Pipeline-Secret` only, through `download_image`, which stops at
+  25 MB (the scan's downloads too).
+- **Internal routes admitted any 127.0.0.1 caller.** Removed; every self-call
+  already sends the secret. Secrets compare in constant time.
+- **Listing titles went into Slack verbatim** — `> <!channel>` in a title
+  pinged the channel. `notifier._esc` escapes titles and seller names.
+- **`torch.load(weights_only=False)`** on the bucket caches → `True`, as
+  buttonmatcher always had.
+- **`pipeline_ingest`** (shared, byte-identical): NaN/inf/absurd numbers are
+  dropped instead of crashing the lot. **`parse_price`** reads `inf`/`nan` as 0.
+- **Pins:** Pillow 12.3.0, urllib3 2.7.0, idna 3.15. torch 2.2.2 still has
+  advisories, mostly unreachable here; upgrading it moves CLIP numerics, so it
+  is deferred to its own calibrated change.
+
+`DEPLOY.md` said `--no-allow-unauthenticated`; that cannot work with Slack and
+eBay calling the service, and now says so.
+
+---
+
+
 ## 2026-09-26 — glare-mat detection fix (shared with buttonmatcher)
 
 PR #104 (merged): `detect_pipeline.py` got buttonmatcher's `detect.py` fix. A

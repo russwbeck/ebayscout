@@ -69,7 +69,7 @@ def send_undervalued_alert(
 
     header_text = (
         f"🔍 *Undervalued lot found on eBay*\n"
-        f"*<{listing_url}|{_truncate(title, 80)}>*\n"
+        f"*<{listing_url}|{_esc(_truncate(title, 80))}>*\n"
         f"Asking: *${asking_price:.2f}*  |  "
         f"Calculated value: *${lot_value:.2f}*  |  "
         f"Margin: *+${margin:.2f}*"
@@ -96,7 +96,7 @@ def send_undervalued_alert(
         else ""
     )
 
-    seller_text = f"Seller: {seller}"
+    seller_text = f"Seller: {_esc(seller)}"
 
     full_text = "\n\n".join(filter(None, [
         header_text,
@@ -136,7 +136,7 @@ def send_needed_alert(
 
     header_text = (
         f"⭐ *Possible needed button — review the photos*\n"
-        f"*<{listing_url}|{_truncate(title, 80)}>*\n"
+        f"*<{listing_url}|{_esc(_truncate(title, 80))}>*\n"
         f"Asking: *${asking_price:.2f}*  |  {value_note}"
     )
 
@@ -153,7 +153,7 @@ def send_needed_alert(
             needed_lines.append(flag)
 
     needed_text = "\n".join(needed_lines)
-    seller_text = f"Seller: {seller}"
+    seller_text = f"Seller: {_esc(seller)}"
 
     full_text = "\n\n".join(filter(None, [
         header_text,
@@ -247,7 +247,7 @@ def send_backfill_digest(
         for r in needed[:25]:
             bn    = r["best_needed"]
             mark  = "✅" if bn["overall"] >= threshold else "▫️"
-            title = _truncate(r.get("title", ""), 60)
+            title = _esc(_truncate(r.get("title", ""), 60))
             url   = r.get("listing_url", "")
             link  = f"<{url}|{title}>" if url else title
             lines.append(
@@ -342,6 +342,19 @@ def _post_message(slack_token: str, channel: str, text: str) -> None:
         client.chat_postMessage(channel=channel, text=text, mrkdwn=True)
     except SlackApiError as exc:
         print(f"!!! SLACK: Failed to post to {channel}: {exc.response['error']}", flush=True)
+
+
+def _esc(text) -> str:
+    """Escape Slack's mrkdwn control characters in text a seller wrote.
+
+    Listing titles and seller names went into messages verbatim, so a title
+    holding ``> <!channel>`` closed its link early and pinged everyone in the
+    channel, and ``<https://…|here>`` became a link of the seller's choosing
+    (2026-09-26).  Slack asks for exactly these three characters to be escaped.
+    Escape AFTER truncating, so an entity is never cut in half.
+    """
+    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
 
 
 def _truncate(text: str, max_len: int) -> str:

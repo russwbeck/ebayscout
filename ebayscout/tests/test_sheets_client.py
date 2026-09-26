@@ -123,3 +123,11 @@ class TestParsePrice:
 
     def test_invalid_string(self):
         assert sheets_client.parse_price("N/A") == 0.0
+
+
+def test_parse_price_refuses_non_finite():
+    """float() reads these; an infinite price made every lot holding that
+    button a deal alert with an infinite margin."""
+    for raw in ("nan", "NaN", "inf", "-inf", "Infinity", "$inf", "1e999"):
+        assert sheets_client.parse_price(raw) == 0.0, raw
+    assert sheets_client.parse_price("$1.50") == 1.5

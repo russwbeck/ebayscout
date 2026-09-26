@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 
 
 PIPELINE_PREFIX = "pipeline/output/"
@@ -137,22 +138,28 @@ def image_name_for_response(name):
 
 # --- Gemini analysis parsing -------------------------------------------------
 
+# No real coordinate, size or count comes anywhere near this; a value past it
+# (or NaN/inf -- json.loads accepts NaN and Infinity, float() accepts "nan")
+# is treated as missing.  Found 2026-09-26 by fuzzing: a single NaN/inf field
+# crashed synth_box's int() and the large-lot merge, and an Infinity count
+# raised OverflowError out of this parser, which is meant to fail open.  One
+# bad field now drops that field instead of failing the whole lot.
+_MAX_ABS_NUMBER = 1e6
+
+
 def _as_float(v):
     try:
         if v is None or v == "":
             return None
-        return float(v)
-    except (TypeError, ValueError):
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return f if math.isfinite(f) and abs(f) <= _MAX_ABS_NUMBER else None
 
 
 def _as_int(v, default=0):
-    try:
-        if v is None or v == "":
-            return default
-        return int(round(float(v)))
-    except (TypeError, ValueError):
-        return default
+    f = _as_float(v)
+    return default if f is None else int(round(f))
 
 
 # Gemini emits confidence as a categorical label (low/medium/high), not a number.
@@ -238,7 +245,7 @@ def _parse_printed_year(v):
         return None
     try:
         y = int(float(str(v).strip().lstrip("'\u2019")))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if 0 <= y <= 99:
         # two-digit marker: map through the known marker eras only

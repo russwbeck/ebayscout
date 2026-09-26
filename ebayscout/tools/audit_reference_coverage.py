@@ -146,7 +146,7 @@ def _load_reference(vectors_path, text_path):
 
     def _pt(path_or_blob, default_blob):
         if path_or_blob and os.path.exists(path_or_blob):
-            return torch.load(path_or_blob, weights_only=False, map_location="cpu")
+            return torch.load(path_or_blob, weights_only=True, map_location="cpu")
         # Fall back to GCS using the project bucket.
         from google.cloud import storage
         from ebayscout import config
@@ -155,7 +155,7 @@ def _load_reference(vectors_path, text_path):
         with tempfile.TemporaryDirectory() as td:
             local = os.path.join(td, default_blob)
             bucket.blob(default_blob).download_to_filename(local)
-            return torch.load(local, weights_only=False, map_location="cpu")
+            return torch.load(local, weights_only=True, map_location="cpu")
 
     text = _pt(text_path, "text_features.pt")
     vecs = _pt(vectors_path, "vectors.pt")

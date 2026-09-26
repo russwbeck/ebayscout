@@ -153,9 +153,18 @@ gcloud run deploy ebay-scout \
   --memory=4Gi \
   --cpu=2 \
   --timeout=1800 \
-  --no-allow-unauthenticated \
+  --allow-unauthenticated \
   --service-account=${SA}
 ```
+
+> **The service is public, and the app does the auth (2026-09-26).** Slack
+> (`/slack/events`) and eBay (`/ebay/account-deletion`) call it directly and
+> cannot present Google credentials, so `--no-allow-unauthenticated` (what this
+> page used to say) would break both. Every other route checks for itself:
+> `/run-scan` takes Cloud Scheduler's OIDC token or the `X-Pipeline-Secret`
+> header, `/test-clip` and `/pipeline/notify` take `X-Pipeline-Secret`, and the
+> `/internal/*` routes take only the per-process secret. Until 2026-09-26
+> `/run-scan` and `/test-clip` checked nothing.
 
 > **`--timeout=1800` matters.** `/run-scan` **and** `/internal/manual-analysis`
 > run their work **synchronously** inside the request and return 200 only when
@@ -206,6 +215,16 @@ gcloud scheduler jobs create http ebay-scout-daily \
   --oidc-token-audience="${SERVICE_URL}"
 ```
 
+> **The token is checked in the app.** `/run-scan` accepts a Google-signed token
+> only from this service's own runtime account (`${SA}` above — the same one the
+> deploy runs as) and addressed to this service. If the job uses a different
+> account, set `SCHEDULER_SA_EMAIL` on the service to that email (comma-separate
+> several) **before** deploying, or the daily scan gets 403. The token's
+> audience must be this service's URL (the URL the job calls, or `SERVICE_URL`);
+> set `SCHEDULER_AUDIENCE` if the job was created with another. Check both with
+> `gcloud scheduler jobs describe ebay-scout-daily --location=us-east1
+> --format='value(httpTarget.oidcToken.serviceAccountEmail,httpTarget.oidcToken.audience,httpTarget.uri)'`.
+
 > `--attempt-deadline=1800s` (the max for HTTP targets) gives the synchronous
 > scan time to finish before Scheduler considers the attempt failed. If a scan
 > ever exceeds it, Scheduler may retry — but `/run-scan` holds a lock and
@@ -238,7 +257,7 @@ SERVICE_URL=$(gcloud run services describe ebay-scout \
   --region=us-east1 --format='value(status.url)')
 
 curl -X POST "${SERVICE_URL}/run-scan" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
+  -H "X-Pipeline-Secret: $(gcloud secrets versions access latest --secret=PIPELINE_SHARED_SECRET)"
 
 # Check logs
 gcloud logging read \
@@ -272,7 +291,13 @@ windows, not all of eBay's history.
 ```bash
 SERVICE_URL=$(gcloud run services describe ebay-scout \
   --region=us-east1 --format='value(status.url)')
-TOKEN="Authorization: Bearer $(gcloud auth print-identity-token)"
+# The watcher's shared secret (the one mapped to the PIPELINE_SHARED_SECRET env
+# var). A personal `gcloud auth print-identity-token` is refused since
+# 2026-09-26: /run-scan accepts only the scheduler's account or this header.
+# If the Secret Manager name differs, find it with:
+#   gcloud run services describe ebay-scout --region=us-east1 --format=yaml \
+#     | grep -A3 PIPELINE_SHARED_SECRET
+TOKEN="X-Pipeline-Secret: $(gcloud secrets versions access latest --secret=PIPELINE_SHARED_SECRET)"
 
 # 1. PREVIEW — re-evaluate everything visible, fire no real alerts, write
 #    nothing to GCS. Posts ONE digest to the scout Slack channel listing the
