@@ -14,9 +14,10 @@ import json
 import time
 from datetime import date
 
+from google.api_core.exceptions import PreconditionFailed
 from google.cloud import storage
 
-from . import config, pipeline_classify, scan_log as scan_log_util
+from . import config, scan_log as scan_log_util
 from . import crop_vectors as cvec
 
 
@@ -319,25 +320,6 @@ def stage_pipeline_crop(job_id: str, n: int, jpg_bytes: bytes,
         return None
 
 
-def load_staging_policy(bucket) -> tuple[set, bool]:
-    """buttonmatcher's /reference STOP list -> (stopped_entry_ids, readable).
-
-    ``readable`` distinguishes "no stops declared" (blob absent — stage
-    everything) from "could not read the policy" (an error — the caller must NOT
-    assume the list is empty).  That distinction is the whole point for an
-    unattended writer: guessing empty means writing into slogans the operator
-    declared finished."""
-    try:
-        blob = bucket.blob(config.REFERENCE_STAGING_POLICY_BLOB)
-        if not blob.exists():
-            return set(), True                 # no stops declared yet
-        return pipeline_classify.parse_staging_policy(
-            json.loads(blob.download_as_text())), True
-    except Exception as exc:
-        print(f"!!! PIPELINE: stop-staging policy read failed: {exc}", flush=True)
-        return set(), False
-
-
 def _staged_crop_num(crop: dict):
     """The crop's 1-based number, from the manifest or from its temp blob name.
 
@@ -357,6 +339,27 @@ def _staged_crop_num(crop: dict):
         return None
 
 
+def _copy_to_new_name(bucket, src, name_for, max_tries: int = 5) -> str:
+    """Copy ``src`` to ``name_for(0)``, or ``name_for(1)``, ... -- the first name
+    that does not exist yet -- and never over an existing object.
+
+    ``if_generation_match=0`` makes GCS refuse to overwrite (412
+    PreconditionFailed), so a name collision moves on to the next name instead
+    of replacing a staged crop.  A bare copy_blob overwrote silently, and a
+    collision that raised anything else aborted the whole loop below, whose
+    ``finally`` then deleted the crops not yet staged.  Returns the name used.
+    """
+    tried = []
+    for k in range(max_tries):
+        name = name_for(k)
+        try:
+            bucket.copy_blob(src, bucket, name, if_generation_match=0)
+            return name
+        except PreconditionFailed:
+            tried.append(name)
+    raise RuntimeError(f"no free name to copy {src.name} to (tried {tried})")
+
+
 def promote_crops_to_reference_staging(job_id: str, manifest: dict,
                                        bucket_name: str = config.BUCKET_NAME) -> int:
     """YES vote: copy each temp crop into
@@ -373,14 +376,13 @@ def promote_crops_to_reference_staging(job_id: str, manifest: dict,
     candidate back to the embedding the matcher already computed for it, and the
     confirm_log row that labels it.
 
-    Honours buttonmatcher's /reference STOP list: a slogan the operator declared
-    finished never receives another ebayscout crop.  This is the ONE per-slogan
-    gate on ebayscout staging — nothing else here decides a slogan has had enough.
-
-    Fails CLOSED when the policy cannot be read: ebayscout stages unattended, so
-    a transient error must cost a few crops (they recur on the next lot) rather
-    than write into slogans the operator has finished with, which costs manual
-    cleanup of a curated library.
+    No per-slogan gate (2026-09-27).  This used to honour buttonmatcher's
+    /reference STOP list, ``reference/_staging_policy.json``.  buttonmatcher
+    retired ``stop`` on 2026-09-26 and no longer reads or writes that blob, so
+    the gate here froze whatever the list held that day: those slogans could
+    never receive another ebayscout crop, and nothing could lift it.  Deciding
+    what a shelf keeps is now buttonmatcher's value rule, per shelf, per session
+    (DECISIONS.md #32).
 
     ebayscout writes only image FILES here — it never encodes or writes vectors.pt.
     """
@@ -388,19 +390,7 @@ def promote_crops_to_reference_staging(job_id: str, manifest: dict,
     try:
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        stopped, policy_ok = load_staging_policy(bucket)
-        if not policy_ok:
-            print(f"!!! PIPELINE: refusing to stage {len(manifest.get('crops', []))} "
-                  f"crop(s) for job={job_id} — the /reference STOP list is "
-                  f"unreadable and staging fails closed.", flush=True)
-            return 0
-        crops, dropped = pipeline_classify.filter_stopped_crops(
-            manifest.get("crops", []), stopped)
-        if dropped:
-            print(f">>> PIPELINE STAGE_SKIP: {len(dropped)} crop(s) for "
-                  f"{sorted({c.get('entry_id') for c in dropped})} — operator "
-                  f"declared STOP in /reference.", flush=True)
-        for crop in crops:
+        for crop in manifest.get("crops") or []:
             src_name  = crop.get("gcs_name")
             entry_id  = crop.get("entry_id")
             if not src_name or not entry_id:
@@ -409,10 +399,13 @@ def promote_crops_to_reference_staging(job_id: str, manifest: dict,
             if not src.exists():
                 continue
             ts   = int(time.time() * 1000) + staged   # unique ms timestamp
-            dest = (config.REFERENCE_STAGING_PREFIX + entry_id + "/"
-                    + cvec.staged_crop_name(ts, lot=job_id,
-                                            crop_num=_staged_crop_num(crop)))
-            bucket.copy_blob(src, bucket, dest)
+            crop_num = _staged_crop_num(crop)
+            _copy_to_new_name(
+                bucket, src,
+                lambda k, ts=ts, entry_id=entry_id, crop_num=crop_num: (
+                    config.REFERENCE_STAGING_PREFIX + entry_id + "/"
+                    + cvec.staged_crop_name(ts + k, lot=job_id,
+                                            crop_num=crop_num)))
             staged += 1
     except Exception as exc:
         print(f"!!! PIPELINE: promote_crops({job_id}) failed: {exc}", flush=True)

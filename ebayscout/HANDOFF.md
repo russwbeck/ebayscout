@@ -9,6 +9,26 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-09-27 — CI on production pins; no-overwrite copies; stop list retired
+
+Branch `claude/bot-context-window-check-liwewp` (buttonmatcher has a companion
+for the first two).
+
+- **CI installs production's pins.** The workflow reads numpy, OpenCV, Pillow,
+  requests, slack-sdk and gspread straight out of `ebayscout/requirements.txt`
+  (CI had been testing numpy 2.x / OpenCV 5.0 against a 1.26.4 / 4.11 deploy),
+  and fails if a pin disappears.
+- **Staging copies never overwrite.** `_copy_to_new_name` passes
+  `if_generation_match=0`, so GCS answers 412 instead of replacing a crop and
+  the next name is tried.
+- **The STOP list is gone.** buttonmatcher retired `stop` on 2026-09-26, but
+  this service kept honouring `reference/_staging_policy.json`, which froze the
+  slogans it named out of ebayscout staging for good. See DECISIONS.md #32's
+  update. The blob is now read by nothing; delete it whenever
+  (`gcloud storage rm gs://<bucket>/reference/_staging_policy.json`) — optional.
+
+---
+
 ## 2026-09-26 (later) — security pass: every public route now checks auth
 
 A stress test of both services (fuzzing, hostile images, route review,
