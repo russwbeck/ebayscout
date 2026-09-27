@@ -26,6 +26,17 @@ for the first two).
   slogans it named out of ebayscout staging for good. See DECISIONS.md #32's
   update. The blob is now read by nothing; delete it whenever
   (`gcloud storage rm gs://<bucket>/reference/_staging_policy.json`) — optional.
+- **Docs pass (later the same day).** The ten docs shared with buttonmatcher are
+  byte-identical again (buttonmatcher took this repo's 09-17 `gcloud storage`
+  edits; this repo took buttonmatcher's LOGGER_FRONTS A10/A18/A21 corrections,
+  the REFERENCE_SCORING_REVIEW status banner and AUTOMATION_VISION's updated
+  ship-safety rules). `CRAWL_TRIGGER.md` and the operator block below used a
+  personal identity token for `/run-scan`, refused since 09-26; both now send
+  `X-Pipeline-Secret` like DEPLOY.md. `edition_twins.py` /
+  `confusable_slogans.py` docstrings no longer say callers fail open
+  (buttonmatcher's auto gate now fails closed); this service calls neither
+  `should_demote`. CLAUDE.md's shared-file list gained `edition_twins.py` and the
+  `detect_*` helpers.
 
 ---
 
@@ -578,7 +589,9 @@ still need CI.
 
 ```bash
 SERVICE_URL=$(gcloud run services describe ebay-scout --region=us-east1 --format='value(status.url)')
-TOKEN="Authorization: Bearer $(gcloud auth print-identity-token)"
+# A personal identity token is refused since 2026-09-26; use the shared secret
+# (DEPLOY.md, "Smoke Test").
+TOKEN="X-Pipeline-Secret: $(gcloud secrets versions access latest --secret=PIPELINE_SHARED_SECRET)"
 
 # Preview a crawl (posts a Slack digest; with #12, also persists scan_log every 50)
 curl -X POST "${SERVICE_URL}/run-scan?year_crawl=1&dry_run=1&ignore_seen=1" -H "$TOKEN"

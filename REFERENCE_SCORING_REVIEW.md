@@ -5,6 +5,14 @@ buttonmatcher, but ebayscout is the larger source of staged crops. No code was
 changed. Tickets are `RS-xx`; each names the file and function, the fix shape,
 and what "done" looks like.*
 
+> **Status 2026-09-27 — read before acting on the older sections.** `stop` was
+> retired on 2026-09-26 (buttonmatcher #201; ebayscout stopped honouring
+> `reference/_staging_policy.json` in #108), so RS-08, §4.1.4 and every
+> stop-list rule below are history. Retired references are named
+> `<ts>__<source>__<why>` since 2026-09-26, and no copy into the library or
+> `_retired/` can overwrite an object since 2026-09-27. Current behaviour:
+> `REFERENCE_CURATION.md`.
+
 **Evidence used.** The curation code (`reference_review.py`,
 `reference_quality.py`, `reference_dedup.py`, `main.py` `_stage_confirmed_crop`
 → `_reference_begin` → `_ref_auto_replace_pass` → the typed review;
@@ -387,7 +395,7 @@ own record:
 | RS-05 | buttonmatcher | S | margins +3 / 0, per-component junk floors (§4.1.2, 4.1.3) | replaying the 57 decisions: ≥ 19/19 swaps and 4/4 discards reproduced; a unit test pins the replay |
 | RS-06 | buttonmatcher | M | marginal-value scoring: first the leave-one-out retrieval value per reference (§3.7), then the novelty term, redundant-first replace target, intake gate on cosine ≥ 0.97 (§4.2.3, 4.3.3) — **shadow first**: log what it would do beside what the composite does, for two sessions | agreement with typed decisions ≥ the composite's; then flip |
 | RS-07 | buttonmatcher | S | intake-time scoring and at-cap gate (§4.1.1) | review queue per session halves at equal shelf quality (spot-audit 20 shelves) |
-| RS-08 | buttonmatcher | S | auto-stop finished shelves, announced in the header (§4.1.4) | the stop list grows without typing; `unstop` unchanged |
+| RS-08 | buttonmatcher | S | ~~auto-stop finished shelves, announced in the header (§4.1.4)~~ moot: `stop` retired 2026-09-26 | the stop list grows without typing; `unstop` unchanged |
 
 RS-01 and RS-02 are a day together and should ship before anything else: one
 gives the data, the other likely restores the automation that already
@@ -883,12 +891,12 @@ the log rows and the refusal line are unchanged:
 | intake and discard | the **rule's**: marginal value > 0 stages and swaps, ≤ 0 discards |
 | what may enter at all | the **composite's** floor (`clears_floor`: size, exposure, blur), never overridden — §10.3's "the composite survives as a floor only" |
 | which reference a swap displaces | the **composite's** weakest, by the operator's decision of 2026-09-19 and §10.8's 97.7% of references tied at zero. The candidate's marginal value is measured against that same photo, so the number describes the swap performed; the log row carries it as `measured_against`, and `value_target` stays what the rule would have preferred |
-| a discard | **retired**, not deleted: `reference/_retired/<entry>/<ts>__value_discard.jpg`, IC-07's window. An automatic "no" taken on evidence that is uploaded by hand gets 30 days to be looked at |
+| a discard | **retired**, not deleted: `reference/_retired/<entry>/<ts>__value_discard.jpg`, IC-07's window. An automatic "no" taken on evidence that is uploaded by hand gets 30 days to be looked at | *(Named `<ts>__<source>__value_discard.jpg` since 2026-09-26.)*
 | swaps per shelf per pass | **one.** Each marginal value is measured against the shelf as it stands, and after one swap that shelf is gone, so a second positive's number describes a set that no longer exists. It goes to review and next session decides it on fresh evidence |
 | a cold shelf (< 3 winnable held-out crops) | the composite's plan, untouched |
 | evidence older than `CASES_MAX_AGE_DAYS` (30) | the composite's plan, untouched, and the header says so — the operator's own requirement, in their words, "I'll forget to run it" |
 | a shelf whose photos changed since the export, or a table that names none | the composite's plan, untouched, and no rows published at all — see §10.11, which is why this row exists |
-| `stop staging` | moves from the staging gate to the review-queue filter, §10.3: STOP means "do not ask me", never "do not add a clearly better crop". At-cap stopped shelves are scored and swapped and never queued; a **below-cap** stopped shelf is left alone entirely, because every swap this pass can express takes a slot from something and a shelf with room would lose a photo it did not have to lose. `/reference sloganid <id>` overrides the filter — naming a shelf is asking about it |
+| `stop staging` | moves from the staging gate to the review-queue filter, §10.3: STOP means "do not ask me", never "do not add a clearly better crop". At-cap stopped shelves are scored and swapped and never queued; a **below-cap** stopped shelf is left alone entirely, because every swap this pass can express takes a slot from something and a shelf with room would lose a photo it did not have to lose. `/reference sloganid <id>` overrides the filter — naming a shelf is asking about it | *(Superseded 2026-09-26: `stop` is retired outright.)*
 | kill switch | `=shadow` (log only, the default) or `=off` (skip entirely) |
 
 The staleness guard is the one piece here with no evidence behind its threshold:
