@@ -171,8 +171,12 @@ class _FakeBucket:
         self.copies.append(dest)
 
 
-def _promote(crops, job_id="job-9"):
-    """The shipped promote_crops_to_reference_staging, against fakes."""
+def _promote(crops, job_id="job-9", extra=None):
+    """The shipped promote_crops_to_reference_staging, against fakes.
+
+    No stop-list stubs: the gate is gone (2026-09-27), and a promote that still
+    called it would hit a NameError here -- swallowed by its own except -- and
+    stage nothing, which every test below would catch."""
     bucket = _FakeBucket()
 
     class _Client:
@@ -188,13 +192,11 @@ def _promote(crops, job_id="job-9"):
         "time": __import__("time"),
         "json": json,
         "print": lambda *a, **k: None,
-        "load_staging_policy": lambda _b: (set(), True),
         "delete_pipeline_crops": lambda *a, **k: None,
-        "pipeline_classify": type("P", (), {
-            "filter_stopped_crops": staticmethod(lambda cs, st: (cs, []))}),
         "_staged_crop_num": _crop_num(),
         "PreconditionFailed": _PreconditionFailed,
     }
+    ns.update(extra or {})
     # The copy goes through the shipped _copy_to_new_name (no overwrite).
     exec(_source_of(_SEEN_TREE, _SEEN_SRC, "_copy_to_new_name"), ns)
     exec(_source_of(_SEEN_TREE, _SEEN_SRC,
@@ -245,3 +247,32 @@ def test_a_crop_with_no_recoverable_number_still_stages():
                             "entry_id": "421"}])
     assert n2 == 1 and cvec.source_crop(dests2[0]) is None
     assert cvec.source_lot(dests2[0]) == "job-9"
+
+
+# --- the retired stop list (2026-09-27) ------------------------------------------
+
+def test_a_slogan_on_the_retired_stop_list_still_stages():
+    """buttonmatcher retired `stop` on 2026-09-26 and stopped reading or writing
+    reference/_staging_policy.json, but this function kept honouring the file:
+    every slogan it named was frozen out of ebayscout staging for good, with no
+    command left to lift it.  A stop list naming this crop's slogan -- and a
+    filter that would drop it -- must change nothing now."""
+    stop_everything = {
+        "load_staging_policy": lambda _b: ({"421"}, True),
+        "pipeline_classify": type("P", (), {
+            "filter_stopped_crops": staticmethod(lambda cs, st: ([], list(cs)))}),
+    }
+    n, dests = _promote(
+        [{"gcs_name": "pipeline_crops/job-9/3.jpg", "entry_id": "421",
+          "crop_num": 3}], extra=stop_everything)
+    assert n == 1 and len(dests) == 1, (n, dests)
+    assert dests[0].startswith("reference/_staging/421/")
+
+
+def test_the_stop_list_is_not_read_anywhere():
+    pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("seen_items.py", "pipeline_classify.py", "config.py", "main.py"):
+        src = open(os.path.join(pkg, name)).read()
+        for ident in ("load_staging_policy", "parse_staging_policy",
+                      "filter_stopped_crops", "REFERENCE_STAGING_POLICY_BLOB"):
+            assert ident not in src, (name, ident)

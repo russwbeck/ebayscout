@@ -967,6 +967,15 @@ Net: ebayscout's staging now has exactly two gates — the two-independent-signa
 bar (#31) and the operator's STOP list. Nothing else in either service decides on
 its own that a slogan has had enough.
 
+**Update 2026-09-27: the STOP gate is retired here too.** buttonmatcher retired
+`stop` on 2026-09-26 (its #201): the value rule now decides per shelf what stays,
+and `reference/_staging_policy.json` is no longer read or written there. This
+service kept honouring the file, so every slogan it named that day was frozen out
+of ebayscout staging permanently — no `unstop` left to lift it. The read, its
+fail-closed branch, `parse_staging_policy`, `filter_stopped_crops` and
+`REFERENCE_STAGING_POLICY_BLOB` are gone; the #31 bar is ebayscout's one gate.
+The blob itself is now read by nothing and can be deleted.
+
 
 ## 33. SR-07/08: a flag that said nothing, and a mode that no longer exists
 
