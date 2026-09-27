@@ -17,11 +17,12 @@ Branch `claude/bot-context-window-check-liwewp`.
 
 - **`/run-scan` checked nothing.** The service is public (Slack and eBay call
   it), so anyone could POST `?year_crawl=1&ignore_seen=1`. It now takes Cloud
-  Scheduler's OIDC token — from this service's runtime account, or
-  `SCHEDULER_SA_EMAIL` — or the `X-Pipeline-Secret` header. **Before the first
-  deploy:** run the `gcloud scheduler jobs describe` check in `DEPLOY.md`; a
-  job on a different account or audience would get 403 and the daily scan
-  would stop. Manual curls now use the secret header (`DEPLOY.md`).
+  Scheduler's OIDC token or the `X-Pipeline-Secret` header. The live job signs
+  as a dedicated account, `ebay-scout-scheduler@…` (checked 2026-09-27 with the
+  `gcloud scheduler jobs describe` command in `DEPLOY.md`), which is now
+  `config.SCHEDULER_SA_EMAIL`; the first cut trusted only the runtime account
+  and would have 403'd the 9 AM scan. `test_the_live_scheduler_job_is_accepted`
+  pins the job's reported values. Manual curls now use the secret header.
 - **`/test-clip` checked nothing** and fetched any URL, unbounded, then ran
   CLIP. Now `X-Pipeline-Secret` only, through `download_image`, which stops at
   25 MB (the scan's downloads too).

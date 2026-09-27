@@ -111,7 +111,8 @@ SA = "scout@proj.iam.gserviceaccount.com"
 
 
 def _run_scan_ok(headers, claims=None, env=None, runtime_sa=SA, raises=None,
-                 service_url="https://svc.run.app", host="svc.run.app"):
+                 service_url="https://svc.run.app", host="svc.run.app",
+                 config_sa=""):
     def verify(token, request):
         if raises:
             raise raises
@@ -132,6 +133,7 @@ def _run_scan_ok(headers, claims=None, env=None, runtime_sa=SA, raises=None,
             "hmac": hmac, "_INTERNAL_SECRET": "int", "_PIPELINE_SHARED_SECRET": "op",
             "_SERVICE_URL": service_url, "_runtime_sa_email": lambda: runtime_sa,
             "os": types.SimpleNamespace(environ=env or {}),
+            "config": types.SimpleNamespace(SCHEDULER_SA_EMAIL=config_sa),
             "print": lambda *a, **k: None})
         return g["_run_scan_authorized"](_Req(headers, host))
     finally:
@@ -188,8 +190,39 @@ def test_scheduler_sa_env_overrides_the_runtime_account():
     assert _run_scan_ok(BEARER, claims=GOOD, env=env) is False
 
 
+def test_the_env_var_replaces_the_config_account_too():
+    cfg = "cfg@proj.iam.gserviceaccount.com"
+    env = {"SCHEDULER_SA_EMAIL": "sched@proj.iam.gserviceaccount.com"}
+    assert _run_scan_ok(BEARER, claims=dict(GOOD, email=cfg), env=env,
+                        config_sa=cfg) is False
+
+
 def test_no_known_scheduler_account_refuses_every_token():
     assert _run_scan_ok(BEARER, claims=GOOD, runtime_sa="") is False
+
+
+def test_the_live_scheduler_job_is_accepted():
+    """The live ebay-scout-daily job, as `gcloud scheduler jobs describe`
+    reported it on 2026-09-27: it signs as a DEDICATED account, not the
+    service's runtime account, with the service URL as audience, calling
+    /run-scan on that URL.  The first cut of this check trusted only the
+    runtime account, so the 9 AM scan would have gone 403 on deploy."""
+    sys.path.insert(0, os.path.dirname(PKG))
+    from ebayscout import config
+    job_sa = "ebay-scout-scheduler@project-60d488c5-9c8e-4acc-aac.iam.gserviceaccount.com"
+    job_aud = "https://ebay-scout-404960106109.us-east1.run.app"
+    assert config.SCHEDULER_SA_EMAIL == job_sa
+    build = open(os.path.join(PKG, "cloudbuild.yaml")).read()
+    assert f"SERVICE_URL={job_aud}" in build, "SERVICE_URL no longer the job's audience"
+    claims = {"email": job_sa, "email_verified": True, "aud": job_aud}
+    assert _run_scan_ok(BEARER, claims=claims, config_sa=config.SCHEDULER_SA_EMAIL,
+                        runtime_sa="404960106109-compute@developer.gserviceaccount.com",
+                        service_url=job_aud,
+                        host="ebay-scout-404960106109.us-east1.run.app") is True
+    # ...and with no SERVICE_URL at all, the host the job calls still matches.
+    assert _run_scan_ok(BEARER, claims=claims, config_sa=config.SCHEDULER_SA_EMAIL,
+                        runtime_sa="", service_url="",
+                        host="ebay-scout-404960106109.us-east1.run.app") is True
 
 
 def test_an_unverifiable_token_is_refused():

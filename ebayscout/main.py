@@ -355,8 +355,9 @@ def _scheduler_token_ok(token: str, host: str) -> bool:
     """Cloud Scheduler's OIDC token: Google-signed, from an allowed service
     account, addressed to this service.
 
-    Allowed accounts: SCHEDULER_SA_EMAIL (comma-separated) or, when that is
-    unset, this service's own runtime account.  The scheduler's audience is the
+    Allowed accounts: the SCHEDULER_SA_EMAIL env var (comma-separated) when set;
+    otherwise config.SCHEDULER_SA_EMAIL -- the live job's account -- plus this
+    service's own runtime account.  The scheduler's audience is the
     service URL (DEPLOY.md: --oidc-token-audience="${SERVICE_URL}"), and it calls
     that same URL, so the request's own host is accepted beside SERVICE_URL /
     SCHEDULER_AUDIENCE -- the account check is what an outsider cannot pass.
@@ -364,8 +365,8 @@ def _scheduler_token_ok(token: str, host: str) -> bool:
     allowed = {e.strip() for e in
                os.environ.get("SCHEDULER_SA_EMAIL", "").split(",") if e.strip()}
     if not allowed:
-        sa = _runtime_sa_email()
-        allowed = {sa} if sa else set()
+        allowed = {e for e in (getattr(config, "SCHEDULER_SA_EMAIL", ""),
+                               _runtime_sa_email()) if e}
     if not allowed:
         print("!!! AUTH: bearer token refused — no scheduler service account "
               "known (set SCHEDULER_SA_EMAIL).", flush=True)

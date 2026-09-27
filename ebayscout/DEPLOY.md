@@ -216,10 +216,12 @@ gcloud scheduler jobs create http ebay-scout-daily \
 ```
 
 > **The token is checked in the app.** `/run-scan` accepts a Google-signed token
-> only from this service's own runtime account (`${SA}` above — the same one the
-> deploy runs as) and addressed to this service. If the job uses a different
-> account, set `SCHEDULER_SA_EMAIL` on the service to that email (comma-separate
-> several) **before** deploying, or the daily scan gets 403. The token's
+> only from `config.SCHEDULER_SA_EMAIL` — the live job's dedicated account,
+> `ebay-scout-scheduler@…`, read off the job on 2026-09-27 — or this service's
+> own runtime account, and only when addressed to this service. The
+> `SCHEDULER_SA_EMAIL` env var (comma-separated) replaces both. If the job is
+> ever recreated under another account, update one of them **before** that
+> deploy, or the daily scan gets 403. The token's
 > audience must be this service's URL (the URL the job calls, or `SERVICE_URL`);
 > set `SCHEDULER_AUDIENCE` if the job was created with another. Check both with
 > `gcloud scheduler jobs describe ebay-scout-daily --location=us-east1
