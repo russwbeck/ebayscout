@@ -151,14 +151,23 @@ class _FakeBlob:
         pass
 
 
+class _PreconditionFailed(Exception):
+    pass
+
+
 class _FakeBucket:
+    """copy_blob honours if_generation_match=0 as GCS does (412 when the
+    destination exists), so a name collision shows up here as it would live."""
+
     def __init__(self):
         self.copies = []
 
     def blob(self, name):
         return _FakeBlob(name)
 
-    def copy_blob(self, src, bucket, dest):
+    def copy_blob(self, src, bucket, dest, if_generation_match=None):
+        if if_generation_match == 0 and dest in self.copies:
+            raise _PreconditionFailed(dest)
         self.copies.append(dest)
 
 
@@ -184,7 +193,10 @@ def _promote(crops, job_id="job-9"):
         "pipeline_classify": type("P", (), {
             "filter_stopped_crops": staticmethod(lambda cs, st: (cs, []))}),
         "_staged_crop_num": _crop_num(),
+        "PreconditionFailed": _PreconditionFailed,
     }
+    # The copy goes through the shipped _copy_to_new_name (no overwrite).
+    exec(_source_of(_SEEN_TREE, _SEEN_SRC, "_copy_to_new_name"), ns)
     exec(_source_of(_SEEN_TREE, _SEEN_SRC,
                     "promote_crops_to_reference_staging"), ns)
     n = ns["promote_crops_to_reference_staging"](

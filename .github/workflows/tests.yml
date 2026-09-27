@@ -37,10 +37,23 @@ jobs:
         # absent, so until this line it was a guard that never ran — the exact
         # failure this workflow exists to end, and the guard whose absence cost
         # this service two months of label sidecars.
+        #
+        # Everything production also installs comes in at the version production
+        # pins, read straight out of ebayscout/requirements.txt so the two cannot
+        # drift.  Until 2026-09-27 these were unpinned: CI tested numpy 2.x and
+        # OpenCV 5.0 while Cloud Run ran numpy 1.26.4 and OpenCV 4.11.  A pin that
+        # disappears from requirements.txt fails here rather than quietly
+        # falling back to "latest".  openpyxl is test-only (the goal-tracker
+        # tool), so it has no production pin to follow.
         run: |
           python -m pip install --upgrade pip
-          pip install pytest numpy opencv-python-headless Pillow openpyxl \
-                      requests slack_sdk gspread pyflakes
+          pins=$(grep -E '^(numpy|opencv-python-headless|pillow|requests|slack-sdk|gspread)==' ebayscout/requirements.txt)
+          if [ "$(echo "$pins" | grep -c '==')" -ne 6 ]; then
+            echo "ebayscout/requirements.txt must pin numpy, opencv-python-headless, pillow, requests, slack-sdk and gspread; found: $pins"
+            exit 1
+          fi
+          echo "Production pins: $pins"
+          pip install pytest pyflakes openpyxl $pins
 
       - name: Run the test suite
         # pytest over the whole tests/ tree, NOT the run_*.py loop this used to
