@@ -100,14 +100,31 @@ def _drop_subfeatures(circles, tag=""):
         print(f">>> IMAGE: tiny-guard{tag} — dropped {n_dropped} sub-button "
               f"circle(s) of {len(circles)} → {len(kept)}", flush=True)
     return kept, n_dropped
-def download_image(url: str, timeout: int = 15) -> bytes:
+# eBay serves listing photos at a few hundred KB; nothing legitimate comes close.
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+
+
+def download_image(url: str, timeout: int = 15,
+                   max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
     """
     Download an image from a URL and return raw bytes.
-    Raises requests.HTTPError on non-2xx status.
+    Raises requests.HTTPError on non-2xx status, and ValueError past
+    ``max_bytes``: the body used to be read whole with no limit, so one huge
+    response could take the container's memory (2026-09-26).
     """
     resp = requests.get(url, timeout=timeout, stream=True)
     resp.raise_for_status()
-    return resp.content
+    declared = str(resp.headers.get("Content-Length") or "")
+    if declared.isdigit() and int(declared) > max_bytes:
+        resp.close()
+        raise ValueError(f"image is {declared} bytes, over the {max_bytes} cap")
+    buf = bytearray()
+    for chunk in resp.iter_content(chunk_size=64 * 1024):
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            resp.close()
+            raise ValueError(f"image is over the {max_bytes}-byte cap")
+    return bytes(buf)
 
 
 def _score_solution(circles: list, mask: np.ndarray, fill_threshold: float,

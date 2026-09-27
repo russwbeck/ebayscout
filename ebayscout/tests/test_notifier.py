@@ -228,3 +228,44 @@ class TestLookalikeFlag:
                 needed_buttons=needed, asking_price=15.0, lot_value=30.0)
         text = mock_client.chat_postMessage.call_args[1].get("text", "")
         assert "look-alike" not in text
+
+
+class TestSellerTextIsEscaped:
+    """Listing titles and seller names are written by sellers.  Sent verbatim, a
+    title holding ``> <!channel>`` closed its link and pinged the whole channel,
+    and ``<https://…|here>`` became a link of the seller's choosing."""
+
+    HOSTILE = {"title": "PSU lot > <!channel> see <https://evil.example|here> & more",
+               "listing_url": "https://www.ebay.com/itm/1",
+               "seller": "<!here>"}
+
+    def _sent(self, send, **kw):
+        captured = {}
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.side_effect = lambda **k: captured.update(k)
+        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+            send(slack_token="xoxb-fake", channel="#c", listing=self.HOSTILE, **kw)
+        return captured["text"]
+
+    def _assert_inert(self, text):
+        assert "<!channel>" not in text and "<!here>" not in text, text
+        assert "<https://evil.example" not in text, text
+        assert "&lt;!channel&gt;" in text and "&amp; more" in text, text
+        # the listing's own link still renders
+        assert "<https://www.ebay.com/itm/1|" in text, text
+
+    def test_undervalued_alert(self):
+        self._assert_inert(self._sent(
+            notifier.send_undervalued_alert, matches=FAKE_MATCHES, lot_value=7.5,
+            asking_price=5.0, margin=2.5, unmatched_count=0))
+
+    def test_needed_alert(self):
+        self._assert_inert(self._sent(
+            notifier.send_needed_alert, needed_buttons=FAKE_MATCHES,
+            asking_price=5.0, lot_value=7.5))
+
+    def test_truncation_never_splits_an_entity(self):
+        title = "x" * 78 + "&<>"
+        out = notifier._esc(notifier._truncate(title, 80))
+        assert out.endswith("&amp;…") or "&amp;" in out, out
+        assert "&am…" not in out and "&l…" not in out

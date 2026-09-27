@@ -12,6 +12,7 @@ Expected sheet columns (case-insensitive):
 """
 
 import json
+import math
 import re
 
 import gspread
@@ -146,12 +147,15 @@ def get_buy_decision(
 def parse_price(price_str: str) -> float:
     """
     Convert a price string like '$1.50' or '1.50' to float.
-    Returns 0.0 if the string is empty or unparseable.
+    Returns 0.0 if the string is empty or unparseable -- including "nan",
+    "inf" and "Infinity", which float() accepts: an infinite price made every
+    lot holding that button an alert with an infinite margin.
     """
     try:
-        return float(price_str.replace("$", "").strip())
+        v = float(price_str.replace("$", "").strip())
     except (ValueError, AttributeError):
         return 0.0
+    return v if math.isfinite(v) else 0.0
 
 
 # ---------------------------------------------------------------------------

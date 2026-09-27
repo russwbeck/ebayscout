@@ -608,3 +608,39 @@ def test_merge_reports_a_blank_strip():
          {"box": boxes[1], "analysis": pi.parse_gemini_response("not json")}],
         1000, 1000)
     assert tel["blank_tiles"] == [1]
+
+
+# --- non-finite and absurd numbers (fuzzing, 2026-09-26) -----------------------
+# json.loads accepts NaN and Infinity, and float() accepts "nan"/"inf".  One such
+# field used to crash the whole lot: NaN/inf coordinates reached synth_box's
+# int(), a 1e300 coordinate overflowed the large-lot merge's squared distances,
+# and an Infinity count raised OverflowError out of this fail-open parser.
+
+def test_a_non_finite_or_absurd_coordinate_is_dropped_not_fatal():
+    an = pi.parse_gemini_response({"response": {"detected_slogans": [
+        {"slogan": "A", "x": "nan", "y": 50, "size": "inf"},
+        {"slogan": "B", "x": 1e300, "y": 20, "edge_x": float("-inf")},
+        {"slogan": "C", "x": "12.5", "y": "40"},
+    ]}})
+    got = [(s["slogan"], s["x"], s["y"]) for s in an["detected_slogans"]]
+    assert got == [("A", None, 50.0), ("B", None, 20.0), ("C", 12.5, 40.0)], got
+    assert an["detected_slogans"][0]["size"] is None
+    assert an["detected_slogans"][1]["edge_x"] is None
+
+
+def test_infinite_counts_and_years_fail_open():
+    an = pi.parse_gemini_response(
+        '{"response": {"total_button_count": Infinity, "detected_slogans": '
+        '[{"slogan": "A", "index": Infinity, "printed_year": 1e999}]}}')
+    assert an["total_button_count"] == 0
+    s = an["detected_slogans"][0]
+    assert s["index"] == 1 and s["printed_year"] is None
+
+
+def test_a_merge_survives_what_the_parser_lets_through():
+    boxes = pi.plan_split_tiles(1000, 2000, 2)
+    bad = pi.parse_gemini_response({"response": {"detected_slogans": [
+        {"slogan": "A", "x": 1e300, "y": 1e300}, {"slogan": "B", "x": 50, "y": 50}]}})
+    merged, tel = pi.merge_tile_analyses(
+        [{"box": b, "analysis": bad} for b in boxes], 1000, 2000)
+    assert tel["n_merged"] == len(merged["detected_slogans"])

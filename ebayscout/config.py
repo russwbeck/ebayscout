@@ -13,6 +13,18 @@ from .utils import build_era_queries
 BUCKET_NAME    = "60d488c5-9c8e-4acc-aac-button-data"
 PROJECT_NUMBER = "404960106109"
 
+# --- Cloud Scheduler identity ---
+# The account the daily ebay-scout-daily job signs its OIDC token as, read off
+# the live job on 2026-09-27 (`gcloud scheduler jobs describe ebay-scout-daily
+# --location=us-east1 --format='value(httpTarget.oidcToken.serviceAccountEmail)'`).
+# /run-scan accepts a bearer token only from this account (or the service's own
+# runtime account).  Not a secret -- an identity.  If the job's account ever
+# changes, update this or set the SCHEDULER_SA_EMAIL env var (comma-separated),
+# which replaces it; otherwise the 9 AM scan gets 403.
+SCHEDULER_SA_EMAIL = (
+    "ebay-scout-scheduler@project-60d488c5-9c8e-4acc-aac.iam.gserviceaccount.com"
+)
+
 # --- Service base URL (this Cloud Run service's own public URL) ---
 # Used to build the eBay account-deletion endpoint URL (EBAY_DELETION_ENDPOINT
 # below). Must match the deployed service URL. Override at runtime with the

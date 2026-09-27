@@ -13,7 +13,7 @@ Interaction flow:
 
 import contextlib
 import datetime
-import ipaddress
+import hmac
 import os
 import time
 import threading
@@ -308,6 +308,116 @@ def _ensure_clip_loaded() -> bool:
 flask_app = Flask(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Request auth (2026-09-26 security pass)
+# ---------------------------------------------------------------------------
+# The service is public -- Slack's /crawl and eBay's account-deletion callback
+# both need it to be -- so the app checks every non-Slack route itself.  Before
+# this, /run-scan and /test-clip checked nothing: anyone could start the costly
+# crawls (?year_crawl / ?ignore_seen) or make the service fetch any URL and run
+# CLIP on it.  The internal routes also admitted any 127.0.0.1 caller; every
+# self-call already sends the secret, so that exception served nothing and was
+# the one door a request forgery would use.
+
+def _secret_matches(provided, expected) -> bool:
+    """Constant-time header check; an unset (empty) secret never matches."""
+    if not provided or not expected:
+        return False
+    return hmac.compare_digest(str(provided).encode("utf-8"),
+                               str(expected).encode("utf-8"))
+
+
+def _internal_request_ok(req) -> bool:
+    """True when ``req`` carries this process's X-Internal-Secret."""
+    return _secret_matches(req.headers.get("X-Internal-Secret", ""),
+                           _INTERNAL_SECRET)
+
+
+def _operator_request_ok(req) -> bool:
+    """A manual call from the operator: the watcher's shared secret, which the
+    operator can read from Secret Manager (see DEPLOY.md), or an internal call."""
+    return (_internal_request_ok(req)
+            or _secret_matches(req.headers.get("X-Pipeline-Secret", ""),
+                               _PIPELINE_SHARED_SECRET))
+
+
+_runtime_sa: list[str] = []      # cache for _runtime_sa_email (success only)
+
+
+def _runtime_sa_email() -> str:
+    """This service's own runtime service account, from the metadata server.
+    DEPLOY.md creates the Scheduler job with the same account, so it is the
+    default the scheduler token is checked against.  "" if unavailable."""
+    if _runtime_sa:
+        return _runtime_sa[0]
+    try:
+        r = requests.get(
+            "http://metadata.google.internal/computeMetadata/v1/instance/"
+            "service-accounts/default/email",
+            headers={"Metadata-Flavor": "Google"}, timeout=2)
+        email = r.text.strip() if r.ok else ""
+    except Exception:
+        email = ""
+    if email:
+        _runtime_sa.append(email)
+    return email
+
+
+def _scheduler_token_ok(token: str, host: str) -> bool:
+    """Cloud Scheduler's OIDC token: Google-signed, from an allowed service
+    account, addressed to this service.
+
+    Allowed accounts: the SCHEDULER_SA_EMAIL env var (comma-separated) when set;
+    otherwise config.SCHEDULER_SA_EMAIL -- the live job's account -- plus this
+    service's own runtime account.  The scheduler's audience is the
+    service URL (DEPLOY.md: --oidc-token-audience="${SERVICE_URL}"), and it calls
+    that same URL, so the request's own host is accepted beside SERVICE_URL /
+    SCHEDULER_AUDIENCE -- the account check is what an outsider cannot pass.
+    """
+    allowed = {e.strip() for e in
+               os.environ.get("SCHEDULER_SA_EMAIL", "").split(",") if e.strip()}
+    if not allowed:
+        allowed = {e for e in (getattr(config, "SCHEDULER_SA_EMAIL", ""),
+                               _runtime_sa_email()) if e}
+    if not allowed:
+        print("!!! AUTH: bearer token refused — no scheduler service account "
+              "known (set SCHEDULER_SA_EMAIL).", flush=True)
+        return False
+    # Scheduler's default audience, when the job sets none, is the full target
+    # URL -- so the /run-scan form of each base is accepted too.
+    bases = [b.rstrip("/") for b in (_SERVICE_URL, f"https://{host}" if host else "")
+             if b]
+    audiences = {a.rstrip("/") for a in (
+        [os.environ.get("SCHEDULER_AUDIENCE", "").strip()] + bases
+        + [f"{b}/run-scan" for b in bases]) if a}
+    try:
+        from google.oauth2 import id_token as _idtok
+        from google.auth.transport import requests as _greq
+        # audience=None: signature, expiry and issuer only; audience below.
+        claims = _idtok.verify_oauth2_token(token, _greq.Request())
+    except Exception as exc:
+        print(f"!!! AUTH: bad OIDC token: {exc}", flush=True)
+        return False
+    if claims.get("email") not in allowed or not claims.get("email_verified"):
+        print(f"!!! AUTH: token from {claims.get('email')!r} is not an allowed "
+              f"scheduler account.", flush=True)
+        return False
+    if str(claims.get("aud") or "").rstrip("/") not in audiences:
+        print(f"!!! AUTH: token audience {claims.get('aud')!r} is not this "
+              f"service.", flush=True)
+        return False
+    return True
+
+
+def _run_scan_authorized(req) -> bool:
+    """/run-scan: Cloud Scheduler's token, or the operator's shared secret."""
+    if _operator_request_ok(req):
+        return True
+    auth = req.headers.get("Authorization", "")
+    return (auth.startswith("Bearer ")
+            and _scheduler_token_ok(auth.split(" ", 1)[1], req.host))
+
+
 @flask_app.route("/run-scan", methods=["POST"])
 def run_scan():
     """
@@ -352,8 +462,13 @@ def run_scan():
                       run's IDs) or standalone (skips the general search). Pair
                       with ?limit=N for a big ID list; live (omit dry_run) to
                       persist records and advance the chunk cursor.
+
+    Auth: Cloud Scheduler's OIDC token or the X-Pipeline-Secret header (see
+    _run_scan_authorized; DEPLOY.md has the manual curl).
     """
     global buy_rules
+    if not _run_scan_authorized(request):
+        return jsonify({"status": "forbidden"}), 403
 
     def _truthy(v: str | None) -> bool:
         return (v or "").strip().lower() in ("1", "true", "yes", "on")
@@ -489,22 +604,13 @@ def handle_crawl_command(ack, body):
     threading.Thread(target=_kick, daemon=True).start()
 
 
-def _is_localhost(remote_addr: str | None) -> bool:
-    try:
-        return ipaddress.ip_address(remote_addr or "").is_loopback
-    except ValueError:
-        return False
-
-
 @flask_app.route("/internal/crawl", methods=["POST"])
 def internal_crawl():
     """Run the on-demand2 N-lot search synchronously in this request so Cloud Run
     keeps CPU allocated for the whole run. N comes from ?n= (clamped to
-    1..CRAWL_MAX_LOTS_CAP). Auth: per-startup X-Internal-Secret header, or a
-    localhost caller (local dev). Mirrors buttonmatcher /internal/match."""
-    provided     = request.headers.get("X-Internal-Secret", "")
-    from_localhost = _is_localhost(request.remote_addr)
-    if provided != _INTERNAL_SECRET and not from_localhost:
+    1..CRAWL_MAX_LOTS_CAP). Auth: per-startup X-Internal-Secret header.
+    Mirrors buttonmatcher /internal/match."""
+    if not _internal_request_ok(request):
         return jsonify({"status": "forbidden"}), 403
 
     cap = config.CRAWL_MAX_LOTS_CAP
@@ -592,19 +698,11 @@ def _restrict_years_from_ctx(ctx: dict, _cm) -> set[int] | None:
 @flask_app.route("/pipeline/notify", methods=["POST"])
 def pipeline_notify():
     """Trigger entrypoint for the Gemini pipeline. Fast-acks 204, then kicks
-    /internal/pipeline (CPU-hot) in a thread. Auth: X-Pipeline-Secret (watcher),
-    internal secret, or localhost. Body: {"object": "...response.json"} or a
+    /internal/pipeline (CPU-hot) in a thread. Auth: X-Pipeline-Secret (watcher)
+    or the internal secret. Body: {"object": "...response.json"} or a
     Pub/Sub envelope. Ignores non-response objects and objects that belong to
     another service (no ebayscout prefix and no pending-context blob)."""
-    provided       = request.headers.get("X-Pipeline-Secret", "")
-    internal       = request.headers.get("X-Internal-Secret", "")
-    from_localhost = _is_localhost(request.remote_addr)
-    authed = (
-        (_PIPELINE_SHARED_SECRET and provided == _PIPELINE_SHARED_SECRET)
-        or internal == _INTERNAL_SECRET
-        or from_localhost
-    )
-    if not authed:
+    if not _operator_request_ok(request):
         return jsonify({"status": "forbidden"}), 403
 
     body = request.get_json(silent=True) or {}
@@ -650,9 +748,8 @@ def pipeline_notify():
 @flask_app.route("/internal/pipeline", methods=["POST"])
 def internal_pipeline():
     """Run process_pipeline_lot synchronously so Cloud Run keeps CPU allocated
-    for detection + CLIP. Auth: internal secret / localhost."""
-    provided = request.headers.get("X-Internal-Secret", "")
-    if provided != _INTERNAL_SECRET and not _is_localhost(request.remote_addr):
+    for detection + CLIP. Auth: internal secret."""
+    if not _internal_request_ok(request):
         return jsonify({"status": "forbidden"}), 403
     body   = request.get_json(silent=True) or {}
     job_id = body.get("job_id")
@@ -684,9 +781,9 @@ def internal_pipeline():
 @flask_app.route("/internal/pipelinetest", methods=["GET"])
 def internal_pipelinetest():
     """Run the full pipeline path against an existing GCS object, for live
-    verification without the watcher. ?object=pipeline/output/<f>.png.response.json"""
-    provided = request.headers.get("X-Internal-Secret", "")
-    if provided != _INTERNAL_SECRET and not _is_localhost(request.remote_addr):
+    verification without the watcher. ?object=pipeline/output/<f>.png.response.json
+    Auth: internal secret."""
+    if not _internal_request_ok(request):
         return jsonify({"status": "forbidden"}), 403
     name = request.args.get("object", "")
     if not ping.is_response_json(name):
@@ -1430,10 +1527,14 @@ def test_clip():
     Debug endpoint: download one image, run detect+match, return raw per-crop
     scores (threshold=0.0 so every crop reports its actual score).
 
-    Usage — pass either an eBay item ID or a direct image URL:
-      curl "https://<service>/test-clip?item_id=v1|318369928679|0"
-      curl "https://<service>/test-clip?url=<image_url>"
+    Usage — pass either an eBay item ID or a direct image URL, with the
+    watcher's shared secret (it checked nothing until 2026-09-26, so anyone
+    could make the service fetch any URL and run CLIP on it):
+      curl -H "X-Pipeline-Secret: $SECRET" "https://<service>/test-clip?item_id=v1|318369928679|0"
+      curl -H "X-Pipeline-Secret: $SECRET" "https://<service>/test-clip?url=<image_url>"
     """
+    if not _operator_request_ok(request):
+        return jsonify({"status": "forbidden"}), 403
     item_id   = request.args.get("item_id")
     image_url = request.args.get("url")
     if not item_id and not image_url:
@@ -1444,7 +1545,6 @@ def test_clip():
         return jsonify({"error": "CLIP init failed"}), 500
 
     try:
-        import requests as req
         from . import image_proc as _ip
         from . import clip_matcher as _cm
         from . import ebay_client
@@ -1458,9 +1558,7 @@ def test_clip():
                 return jsonify({"error": "no images found for that item_id"}), 404
             image_url = urls[0]
 
-        resp = req.get(image_url, timeout=20)
-        resp.raise_for_status()
-        image_bytes = resp.content
+        image_bytes = _ip.download_image(image_url, timeout=20)
 
         with _keep_cpu_hot():
             crops = _ip.detect_and_crop(image_bytes)
