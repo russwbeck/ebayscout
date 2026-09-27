@@ -144,10 +144,11 @@ def confusable_family(registry, slogan, normalize_fn):
 
 def should_demote(registry, slogan, normalize_fn):
     """True iff ``slogan`` belongs to a registered confusable group — the pure
-    yes/no at the heart of the auto-confirm guard. Callers wrap this in a
-    try/except and fail OPEN (leave today's auto-confirm behaviour unchanged)
-    so a registry hiccup never blocks an otherwise-good auto-confirm; this
-    function itself never raises for well-formed input."""
+    yes/no at the heart of the auto-confirm guard. It never raises for
+    well-formed input; what an exception means is the caller's policy.
+    buttonmatcher's auto gate (auto_gate.py) refuses the auto on one -- a
+    check that could not run has not cleared anything -- since 2026-09-27;
+    before that its callers failed open. ebayscout does not call this."""
     return confusable_family(registry, slogan, normalize_fn) is not None
 
 

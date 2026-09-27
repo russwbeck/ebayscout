@@ -130,12 +130,19 @@ touching 5×5).
   and took down card posting for an evening (`normalize_slogan` normalizes
   *scores*, not strings — `buy_rules._normalize_key` is the string one).
   Extract pure logic and exec it with stubs if torch blocks a full run.
-- **Guards fail OPEN, with a log line.** A safety check must never be able to
-  break the thing it guards.
+- **A guard never crashes the flow, and says so in a log line.** A safety
+  check must never be able to break the thing it guards: every guard's error
+  is caught and the lot carries on. *Which way* an error falls is the gate's
+  call, and since 2026-09-27 buttonmatcher's auto-confirm gate falls to a
+  click — a check that could not run has not cleared anything. (Until then
+  each guard failed open, letting the auto through; a registry that fails to
+  build still leaves its guard empty, with a startup log line.)
 - **One decision, one function.** The annotated image showed green checkmarks
   on gate-blocked buttons because the status pass had its own copy of the
-  auto logic. Any decision consumed twice gets extracted
-  (`_cross_sport_blocked` is the model).
+  auto logic. Any decision consumed twice gets extracted. The model is now
+  buttonmatcher's auto gate (`auto_gate.py` + `_auto_gate_facts`): every
+  auto-confirm guard in one place, asked by all three auto paths and both
+  checkmark images.
 - **Every risky behavior gets a kill switch** (`BUTTONMATCHER_SHADOW_PASS`,
   `*_BLOB_BUSTER`, `*_BG_DIFF` …) and a `mask_path`/source label in telemetry.
 - **Heavy work runs inside an in-flight HTTP request. Always.** A detached

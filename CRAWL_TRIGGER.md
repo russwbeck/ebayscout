@@ -1,7 +1,9 @@
 # Manual crawl trigger — reference
 
-Verified invocation for a manual, seen-ignoring pipeline run against the live
-Cloud Run service. Run from **Google Cloud Console → Cloud Shell**.
+Invocation for a manual, seen-ignoring pipeline run against the live
+Cloud Run service. Run from **Google Cloud Console → Cloud Shell**. The auth
+line changed on 2026-09-26 (the security pass); it matches DEPLOY.md's and
+has not been re-run live from this doc since.
 
 > **Cost:** `?ignore_seen=1` feeds every fetched lot (bypasses seen-dedup) into
 > the Gemini→GCS pipeline — real eBay-API + Gemini + CPU spend. Always run the
@@ -14,15 +16,17 @@ Cloud Run service. Run from **Google Cloud Console → Cloud Shell**.
 # 1. Service URL (exact service name is ebay-scout; region us-east1)
 URL=$(gcloud run services describe ebay-scout --region=us-east1 --format='value(status.url)')
 
-# 2. Auth token (Cloud Run requires an identity token)
-TOK=$(gcloud auth print-identity-token)
+# 2. Auth: the watcher's shared secret.  /run-scan accepts only Cloud
+#    Scheduler's token or this header since 2026-09-26; a personal
+#    `gcloud auth print-identity-token` is refused (403).  See DEPLOY.md.
+TOK="X-Pipeline-Secret: $(gcloud secrets versions access latest --secret=PIPELINE_SHARED_SECRET)"
 
 # 3. PREVIEW — posts nothing, writes nothing; reports how many lots WOULD feed
-curl -sS -X POST -H "Authorization: Bearer $TOK" \
+curl -sS -X POST -H "$TOK" \
   "$URL/run-scan?ignore_seen=1&limit=200&dry_run=1"
 
 # 4. REAL RUN — feeds up to 200 lots into the pipeline
-curl -sS -X POST -H "Authorization: Bearer $TOK" \
+curl -sS -X POST -H "$TOK" \
   "$URL/run-scan?ignore_seen=1&limit=200"
 ```
 

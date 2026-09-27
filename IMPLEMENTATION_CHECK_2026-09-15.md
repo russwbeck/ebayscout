@@ -309,9 +309,14 @@ differ between the repos by the `gsutil` lines alone (this file: one
 sentence in IC-06). Merging it restores byte parity on all four. That is
 the whole action; no other PR should touch those files until it is in.
 
+> **Done by hand 2026-09-27.** The branch never merged; its edits to the four
+> shared docs were ported instead (they now match byte for byte) and its
+> buttonmatcher `HANDOFF.md` hunk applied. The branch has nothing left to merge.
+
 ## 8. Order of work from here
 
-1. Merge the gsutil branch (7.3) to restore doc parity.
+1. ~~Merge the gsutil branch (7.3) to restore doc parity.~~ Done by hand
+   2026-09-27 (see 7.3).
 2. Re-cut 7.2 off `main` in both repos with B14a renumbered to B20; open the
    two PRs; ebayscout CI must be green before merge.
 3. On 7.1: change the C8 text from "RS-05 dropped" to "RS-05 gated behind

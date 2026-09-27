@@ -176,7 +176,8 @@ def resolve_by_printed_year(family, printed_year):
     dateless edition keeps the pure season-year rule.  Returns the entry ONLY
     when exactly one edition matches — no match, an unparseable year, or two
     matching editions all return None, so a misread can never resolve a twin.
-    Pure; callers keep their fail-open wrappers."""
+    Pure.  A caller that hits an error must leave the edition unresolved (the
+    twin then goes to the picker), never resolve it."""
     return resolve_printed_year(
         family, printed_year,
         game_year_of=lambda e: (e or {}).get("game_year"),
@@ -185,10 +186,11 @@ def resolve_by_printed_year(family, printed_year):
 
 def should_demote(registry, slogan, normalize_fn):
     """True iff ``slogan`` belongs to a registered multi-edition family — the
-    pure yes/no at the heart of the auto-confirm guard. Callers wrap this in
-    a try/except and fail OPEN (leave today's auto-confirm behavior
-    unchanged) so a registry hiccup never blocks an otherwise-good
-    auto-confirm; this function itself never raises for well-formed input."""
+    pure yes/no at the heart of the auto-confirm guard. It never raises for
+    well-formed input; what an exception means is the caller's policy.
+    buttonmatcher's auto gate (auto_gate.py, which looks families up with
+    ``twin_family``) refuses the auto on one -- a check that could not run has
+    not cleared anything -- since 2026-09-27; before that it failed open."""
     return twin_family(registry, slogan, normalize_fn) is not None
 
 

@@ -132,7 +132,8 @@ Two more facts sharpen this:
 > `skip_correction` and swaps the sheet in the lot's own direction. So is the
 > sample: a hash picks 1 pipeline lot in N (N=10,
 > `BUTTONMATCHER_AUDIT_SAMPLE_N`), withholds every auto-confirm on it —
-> `gemini_auto` and the A18 ladder alike — logs what each would have written as
+> `gemini_auto` and the A18 ladder alike, and since 2026-09-27 slash-command
+> lots' score rules too — logs what each would have written as
 > `audit_shadow`, and grades the operator's answer `audit_hit` / `audit_miss`.
 > The two halves measure different populations on purpose and must not be
 > pooled: the button reads the autos someone *volunteered* a complaint about,

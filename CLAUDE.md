@@ -69,8 +69,11 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
   shape or the two repos write into one bucket with two conventions. It is
   byte-identical and pure stdlib. `label_harvest.py` was in the same position —
   shared in practice since 2026-07-11, missing from this list — and the backfill
-  that re-cuts old crops reads its records, so name it here too. `diff` before
-  and after touching any of them.
+  that re-cuts old crops reads its records, so name it here too.
+  `edition_twins.py` and the detector's helpers (`detect_color.py`,
+  `detect_mask.py`, `detect_scale.py`) are byte-identical too and belong on the
+  list (`tests/test_buttonmatcher_parity.py` already leans on them); noticed
+  2026-09-27. `diff` before and after touching any of them.
 - **`rerank.py` weights are calibrated, not guessed.** `YEAR_WEIGHT` and
   `SID_WEIGHT` must stay equal across both repos —
   `tests/test_buttonmatcher_parity.py` pins them. Raising them needs a fresh
