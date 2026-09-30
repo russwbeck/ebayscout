@@ -9,41 +9,68 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
-## 2026-09-30 — price per button in the scan log, the market report and a sheet
+## 2026-09-30 — button prices, listed and sold (with buttonmatcher's /scout sold)
 
-Branch `ccr-e3b3d859-dga8r8`. Each pipeline lot's `scan_log/YYYY-MM.jsonl` row
-now carries:
+Branch `ccr-e3b3d859-dga8r8` in both repos. The goal: an average **listing** price
+and an average **sold** price per button, joined on the eBay item number.
 
-- `buttons_detected`: every crop cut from the photo, named or not, minus the
-  carpet guard's `off_board` phantoms. The row's `crops_scored` has only ever
-  been the auto-confirmed count on the pipeline path.
-- `price_per_button`: `asking / buttons_detected`, rounded to cents. It is null
-  when the lot has no price or no buttons. Shipping is not included.
-- `buttons`: every confirmed button with its count. `top_matches` keeps only five.
+**Per-lot price.** Each pipeline lot's `scan_log/YYYY-MM.jsonl` row now carries
+`buttons_detected` (every crop, named or not, minus the carpet guard's
+`off_board` phantoms; on this path `crops_scored` has only ever counted the
+confirmed crops), `price_per_button` (`asking / buttons_detected`, null with no
+price or no buttons; shipping not included), `buttons` (every confirmed button
+with its count; `top_matches` keeps five), and now `buying_options` /
+`bid_count`, which this path never recorded. Pure logic:
+`scan_log.button_price_fields`. The frozen legacy CLIP scan writes none of it.
+`tools/market_report.py` averages it per button and leaves auctions out,
+because an auction's price at scan time is a bid.
 
-`tools/market_report.py` prints a new table, **average price per BUTTON**
-(year + slogan). Each lot credits its `price_per_button` once to every button it
-named, and a re-crawled listing counts once, at its latest record. Older rows
-have no `price_per_button` and are left out, so the table fills in only from
-this deploy on. The legacy CLIP scan (frozen) does not write the fields. The
-pure logic is `scan_log.button_price_fields`.
+**The sheet: `price_log.py`, a new SHARED byte-identical file** (added to
+CLAUDE.md's list, with `tests/test_price_log.py`). Three tabs in the Logger
+workbook (`LOGGER_ID`), created at startup when missing:
+- `price_log` holds one row per identified button per lot: kind (`listing` /
+  `sold`), source (`scan` / `auction` / `scout_sold`), `ebay_id` (the item
+  number, the join key), year, slogan, `n_in_lot`, `buttons_detected`,
+  `lot_price`, `shipping`, `price_per_button`, allocation, `sale_format`, bids,
+  `sale_date`, `price_basis`, `superseded`, title, URL and run id. Rows are
+  written RAW. The logger fails open, and a `price_log` tab with a different
+  header disables it rather than writing under the wrong columns.
+- `price_avg` is a `QUERY` pivot. Per year + slogan, it shows the average price
+  per button and the lot count, listing beside sold. Auction listings are left
+  out of the listing average; superseded rows are left out of both.
+- `price_by_item` shows each item's lot price as listed beside its sold price.
 
-**The same numbers go to a Google Sheet** (`price_log.py`, ebayscout-only). They
-land in the logging workbook (`LOGGER_ID`), beside `match_log`, so no new
-sharing is needed:
+Neither formula tab is ever rewritten, and **neither formula has been run in a
+real sheet**. If one shows an error, fix it in the sheet, since it's written
+only once.
 
-- `price_log` gets one row per identified button per lot: year, slogan,
-  `n_in_lot`, `buttons_detected`, asking, `price_per_button`, title, URL and
-  run id. Rows are written RAW, one append per lot, retried on 429 through
-  `sheet_retry`. The logger fails open.
-- `price_avg` holds one `QUERY` that gives each year + slogan its lot count and
-  average / min / max `price_per_button`. Startup creates both tabs if they are
-  missing, and it never rewrites `price_avg` once it exists.
+**One sale counts once.** `PriceLogger.log_sale` checks the item's live sold
+rows first. A `/scout sold` entry marks earlier sold rows for that item
+`superseded`. A tracker sale for an item the operator already logged is written
+already superseded. The tracker never writes an item twice.
 
-The sheet does not de-duplicate: a listing re-run with `?ignore_seen=1` adds
-its rows again. `market_report.py` de-duplicates.
+**The auction tracker** (`auction_watch.py`, pure; `/check-auctions`):
+- When a priced pipeline lot is an auction, it goes on the
+  `ebay_scout/auction_watch.json` watch list with the scan's button breakdown.
+  The feed context now carries format, bids and `itemEndDate`.
+- An hourly Cloud Scheduler call (auth as `/run-scan`; the audience may also be
+  `…/check-auctions`) records the bid of each auction in its last 75 minutes.
+- Once an auction's end time has passed, the same call settles it. If Browse
+  still returns the item, the sale is recorded at the closing bid
+  (`price_basis=final`). A 404 means the last bid seen stands (`last_seen`).
+- A close with a bid and no unmet reserve becomes sold rows, spread evenly over
+  the detected buttons. Anything else is dropped as unsold. eBay errors are
+  retried until 2 days past the close. At most 60 lookups per call.
+- **Whether Browse returns closed auctions is undocumented.** Every non-200 is
+  logged (`>>> EBAY AUCTION: … HTTP … errorId=…`), so the first days answer it.
 
-**Not run:** nothing against Cloud Run, GCS or Sheets; 767 pure tests pass here.
+**Operator, after merge + deploy:** create the hourly `ebay-scout-auctions`
+job (DEPLOY.md → "Auction tracker trigger"). Until it exists, auctions pile up
+on the watch list and are never settled. buttonmatcher needs nothing new in
+Slack: `/scout sold` is text on the existing `/scout` command.
+
+**Not run:** nothing against Cloud Run, GCS, eBay, Slack or a real Sheet. 810
+pure tests pass here, and 1741 in buttonmatcher, including its shared copy.
 
 ---
 

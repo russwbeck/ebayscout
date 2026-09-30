@@ -242,6 +242,50 @@ gcloud scheduler jobs create http ebay-scout-daily \
 > returns 409 to an overlapping trigger, so a retry can't start a second
 > concurrent scan.
 
+## Auction tracker trigger (hourly) — added 2026-09-30
+
+`POST /check-auctions` follows the auctions the scan priced to their close and
+writes each sale to the `price_log` tab of the Logger workbook
+(`auction_watch.py`). It needs its own job, signed by the **same account as the
+daily job**, so the app's token check passes unchanged:
+
+```bash
+SERVICE_URL=$(gcloud run services describe ebay-scout \
+  --region=us-east1 --format='value(status.url)')
+SCHED_SA=$(gcloud scheduler jobs describe ebay-scout-daily --location=us-east1 \
+  --format='value(httpTarget.oidcToken.serviceAccountEmail)')
+
+gcloud scheduler jobs create http ebay-scout-auctions \
+  --location=us-east1 \
+  --schedule="7 * * * *" \
+  --time-zone="America/New_York" \
+  --uri="${SERVICE_URL}/check-auctions" \
+  --http-method=POST \
+  --attempt-deadline=300s \
+  --oidc-service-account-email="${SCHED_SA}" \
+  --oidc-token-audience="${SERVICE_URL}"
+```
+
+> **Cost.** 24 short requests a day. Each looks up only the auctions that close
+> within the hour or have closed (eBay Browse calls, no CLIP, no images), and an
+> empty watch list costs one GCS read. The service is scale-to-zero, so most of
+> these are cold starts, and a cold start begins loading CLIP in the background
+> as every cold start does; the check does not wait for it. Cloud Scheduler
+> gives three jobs per billing account free and charges $0.10 a month for each
+> job beyond that.
+>
+> **Hourly is the precision knob.** The last bid is read 0–60 minutes before a
+> close; after the close, eBay's closing bid is used if the Browse API still
+> returns the item (`price_basis=final`), otherwise the last bid seen
+> (`price_basis=last_seen`), which misses bids placed after that look. Whether
+> eBay returns closed auctions is not documented: the first days' logs
+> (`>>> EBAY AUCTION: … HTTP …` and `>>> AUCTIONS: … sold for …`) answer it.
+>
+> Run it by hand with the operator header (`TOKEN`, as set in "One-time
+> backfill" below):
+> `curl -X POST "${SERVICE_URL}/check-auctions" -H "$TOKEN"` returns
+> `{"status": "ok", "watching": N, "checked": …, "sold": …}`.
+
 ---
 
 ## Cloud Build Trigger (auto-deploy on push)
