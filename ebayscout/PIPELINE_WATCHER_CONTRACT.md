@@ -38,6 +38,46 @@ ebayscout posts only **deals** (a needed button, or matched value > asking),
 3. **Notify ebayscout.** `POST https://<ebayscout-service>/pipeline/notify`
    with header `X-Pipeline-Secret: <PIPELINE_SHARED_SECRET>` and body
    `{"object": "pipeline/output/ebayscout__<key>.png.response.json"}`.
+   Wait 45 s per attempt (a cold start runs past 15 s) and retry timeouts, 5xx
+   and 429; on a final failure post "⚠️ Handoff failed … run …" to Slack with
+   `python3 watcher.py --config workerN.json --renotify "<file>"`, which
+   re-sends the saved result without a Gem read.
+
+## Run id — joining watcher.log to a lot (added 2026-09-30)
+The watcher gives every Gem attempt a short hex run id, prefixes every
+watcher.log line of that attempt with it (`[r:3f9a2c1d] …`), and writes it into
+the `.response.json` as top-level `"runId"` beside `fileName`.
+`pipeline_ingest.run_id_of()` (byte-shared with buttonmatcher) reads it, and
+ebayscout puts it:
+- on the **deal alert**, as its last line: `` `ebayscout__<key>.png` · run `3f9a2c1d` ``;
+- on the lot's **`scan_log` row** as `"run_id"` — the only trace for the many
+  lots that post nothing;
+- in the Cloud Run log: `>>> PIPELINE: job … run=…`.
+
+`grep <id> watcher.log` gives that attempt's full story. A watcher from before
+this change sends no id: the alert then names only the file, and the row has no
+`run_id`.
+
+## Giving up on a photo Gemini can't read (added 2026-09-30)
+After `give_up_after` counted no-result tries (watcher config, default 3; `0`
+never gives up), the watcher stops sending the photo to Gemini. It posts the
+photo to the debug channel ("🤷 Gemini can't figure out …", with each try's run
+id) and moves it out of the queue: Drive photos to a *Gemini can't read* folder,
+GCS inputs to `pipeline/quarantine/`. A try only counts if Gemini read some
+other photo since that photo's last counted try, so an outage or an empty token
+budget never gets the queue given up.
+
+For an `ebayscout__` lot the watcher also writes
+`pipeline/output/ebayscout__<key>.png.response.json` with top-level
+`"gaveUp": true` (plus `attempts`, `runs`, `runId`, `"response": {}`, and **no
+image**) and notifies ebayscout. `process_pipeline_lot` checks
+`pipeline_ingest.watcher_gave_up()` before touching the image: it marks the
+listing **seen** (so the daily scan doesn't feed it back under a new key, which
+would restart the count and send it to Gemini every day), drops the pending
+context and the notice, and posts nothing to `#ebay-checker`. A given-up eBay
+lot is final: don't move it back to `pipeline/input/`, because its listing
+context is gone and the result would post as "(context lost)". The debug post
+carries the photo and a link if it needs a look.
 
 (The provided `watcher.py` already implements all three — `process_gcs_input` +
 the `gcs_input_prefix` poller + `notify_pipeline` routing.)

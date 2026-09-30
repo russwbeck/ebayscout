@@ -78,6 +78,48 @@ def test_image_name_for_response():
     assert pi.image_name_for_response("pipeline/output/a.png") is None
 
 
+# --- run_id_of ---------------------------------------------------------------
+
+def test_run_id_read_from_the_watcher_payload():
+    payload = {"fileName": "IMG_5948.jpg", "runId": "3f9a2c1d",
+               "response": {"total_button_count": 1}}
+    assert pi.run_id_of(payload) == "3f9a2c1d"
+    assert pi.run_id_of(json.dumps(payload)) == "3f9a2c1d"
+    assert pi.run_id_of(json.dumps(payload).encode()) == "3f9a2c1d"
+
+
+def test_run_id_absent_or_unsafe_is_none():
+    # an older watcher sends none; anything but short lowercase hex is dropped,
+    # since it goes into a Slack message verbatim
+    assert pi.run_id_of({"fileName": "a.png", "response": {}}) is None
+    for bad in ("", "abc", "3F9A2C1D", "3f9a2c1d`<!here>", "x" * 8,
+                "a" * 33, 12345678, None):
+        assert pi.run_id_of({"runId": bad}) is None, bad
+    for junk in (None, "", "not json", b"\xff", "[1, 2]", 7):
+        assert pi.run_id_of(junk) is None
+
+
+# --- watcher_gave_up ---------------------------------------------------------
+
+def test_gave_up_notice_is_recognized():
+    notice = {"fileName": "ebayscout__abc.png", "runId": "3f9a2c1d", "gaveUp": True,
+              "attempts": 3, "runs": ["a1b2c3d4", "b2c3d4e5", "3f9a2c1d"],
+              "response": {}}
+    assert pi.watcher_gave_up(notice) is True
+    assert pi.watcher_gave_up(json.dumps(notice)) is True
+    assert pi.watcher_gave_up(json.dumps(notice).encode()) is True
+
+
+def test_only_a_literal_true_gives_up():
+    # a normal result, and anything short of a JSON true, is NOT a give-up —
+    # a false positive would mark a real lot seen without ever reading it
+    assert pi.watcher_gave_up({"fileName": "a.png", "response": {"total_button_count": 2}}) is False
+    for v in (False, "true", 1, None, [], {}):
+        assert pi.watcher_gave_up({"gaveUp": v}) is False, v
+    for junk in (None, "", "not json", b"\xff", "[true]", 7):
+        assert pi.watcher_gave_up(junk) is False
+
+
 # --- parse_gemini_response ---------------------------------------------------
 
 FULL = {

@@ -269,3 +269,43 @@ class TestSellerTextIsEscaped:
         out = notifier._esc(notifier._truncate(title, 80))
         assert out.endswith("&amp;…") or "&amp;" in out, out
         assert "&am…" not in out and "&l…" not in out
+
+
+class TestAlertsCarryTheWatcherRunId:
+    """A pipeline lot's alert names the file the watcher processed and its run
+    id, so the alert and the watcher.log lines of that Gem read find each other
+    (the watcher stamps "[r:<id>]" on every line of the attempt)."""
+
+    TRACED = dict(FAKE_LISTING, lot_file="ebayscout__0659a77949a3.png", run_id="3f9a2c1d")
+
+    def _sent(self, send, listing, **kw):
+        captured = {}
+        mock_client = MagicMock()
+        mock_client.chat_postMessage.side_effect = lambda **k: captured.update(k)
+        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+            send(slack_token="xoxb-fake", channel="#c", listing=listing, **kw)
+        return captured["text"]
+
+    def test_needed_alert_names_file_and_run(self):
+        text = self._sent(notifier.send_needed_alert, self.TRACED,
+                          needed_buttons=FAKE_MATCHES, asking_price=5.0, lot_value=7.5)
+        assert text.endswith("`ebayscout__0659a77949a3.png` · run `3f9a2c1d`"), text
+
+    def test_undervalued_alert_names_file_and_run(self):
+        text = self._sent(notifier.send_undervalued_alert, self.TRACED,
+                          matches=FAKE_MATCHES, lot_value=7.5, asking_price=5.0,
+                          margin=2.5, unmatched_count=0)
+        assert text.endswith("`ebayscout__0659a77949a3.png` · run `3f9a2c1d`"), text
+
+    def test_legacy_listing_is_unchanged(self):
+        """The frozen legacy scan passes neither field: its alert must be
+        exactly what it was — no empty trace line."""
+        text = self._sent(notifier.send_needed_alert, FAKE_LISTING,
+                          needed_buttons=FAKE_MATCHES, asking_price=5.0, lot_value=7.5)
+        assert "run `" not in text and text.endswith("Seller: sporty_collector"), text
+
+    def test_older_watcher_still_names_the_file(self):
+        text = self._sent(notifier.send_needed_alert,
+                          dict(FAKE_LISTING, lot_file="ebayscout__abc.png", run_id=None),
+                          needed_buttons=FAKE_MATCHES, asking_price=5.0, lot_value=7.5)
+        assert text.endswith("`ebayscout__abc.png`"), text

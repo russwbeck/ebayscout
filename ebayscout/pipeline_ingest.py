@@ -136,6 +136,52 @@ def image_name_for_response(name):
     return name[: -len(RESPONSE_SUFFIX)]
 
 
+_RUN_ID_CHARS = frozenset("0123456789abcdef")
+
+
+def run_id_of(json_text):
+    """The watcher's run id stored in a ``.response.json``, or ``None``.
+
+    The watcher gives every Gem attempt a short hex id, writes it on each
+    watcher.log line of that attempt (``[r:3f9a2c1d]``) and in the payload as
+    top-level ``"runId"`` beside ``fileName``.  The services print it on their
+    Slack post, so one id joins the two logs.  ``json_text`` is the stored
+    object as str, bytes or an already-parsed dict.  Anything but 6-32 lowercase
+    hex chars reads as ``None``: it is shown to people and searched for, never
+    trusted, and an older watcher simply doesn't send one.  Fail-open."""
+    data = json_text
+    try:
+        if isinstance(data, (bytes, bytearray)):
+            data = data.decode("utf-8")
+        if isinstance(data, str):
+            data = json.loads(data)
+    except Exception:
+        return None
+    rid = data.get("runId") if isinstance(data, dict) else None
+    if isinstance(rid, str) and 6 <= len(rid) <= 32 and set(rid) <= _RUN_ID_CHARS:
+        return rid
+    return None
+
+
+def watcher_gave_up(json_text):
+    """True iff this ``.response.json`` is the watcher saying it GAVE UP on the
+    photo: Gemini returned nothing usable in its give_up_after tries, so the
+    photo was taken out of the queue and posted to the debug channel.  The
+    payload is top-level ``"gaveUp": true`` with ``"response": {}``; there is no
+    analysis and no image.  The owner stops re-feeding it (ebayscout marks the
+    listing seen) instead of building a lot.  Only a literal JSON ``true``
+    counts.  Accepts str, bytes or a dict; fail-open to False."""
+    data = json_text
+    try:
+        if isinstance(data, (bytes, bytearray)):
+            data = data.decode("utf-8")
+        if isinstance(data, str):
+            data = json.loads(data)
+    except Exception:
+        return False
+    return isinstance(data, dict) and data.get("gaveUp") is True
+
+
 # --- Gemini analysis parsing -------------------------------------------------
 
 # No real coordinate, size or count comes anywhere near this; a value past it
