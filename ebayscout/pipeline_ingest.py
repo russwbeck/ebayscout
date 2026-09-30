@@ -163,6 +163,25 @@ def run_id_of(json_text):
     return None
 
 
+def watcher_gave_up(json_text):
+    """True iff this ``.response.json`` is the watcher saying it GAVE UP on the
+    photo: Gemini returned nothing usable in its give_up_after tries, so the
+    photo was taken out of the queue and posted to the debug channel.  The
+    payload is top-level ``"gaveUp": true`` with ``"response": {}``; there is no
+    analysis and no image.  The owner stops re-feeding it (ebayscout marks the
+    listing seen) instead of building a lot.  Only a literal JSON ``true``
+    counts.  Accepts str, bytes or a dict; fail-open to False."""
+    data = json_text
+    try:
+        if isinstance(data, (bytes, bytearray)):
+            data = data.decode("utf-8")
+        if isinstance(data, str):
+            data = json.loads(data)
+    except Exception:
+        return False
+    return isinstance(data, dict) and data.get("gaveUp") is True
+
+
 # --- Gemini analysis parsing -------------------------------------------------
 
 # No real coordinate, size or count comes anywhere near this; a value past it

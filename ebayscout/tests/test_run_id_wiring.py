@@ -41,3 +41,25 @@ def test_scan_log_row_carries_the_run_id_before_it_is_written():
     src = _src("process_pipeline_lot")
     assert 'record["run_id"] = run_id' in src
     assert src.index('record["run_id"] = run_id') < src.index("append_scan_log([record])")
+
+
+# --- the watcher gave up (2026-09-30) -----------------------------------------
+
+def test_gave_up_notice_is_handled_before_any_image_work():
+    """A give-up notice has no image: it must be caught before the download,
+    or the lot errors out and the listing is fed again tomorrow."""
+    src = _src("process_pipeline_lot")
+    gave = src.index("ping.watcher_gave_up(_rsp_text)")
+    assert gave < src.index("tempfile.NamedTemporaryFile")
+    assert gave < src.index("_gcs_blob_to_file(")
+
+
+def test_gave_up_listing_is_marked_seen_and_forgotten():
+    src = _src("process_pipeline_lot")
+    seg = src[src.index("ping.watcher_gave_up(_rsp_text)"):]
+    seg = seg[:seg.index("return") + len("return")]
+    assert "_mark_item_seen_now(" in seg          # never fed again
+    assert "delete_pending_context(key)" in seg    # context cleaned up
+    assert "_delete_pipeline_output(response_name)" in seg
+    # and nothing is posted to #ebay-checker — the watcher already posted it
+    assert "notifier." not in seg

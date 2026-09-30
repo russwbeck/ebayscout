@@ -885,6 +885,26 @@ def process_pipeline_lot(job_id: str) -> None:
     # side finds the other.  None from a watcher that predates it.
     run_id = ping.run_id_of(_rsp_text)
     print(f">>> PIPELINE: job {job_id} run={run_id} image={image_name}", flush=True)
+
+    # 1b) The watcher GAVE UP: Gemini returned nothing usable for this photo in
+    #     its give_up_after tries, and the watcher already posted the photo to
+    #     the debug channel. Mark the listing seen so the daily scan doesn't feed
+    #     it back in under a new key (which restarts the watcher's count and
+    #     sends it to Gemini again every day). There is no image and no analysis.
+    if ping.watcher_gave_up(_rsp_text):
+        _gctx = (seen_items.load_pending_context(key) if key else None) or {}
+        _gitem = _gctx.get("item_id")
+        print(f">>> PIPELINE: watcher gave up on {image_name} (run={run_id}) — "
+              f"marking {_gitem or '(no context)'} seen so it isn't fed again.",
+              flush=True)
+        if _gitem:
+            _mark_item_seen_now(_gitem)
+        if key:
+            seen_items.delete_pending_context(key)
+        _delete_pipeline_output(response_name)
+        pending_jobs.pop(job_id, None)
+        return
+
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp.close()
     try:
