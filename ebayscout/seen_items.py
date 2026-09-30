@@ -138,6 +138,32 @@ def append_scan_log(
     return ok
 
 
+def load_auction_watch(bucket_name: str = config.BUCKET_NAME) -> dict | None:
+    """The auction tracker's watch list: {} when it does not exist yet, None
+    when it could not be read — so a caller never saves an empty list over a
+    real one it merely failed to load."""
+    try:
+        blob = storage.Client().bucket(bucket_name).blob(config.AUCTION_WATCH_BLOB)
+        if not blob.exists():
+            return {}
+        data = json.loads(blob.download_as_text())
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"!!! AUCTIONS: failed to load {config.AUCTION_WATCH_BLOB}: {exc}", flush=True)
+        return None
+
+
+def save_auction_watch(watch: dict, bucket_name: str = config.BUCKET_NAME) -> bool:
+    """Replace the watch list.  True on success."""
+    try:
+        blob = storage.Client().bucket(bucket_name).blob(config.AUCTION_WATCH_BLOB)
+        blob.upload_from_string(json.dumps(watch, indent=2), content_type="application/json")
+        return True
+    except Exception as exc:
+        print(f"!!! AUCTIONS: failed to save {config.AUCTION_WATCH_BLOB}: {exc}", flush=True)
+        return False
+
+
 def ondemand2_first_run_done(bucket_name: str = config.BUCKET_NAME) -> bool:
     """Return True if /crawl500 has already completed its first run.
 

@@ -40,6 +40,7 @@ from . import pipeline_classify
 from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
+from . import auction_watch
 from . import price_log
 from . import scan_log
 from . import seen_items
@@ -131,6 +132,10 @@ _seen_lock = threading.Lock()
 # several Gem workers feeding results concurrently, unguarded appends would clobber
 # each other's lines; this serializes them within the single ebayscout instance.
 _scanlog_lock = threading.Lock()
+
+# Guards the auction tracker's watch list (a GCS read-modify-write): the lots
+# that add to it and the /check-auctions pass that settles it.
+_watch_lock = threading.Lock()
 
 # --- Gemini → GCS pipeline state (Drive watcher → Gem → GCS → /pipeline/notify) -
 # Shared secret the watcher presents on /pipeline/notify (watcher-direct path).
@@ -395,7 +400,8 @@ def _scheduler_token_ok(token: str, host: str) -> bool:
              if b]
     audiences = {a.rstrip("/") for a in (
         [os.environ.get("SCHEDULER_AUDIENCE", "").strip()] + bases
-        + [f"{b}/run-scan" for b in bases]) if a}
+        + [f"{b}/run-scan" for b in bases]
+        + [f"{b}/check-auctions" for b in bases]) if a}
     try:
         from google.oauth2 import id_token as _idtok
         from google.auth.transport import requests as _greq
@@ -535,6 +541,96 @@ def run_scan():
         "limit":       limit,
         "remaining":   remaining,   # chunk mode: unseen listings left (0 = done)
     }), 200
+
+
+def _watch_auction(record: dict, ctx: dict) -> None:
+    """Add a priced auction lot to the tracker's watch list.  Fail-open."""
+    entry = auction_watch.entry_for_lot(record, ctx)
+    if entry is None:
+        return
+    try:
+        with _watch_lock:
+            watch = seen_items.load_auction_watch()
+            if watch is None or entry["ebay_id"] in watch:
+                return                       # unreadable, or already watched
+            watch[entry["ebay_id"]] = entry
+            if not seen_items.save_auction_watch(watch):
+                return
+        print(f">>> AUCTIONS: watching {entry['ebay_id']} to its close "
+              f"({entry.get('end_date') or 'end unknown'}), {len(watch)} watched.",
+              flush=True)
+    except Exception as exc:
+        print(f"!!! AUCTIONS: could not watch {entry.get('ebay_id')}: {exc}", flush=True)
+
+
+def _check_auctions() -> dict:
+    """One pass of the auction tracker (auction_watch.py).  Caller holds
+    _watch_lock.  Looks up only the auctions near or past their close; a
+    close with a bid becomes sold rows in price_log."""
+    from . import ebay_client
+    watch = seen_items.load_auction_watch()
+    if watch is None:
+        return {"status": "watch list unreadable"}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    tally: Counter = Counter()
+    todo = [eid for eid in auction_watch.order(watch)
+            if auction_watch.due(watch[eid], now) != "wait"]
+    if todo:
+        try:
+            app_id, cert = _get_secret("EBAY_APP_ID"), _get_secret("EBAY_CERT_ID")
+        except Exception as exc:
+            return {"status": f"no eBay credentials: {exc}", "watching": len(watch)}
+    for eid in todo:
+        if tally["checked"] >= auction_watch.MAX_CHECKS_PER_RUN:
+            tally["deferred"] += 1
+            continue
+        tally["checked"] += 1
+        entry = watch[eid]
+        state = ebay_client.get_auction_state(app_id, cert, entry.get("item_id") or eid)
+        outcome = auction_watch.apply_state(entry, state, now)
+        if outcome == "sold":
+            rows = auction_watch.sold_rows(entry)
+            res = (price_logger.log_sale(rows, eid, source=price_log.SOURCE_AUCTION)
+                   if price_logger is not None else {"status": "failed"})
+            r = entry["result"]
+            print(f">>> AUCTIONS: {eid} sold for ${r['price']:.2f} ({r['bids']} bid(s), "
+                  f"{r['basis']}) — {len(rows)} row(s) {res['status']}.", flush=True)
+            if res["status"] == "failed" and not auction_watch.expired(entry, now):
+                tally["write_failed"] += 1     # kept: settled again next pass
+                continue
+            tally["sold"] += 1
+            del watch[eid]
+        elif outcome in ("unsold", "drop"):
+            print(f">>> AUCTIONS: {eid} {outcome} "
+                  f"(eBay: {(state or {}).get('status')}).", flush=True)
+            tally[outcome] += 1
+            del watch[eid]
+    if tally["checked"]:
+        seen_items.save_auction_watch(watch)
+    return {"status": "ok", "watching": len(watch), **tally}
+
+
+@flask_app.route("/check-auctions", methods=["POST"])
+def check_auctions():
+    """
+    The auction tracker, called hourly by Cloud Scheduler (DEPLOY.md).
+
+    Looks up the watched auctions that close within the hour (their bid) or
+    have closed (their result), and writes each sale to price_log.  Light: eBay
+    item lookups and a sheet write per sale, no CLIP and no images, done inside
+    this request so it has CPU.  An empty or all-distant watch list costs one
+    GCS read.
+
+    Auth: as /run-scan — Cloud Scheduler's OIDC token or X-Pipeline-Secret.
+    """
+    if not _run_scan_authorized(request):
+        return jsonify({"status": "forbidden"}), 403
+    if not _watch_lock.acquire(timeout=120):
+        return jsonify({"status": "busy"}), 409
+    try:
+        return jsonify(_check_auctions()), 200
+    finally:
+        _watch_lock.release()
 
 
 @flask_app.route("/health", methods=["GET"])
@@ -1345,7 +1441,11 @@ def process_pipeline_lot(job_id: str) -> None:
                "current_price": asking, "seller": ctx.get("seller", ""),
                "gallery_url": ctx.get("gallery_url"),
                # shown on the alert (notifier._trace_text) to join it to watcher.log
-               "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id}
+               "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id,
+               # format and bids reach the scan_log row, which on this path
+               # recorded neither (an auction's "asking" is a bid, not a price)
+               "buying_options": ctx.get("buying_options") or [],
+               "bid_count": ctx.get("bid_count")}
     if needed_hits:
         needed = list(needed_hits.values())
         try:
@@ -1380,6 +1480,7 @@ def process_pipeline_lot(job_id: str) -> None:
     #     `pipeline_command` is bound near the top, beside the other ctx-derived
     #     locals — see the note there; re-binding it here is what hid the
     #     UnboundLocalError at step 4b.
+    record = None
     try:
         record = _scan_log_record(
             listing=listing, photos_processed=1,
@@ -1398,11 +1499,16 @@ def process_pipeline_lot(job_id: str) -> None:
         # Button prices to the sheet (price_log tab), from this same record.
         # Never raises.
         if price_logger is not None:
-            price_logger.log_lot(record)
+            price_logger.log_listing(record)
         with _scanlog_lock:                  # serialize the GCS read-modify-write
             seen_items.append_scan_log([record])
     except Exception as exc:
         print(f"!!! PIPELINE: scan_log append failed for {item_id}: {exc}", flush=True)
+
+    # An auction goes on the tracker's watch list, to be priced again at its
+    # close (/check-auctions).
+    if record is not None:
+        _watch_auction(record, ctx)
 
     # Per-crop match records carrying the Gemini reconcile fields, so the
     # match_log is schema-compatible with buttonmatcher's pipeline rows.
@@ -2594,6 +2700,11 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
         "search_era":   listing.get("search_era") or "",
         "title_years":   sorted(extract_years(title)),
         "title_decades": sorted(extract_decades(title)),
+        # The listing's format and, for an auction, when it closes — for the
+        # scan_log row and the auction tracker (auction_watch.entry_for_lot).
+        "buying_options": listing.get("buying_options") or [],
+        "bid_count":      listing.get("bid_count"),
+        "end_date":       listing.get("end_date"),
         "command":      command,
         "created":      datetime.datetime.utcnow().isoformat() + "Z",
     }

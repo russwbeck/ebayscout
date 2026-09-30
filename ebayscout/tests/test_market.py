@@ -133,6 +133,14 @@ class TestPricePerButtonByButton:
         ])
         assert rep["lots"] == 1 and rep["buttons"][0]["avg"] == 3.0
 
+    def test_auctions_are_not_listing_prices(self):
+        auction = _priced("a", 0.5, (1985, "Beat Pitt", 1))
+        auction["buying_options"] = ["AUCTION"]
+        fixed = _priced("b", 3.0, (1985, "Beat Pitt", 1))
+        fixed["buying_options"] = ["FIXED_PRICE"]
+        rep = price_per_button_by_button([auction, fixed])
+        assert rep["lots"] == 1 and rep["buttons"][0]["avg"] == 3.0
+
     def test_min_comps_filters_thin_buttons(self):
         rep = price_per_button_by_button([
             _priced("a", 2.0, (1985, "Beat Pitt", 1), (1990, "Beat Texas", 1)),

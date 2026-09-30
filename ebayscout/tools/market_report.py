@@ -160,7 +160,9 @@ def price_per_button_by_button(records, min_comps: int = 1) -> dict:
     counted confirmed crops only and named five buttons at most, so their
     per-button figure would be too high and their button list incomplete.
     A listing logged more than once (a re-crawl) counts once, at its latest
-    record.
+    record.  Auctions are left out: an auction's price when scanned is its
+    opening or current bid, not an asking price (their SOLD prices are in the
+    price_log sheet, from the auction tracker).
 
     Returns {
       "lots":    # lots with a per-button price,
@@ -173,6 +175,8 @@ def price_per_button_by_button(records, min_comps: int = 1) -> dict:
     for i, rec in enumerate(records):
         per = rec.get("price_per_button")
         if not isinstance(per, (int, float)) or per <= 0:
+            continue
+        if "AUCTION" in {str(o).upper() for o in rec.get("buying_options") or []}:
             continue
         latest[rec.get("item_id") or f"#{i}"] = rec
 
