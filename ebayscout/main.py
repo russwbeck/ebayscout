@@ -40,6 +40,7 @@ from . import pipeline_classify
 from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
+from . import scan_log
 from . import seen_items
 from . import confusable_slogans as cfs
 from . import edition_twins as edt
@@ -1383,6 +1384,9 @@ def process_pipeline_lot(job_id: str) -> None:
             needed_hit=bool(needed_hits), alerted=bool(needed_hits or undervalued),
             best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
                          if needed_hits else None),
+            # every crop cut from the photo, named or not, less the carpet
+            # guard's phantoms — the divisor of the lot's per-button price
+            buttons_detected=max(0, len(crops) - _n_off_board),
         )
         if run_id:
             record["run_id"] = run_id        # joins a non-deal lot to watcher.log
@@ -1701,6 +1705,7 @@ def _scan_log_record(
     needed_hit:       bool,
     alerted:          bool,
     best_needed:      dict | None = None,
+    buttons_detected: int | None = None,
 ) -> dict:
     """
     Build one JSONL scan-log record for a processed listing.
@@ -1712,13 +1717,19 @@ def _scan_log_record(
     bid count. Together with `asking` these let a report estimate cost/button
     per YEAR from single-year-lot comps — the metric for pricing listings.
     `top_matches` arrives as the full per-crop best-match list (one per crop).
+
+    `buttons_detected` is passed by the Gemini pipeline, where `top_matches` is
+    only the auto-confirmed crops. It adds `buttons_detected`,
+    `price_per_button` (asking / buttons detected) and `buttons` (every
+    confirmed button with its count), which the market report averages per
+    button (scan_log.button_price_fields).
     """
     title = listing.get("title", "")
     # Year composition of the lot, from each crop's best match.
     year_counts: dict[str, int] = dict(Counter(
         str(m["year"]) for m in top_matches if m.get("year") is not None
     ))
-    return {
+    record = {
         "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "item_id":       listing.get("item_id", ""),
         "title":         title,
@@ -1730,7 +1741,7 @@ def _scan_log_record(
         "condition":     listing.get("condition", ""),
         "bid_count":     listing.get("bid_count"),
         "photos_scored": photos_processed,
-        "crops_scored":  len(top_matches),          # detected buttons (proxy)
+        "crops_scored":  len(top_matches),          # matched buttons (pipeline: confirmed only)
         "title_count":   extract_lot_count(title),  # stated lot size, if any
         "title_years":   sorted(extract_years(title)),
         "year_counts":   year_counts,               # year -> # crops matched
@@ -1747,6 +1758,10 @@ def _scan_log_record(
         "needed_hit":    needed_hit,
         "alerted":       alerted,
     }
+    if buttons_detected is not None:
+        record.update(scan_log.button_price_fields(
+            record["asking"], buttons_detected, top_matches))
+    return record
 
 
 def _run_era_queries(ebay_client, ebay_app_id, ebay_cert_id, era_queries: list) -> list:

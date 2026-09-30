@@ -165,3 +165,59 @@ def test_nothing_writes_the_legacy_blob_any_more():
             writers.append(name)
     assert writers == [], (
         f"{writers} still reference the pre-partition blob; it is read-only history")
+
+
+# --- per-button price (2026-09-30) ---------------------------------------------
+
+def _confirmed(*pairs):
+    return [{"year": y, "slogan": s, "overall": 0.9} for y, s in pairs]
+
+
+def test_price_per_button_divides_by_every_detected_button():
+    """A lot of 10 where 4 could be named still sold 10 buttons for $20:
+    $2.00 each, not $5.00."""
+    f = scan_log.button_price_fields(20.0, 10, _confirmed(
+        (1985, "Beat Pitt"), (1985, "Beat Pitt"), (1986, "Beat Miami"), (1979, "Beat Bama")))
+    assert f["buttons_detected"] == 10
+    assert f["price_per_button"] == 2.0
+
+
+def test_price_per_button_is_rounded_to_cents():
+    assert scan_log.button_price_fields(10.0, 3, [])["price_per_button"] == 3.33
+
+
+def test_no_price_or_no_buttons_is_none_not_zero():
+    """A report must never average in a $0 it did not observe."""
+    for asking, n in ((None, 5), (0.0, 5), ("", 5), ("n/a", 5), (12.0, 0), (12.0, None)):
+        assert scan_log.button_price_fields(asking, n, [])["price_per_button"] is None, (asking, n)
+
+
+def test_buttons_lists_every_confirmed_button_with_its_count():
+    """top_matches keeps five; the per-button report needs all of them."""
+    pairs = [(1980 + i, f"Slogan {i}") for i in range(7)] + [(1980, "Slogan 0")] * 2
+    f = scan_log.button_price_fields(35.0, 12, _confirmed(*pairs))
+    assert len(f["buttons"]) == 7
+    assert {"year": 1980, "slogan": "Slogan 0", "n": 3} in f["buttons"]
+    assert sum(b["n"] for b in f["buttons"]) == 9
+
+
+def test_a_confirmed_crop_with_no_name_is_not_listed():
+    f = scan_log.button_price_fields(5.0, 2, [{"year": None, "slogan": "x"},
+                                              {"year": 1990, "slogan": ""}])
+    assert f["buttons"] == [] and f["price_per_button"] == 2.5
+
+
+def test_the_pipeline_row_is_priced_over_every_real_crop():
+    """main imports the heavy stack, so its source is read rather than run."""
+    src = open(os.path.join(os.path.dirname(HERE), "main.py")).read()
+    body = src[src.index("def process_pipeline_lot("):]
+    body = body[:body.index("\ndef ", 1)]
+    call = body[body.index("record = _scan_log_record("):]
+    call = call[:call.index("append_scan_log([record])")]
+    # every crop, less the carpet guard's phantoms; NOT the confirmed count
+    assert "buttons_detected=max(0, len(crops) - _n_off_board)" in call
+    rec = src[src.index("def _scan_log_record("):]
+    rec = rec[:rec.index("\ndef ", 1)]
+    assert "scan_log.button_price_fields(" in rec
+    # the frozen legacy scan does not pass it, so its rows are unchanged
+    assert "if buttons_detected is not None:" in rec

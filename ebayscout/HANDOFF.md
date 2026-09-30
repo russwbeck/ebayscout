@@ -9,6 +9,28 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-09-30 — price per button in the scan log and the market report
+
+Branch `ccr-e3b3d859-dga8r8`. Each pipeline lot's `scan_log/YYYY-MM.jsonl` row
+now carries:
+
+- `buttons_detected`: every crop cut from the photo, named or not, minus the
+  carpet guard's `off_board` phantoms. The row's `crops_scored` has only ever
+  been the auto-confirmed count on the pipeline path.
+- `price_per_button`: `asking / buttons_detected`, rounded to cents. It is null
+  when the lot has no price or no buttons. Shipping is not included.
+- `buttons`: every confirmed button with its count. `top_matches` keeps only five.
+
+`tools/market_report.py` prints a new table, **average price per BUTTON**
+(year + slogan). Each lot credits its `price_per_button` once to every button it
+named, and a re-crawled listing counts once, at its latest record. Older rows
+have no `price_per_button` and are left out, so the table fills in only from
+this deploy on. The legacy CLIP scan (frozen) does not write the fields. The
+pure logic is `scan_log.button_price_fields`. **Not run:** nothing against Cloud
+Run or GCS; 748 pure tests pass here.
+
+---
+
 ## 2026-09-27 — CI on production pins; no-overwrite copies; stop list retired
 
 Branch `claude/bot-context-window-check-liwewp` (buttonmatcher has a companion

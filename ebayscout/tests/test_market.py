@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from ebayscout.tools.market_report import (
     derive_listing,
     cost_per_button_by_year,
+    price_per_button_by_button,
     supply_summary,
 )
 
@@ -36,6 +37,12 @@ class TestDeriveListing:
         d = derive_listing(rec)
         assert d["single_year"] is None
         assert d["button_count"] == 5
+
+    def test_detected_count_beats_the_confirmed_count(self):
+        # a pipeline row's crops_scored is the confirmed crops only
+        rec = {"asking": 20.0, "title": "Penn State buttons", "top_matches": [],
+               "crops_scored": 4, "buttons_detected": 10}
+        assert derive_listing(rec)["button_count"] == 10
 
     def test_button_count_falls_back_to_one(self):
         rec = {"asking": 5.0, "title": "Penn State pin", "top_matches": []}
@@ -82,3 +89,60 @@ class TestSupplySummary:
         assert s["bands"]["<5"] == 1 and s["bands"]["75+"] == 1
         assert s["format"]["auction"] == 1 and s["format"]["fixed"] == 1
         assert s["distinct_sellers"] == 2
+
+
+def _priced(item_id, per, *buttons):
+    return {"item_id": item_id, "price_per_button": per,
+            "buttons": [{"year": y, "slogan": sl, "n": n} for y, sl, n in buttons]}
+
+
+class TestPricePerButtonByButton:
+    def test_averages_a_button_over_the_lots_it_turned_up_in(self):
+        rep = price_per_button_by_button([
+            _priced("a", 2.0, (1985, "Beat Pitt", 1), (1986, "Beat Miami", 1)),
+            _priced("b", 4.0, (1985, "Beat Pitt", 1)),
+        ])
+        pitt = next(r for r in rep["buttons"] if r["slogan"] == "Beat Pitt")
+        assert pitt == {"year": "1985", "slogan": "Beat Pitt", "lots": 2,
+                        "avg": 3.0, "median": 3.0, "min": 2.0, "max": 4.0}
+        miami = next(r for r in rep["buttons"] if r["slogan"] == "Beat Miami")
+        assert miami["lots"] == 1 and miami["avg"] == 2.0
+        assert rep["lots"] == 2
+        assert rep["overall"] == {"avg": 3.0, "median": 3.0}
+
+    def test_duplicates_in_one_lot_are_one_observation(self):
+        rep = price_per_button_by_button([
+            _priced("a", 1.0, (1985, "Beat Pitt", 5)),
+            _priced("b", 3.0, (1985, "Beat Pitt", 1)),
+        ])
+        assert rep["buttons"][0]["lots"] == 2 and rep["buttons"][0]["avg"] == 2.0
+
+    def test_records_without_a_per_button_price_are_left_out(self):
+        rep = price_per_button_by_button([
+            {"item_id": "old", "asking": 50.0, "crops_scored": 3,
+             "top_matches": [{"year": 1985, "slogan": "Beat Pitt", "overall": 0.9}]},
+            _priced("none", None, (1985, "Beat Pitt", 1)),
+            _priced("zero", 0.0, (1985, "Beat Pitt", 1)),
+        ])
+        assert rep == {"lots": 0, "overall": None, "buttons": []}
+
+    def test_a_recrawled_listing_counts_once_at_its_latest_price(self):
+        rep = price_per_button_by_button([
+            _priced("a", 5.0, (1985, "Beat Pitt", 1)),
+            _priced("a", 3.0, (1985, "Beat Pitt", 1)),
+        ])
+        assert rep["lots"] == 1 and rep["buttons"][0]["avg"] == 3.0
+
+    def test_min_comps_filters_thin_buttons(self):
+        rep = price_per_button_by_button([
+            _priced("a", 2.0, (1985, "Beat Pitt", 1), (1990, "Beat Texas", 1)),
+            _priced("b", 4.0, (1985, "Beat Pitt", 1)),
+        ], min_comps=2)
+        assert [r["slogan"] for r in rep["buttons"]] == ["Beat Pitt"]
+
+    def test_sorted_by_year_then_slogan(self):
+        rep = price_per_button_by_button([
+            _priced("a", 2.0, (1990, "B", 1), (1985, "Z", 1), (1985, "A", 1)),
+        ])
+        assert [(r["year"], r["slogan"]) for r in rep["buttons"]] == [
+            ("1985", "A"), ("1985", "Z"), ("1990", "B")]
