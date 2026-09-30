@@ -4,8 +4,10 @@ ebayscout/scan_log.py
 Where a scan-log record belongs, and how to read a partitioned log back.
 
 Pure: no GCS, no config, no I/O beyond opening the paths a tool hands it.
-seen_items.py owns the blob calls, the tools own their CLIs; this owns the one
-decision both have to agree on — which file a record goes in.
+seen_items.py owns the blob calls, the tools own their CLIs; this owns the
+decisions both have to agree on — which file a record goes in, and what a lot's
+per-button price is (``button_price_fields``, written by main, averaged by
+tools/market_report.py).
 
 Why partitioned
 ---------------
@@ -76,6 +78,40 @@ def appended_text(existing: str, records) -> str:
     if existing and not existing.endswith("\n"):
         existing += "\n"
     return existing + "".join(json.dumps(r) + "\n" for r in records)
+
+
+# --- per-button price ------------------------------------------------------------
+
+def button_price_fields(asking, buttons_detected: int, confirmed) -> dict:
+    """The per-button price fields of one lot's record.
+
+    ``price_per_button`` is the asking price over EVERY button detected in the
+    photo, named or not: a lot of 20 where we could name 12 still sold 20
+    buttons for that price.  Dividing by the confirmed count instead would
+    overstate it.  None when there is no price or nothing was detected, so a
+    report never averages in a zero it did not observe.
+
+    ``buttons`` is every confirmed button with its count in this lot.  The
+    record's ``top_matches`` keeps only the best five, so without this a
+    button's price across lots could only be read off five buttons per lot.
+    ``year_counts`` has every crop but no slogan.
+    """
+    try:
+        ask = float(asking or 0.0)
+    except (TypeError, ValueError):
+        ask = 0.0
+    n = int(buttons_detected or 0)
+    per = round(ask / n, 2) if ask > 0 and n > 0 else None
+
+    counts: dict[tuple, int] = {}
+    for m in confirmed or []:
+        if m.get("year") is None or not m.get("slogan"):
+            continue
+        k = (m["year"], m["slogan"])
+        counts[k] = counts.get(k, 0) + 1
+    buttons = [{"year": y, "slogan": s, "n": c}
+               for (y, s), c in sorted(counts.items(), key=lambda kv: (str(kv[0][0]), kv[0][1]))]
+    return {"buttons_detected": n, "price_per_button": per, "buttons": buttons}
 
 
 # --- reading a partitioned log back ---------------------------------------------

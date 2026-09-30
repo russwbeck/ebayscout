@@ -40,6 +40,8 @@ from . import pipeline_classify
 from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
+from . import price_log
+from . import scan_log
 from . import seen_items
 from . import confusable_slogans as cfs
 from . import edition_twins as edt
@@ -112,6 +114,10 @@ vectors_loaded: bool = False
 # match_logging.SheetLogger, built in startup() against the LOGGER_ID workbook.
 # Fail-open: if it can't open the sheet, logging is silently disabled.
 match_logger: mlog.SheetLogger | None = None
+
+# price_log.PriceLogger: one row per identified button per lot, with the lot's
+# price per button, on the price_log tab of the same workbook. Fail-open.
+price_logger: price_log.PriceLogger | None = None
 
 # Held for the duration of a daily scan / crawl so an overlapping trigger can't
 # start a second concurrent run.
@@ -1339,7 +1345,11 @@ def process_pipeline_lot(job_id: str) -> None:
                "current_price": asking, "seller": ctx.get("seller", ""),
                "gallery_url": ctx.get("gallery_url"),
                # shown on the alert (notifier._trace_text) to join it to watcher.log
-               "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id}
+               "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id,
+               # format and bids reach the scan_log row, which on this path
+               # recorded neither (an auction's "asking" is a bid, not a price)
+               "buying_options": ctx.get("buying_options") or [],
+               "bid_count": ctx.get("bid_count")}
     if needed_hits:
         needed = list(needed_hits.values())
         try:
@@ -1374,6 +1384,7 @@ def process_pipeline_lot(job_id: str) -> None:
     #     `pipeline_command` is bound near the top, beside the other ctx-derived
     #     locals — see the note there; re-binding it here is what hid the
     #     UnboundLocalError at step 4b.
+    record = None
     try:
         record = _scan_log_record(
             listing=listing, photos_processed=1,
@@ -1383,9 +1394,16 @@ def process_pipeline_lot(job_id: str) -> None:
             needed_hit=bool(needed_hits), alerted=bool(needed_hits or undervalued),
             best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
                          if needed_hits else None),
+            # every crop cut from the photo, named or not, less the carpet
+            # guard's phantoms — the divisor of the lot's per-button price
+            buttons_detected=max(0, len(crops) - _n_off_board),
         )
         if run_id:
             record["run_id"] = run_id        # joins a non-deal lot to watcher.log
+        # Button prices to the sheet (price_log tab), from this same record.
+        # Never raises.
+        if price_logger is not None:
+            price_logger.log_listing(record)
         with _scanlog_lock:                  # serialize the GCS read-modify-write
             seen_items.append_scan_log([record])
     except Exception as exc:
@@ -1701,6 +1719,7 @@ def _scan_log_record(
     needed_hit:       bool,
     alerted:          bool,
     best_needed:      dict | None = None,
+    buttons_detected: int | None = None,
 ) -> dict:
     """
     Build one JSONL scan-log record for a processed listing.
@@ -1712,13 +1731,19 @@ def _scan_log_record(
     bid count. Together with `asking` these let a report estimate cost/button
     per YEAR from single-year-lot comps — the metric for pricing listings.
     `top_matches` arrives as the full per-crop best-match list (one per crop).
+
+    `buttons_detected` is passed by the Gemini pipeline, where `top_matches` is
+    only the auto-confirmed crops. It adds `buttons_detected`,
+    `price_per_button` (asking / buttons detected) and `buttons` (every
+    confirmed button with its count), which the market report averages per
+    button (scan_log.button_price_fields).
     """
     title = listing.get("title", "")
     # Year composition of the lot, from each crop's best match.
     year_counts: dict[str, int] = dict(Counter(
         str(m["year"]) for m in top_matches if m.get("year") is not None
     ))
-    return {
+    record = {
         "ts":            datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "item_id":       listing.get("item_id", ""),
         "title":         title,
@@ -1730,7 +1755,7 @@ def _scan_log_record(
         "condition":     listing.get("condition", ""),
         "bid_count":     listing.get("bid_count"),
         "photos_scored": photos_processed,
-        "crops_scored":  len(top_matches),          # detected buttons (proxy)
+        "crops_scored":  len(top_matches),          # matched buttons (pipeline: confirmed only)
         "title_count":   extract_lot_count(title),  # stated lot size, if any
         "title_years":   sorted(extract_years(title)),
         "year_counts":   year_counts,               # year -> # crops matched
@@ -1747,6 +1772,10 @@ def _scan_log_record(
         "needed_hit":    needed_hit,
         "alerted":       alerted,
     }
+    if buttons_detected is not None:
+        record.update(scan_log.button_price_fields(
+            record["asking"], buttons_detected, top_matches))
+    return record
 
 
 def _run_era_queries(ebay_client, ebay_app_id, ebay_cert_id, era_queries: list) -> list:
@@ -2570,6 +2599,10 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
         "search_era":   listing.get("search_era") or "",
         "title_years":   sorted(extract_years(title)),
         "title_decades": sorted(extract_decades(title)),
+        # The listing's format and bids, for the scan_log row and price_log:
+        # an auction's price when scanned is a bid, not an asking price.
+        "buying_options": listing.get("buying_options") or [],
+        "bid_count":      listing.get("bid_count"),
         "command":      command,
         "created":      datetime.datetime.utcnow().isoformat() + "Z",
     }
@@ -2728,7 +2761,7 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
 
 def startup() -> None:
     """Load Google Sheets, the match-logging workbook, and CLIP in the background."""
-    global buy_rules, match_logger
+    global buy_rules, match_logger, price_logger
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -2746,9 +2779,11 @@ def startup() -> None:
         gclient       = sheets_client.get_gspread_client(sheets_json)
         match_ws, confirm_ws = mlog.open_log_sheets(gclient, logger_id)
         match_logger  = mlog.SheetLogger(match_ws, confirm_ws, service="ebayscout")
+        price_logger  = price_log.PriceLogger(price_log.open_price_sheet(gclient, logger_id))
     except Exception as exc:
         print(f"!!! STARTUP: match-logging init failed (logging disabled): {exc}", flush=True)
         match_logger = mlog.SheetLogger(None, None, service="ebayscout")
+        price_logger = price_log.PriceLogger(None)
 
     # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
     # may not finish until an HTTP request (a scan) provides CPU — those paths

@@ -15,9 +15,16 @@ is a clean per-button asking figure for that year. Mixed-year lots are counted
 for supply but not used for the price estimate (their per-year price can't be
 cleanly separated).
 
+Second table: **average price per BUTTON** (year + slogan). Each lot's price per
+button is its asking price over every button detected in it
+(``price_per_button``, written since 2026-09-30); every button named in the lot
+is credited with that figure, and the report averages it over all the lots the
+button turned up in.
+
 IMPORTANT CAVEAT: eBay's Browse API returns ACTIVE listings only, so every price
 here is an ASKING price, not a sold/realized price. Read it as "what sellers are
 asking per button for year Y," a listing-comp guide — not a guaranteed value.
+The asking price is the item price; shipping is not included.
 
 Usage:
     gcloud storage cp -r $BUCKET/scan_log ./scan_log       # the monthly partitions
@@ -28,7 +35,7 @@ Usage:
 import argparse
 import json
 from collections import Counter, defaultdict
-from statistics import median, quantiles
+from statistics import mean, median, quantiles
 
 from ebayscout import scan_log
 from ebayscout.utils import extract_years, extract_lot_count
@@ -68,7 +75,9 @@ def derive_listing(rec: dict) -> dict:
     if title_count is None:
         title_count = extract_lot_count(title)
 
-    crops = rec.get("crops_scored")
+    # buttons_detected counts every crop; a pipeline record's crops_scored
+    # counts only the confirmed ones.
+    crops = rec.get("buttons_detected") or rec.get("crops_scored")
     if crops is None:
         crops = len(rec.get("top_matches") or [])
 
@@ -136,6 +145,65 @@ def cost_per_button_by_year(records, min_comps: int = 1) -> dict:
     return {"by_year": by_year, "supply": dict(supply), "no_comp_years": no_comp}
 
 
+def price_per_button_by_button(records, min_comps: int = 1) -> dict:
+    """
+    Average asking price per button for each button (year + slogan), across
+    every lot it turned up in.
+
+    A lot's price per button is ``asking / buttons detected`` (the record's
+    ``price_per_button``). Each button named in the lot is credited with that
+    figure ONCE per lot: three of one button in a lot are still one observation
+    of what that lot asks per button, so one big lot of duplicates cannot
+    outvote the rest.
+
+    Only records carrying ``price_per_button`` count. Older pipeline records
+    counted confirmed crops only and named five buttons at most, so their
+    per-button figure would be too high and their button list incomplete.
+    A listing logged more than once (a re-crawl) counts once, at its latest
+    record.  Auctions are left out: an auction's price when scanned is its
+    opening or current bid, not an asking price (sold prices are logged by
+    hand with buttonmatcher's /scout sold, in the price_log sheet).
+
+    Returns {
+      "lots":    # lots with a per-button price,
+      "overall": {avg, median} of price_per_button over those lots (or None),
+      "buttons": [{year, slogan, lots, avg, median, min, max}] sorted by year
+                 then slogan, only buttons seen in >= min_comps lots,
+    }
+    """
+    latest: dict = {}
+    for i, rec in enumerate(records):
+        per = rec.get("price_per_button")
+        if not isinstance(per, (int, float)) or per <= 0:
+            continue
+        if "AUCTION" in {str(o).upper() for o in rec.get("buying_options") or []}:
+            continue
+        latest[rec.get("item_id") or f"#{i}"] = rec
+
+    samples: dict = defaultdict(list)   # (year, slogan) -> [price per button]
+    for rec in latest.values():
+        per = float(rec["price_per_button"])
+        for b in {(str(b.get("year")), b.get("slogan"))
+                  for b in rec.get("buttons") or [] if b.get("slogan")}:
+            samples[b].append(per)
+
+    rows = []
+    for (y, slogan), vals in samples.items():
+        if len(vals) < min_comps:
+            continue
+        rows.append({
+            "year": y, "slogan": slogan, "lots": len(vals),
+            "avg": round(mean(vals), 2), "median": round(median(vals), 2),
+            "min": round(min(vals), 2), "max": round(max(vals), 2),
+        })
+    rows.sort(key=lambda r: (r["year"], r["slogan"]))
+
+    pers = [float(r["price_per_button"]) for r in latest.values()]
+    overall = ({"avg": round(mean(pers), 2), "median": round(median(pers), 2)}
+               if pers else None)
+    return {"lots": len(pers), "overall": overall, "buttons": rows}
+
+
 def supply_summary(records) -> dict:
     """Quick supply-side context: counts, asking bands, sellers, format/condition."""
     records = list(records)
@@ -198,6 +266,21 @@ def _print(records, min_comps: int) -> None:
               f"{', '.join(rep['no_comp_years'])}")
         print("  -> these need a single-year listing to surface before we can price them.")
 
+    btn = price_per_button_by_button(records, min_comps=min_comps)
+    print(f"\n=== Average price per BUTTON (asking / buttons detected, min {min_comps} lots) ===")
+    print("ASKING prices, not sold; shipping not included.\n")
+    if not btn["lots"]:
+        print("  No records carry price_per_button yet — it is written from 2026-09-30 on.")
+        return
+    o = btn["overall"]
+    print(f"  {btn['lots']} lots priced; per button across all lots: "
+          f"avg ${o['avg']:.2f}  median ${o['median']:.2f}\n")
+    print(f"  {'year':<6}{'slogan':<36}{'lots':>5}{'avg':>9}{'median':>9}{'min–max':>16}")
+    for r in btn["buttons"]:
+        minmax = f"{r['min']:.2f}–{r['max']:.2f}"
+        print(f"  {r['year']:<6}{r['slogan'][:35]:<36}{r['lots']:>5}{r['avg']:>9.2f}"
+              f"{r['median']:>9.2f}{minmax:>16}")
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -206,7 +289,8 @@ def main(argv=None) -> int:
                     help="Scan-log file(s), and/or the directory of monthly "
                          "partitions pulled from SCAN_LOG_PREFIX.")
     ap.add_argument("--min-comps", type=int, default=1,
-                    help="Min single-year comps before a year is reported (default 1).")
+                    help="Min comps before a row is reported: single-year lots "
+                         "for a year, lots for a button (default 1).")
     args = ap.parse_args(argv)
     _print(_load(args.scan_log), args.min_comps)
     return 0

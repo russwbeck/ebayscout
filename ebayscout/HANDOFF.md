@@ -9,6 +9,53 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-09-30 — button prices, listed and sold (with buttonmatcher's /scout sold)
+
+Branch `ccr-e3b3d859-dga8r8` in both repos. The goal: an average **listing** price
+per button from the scans, and an average **sold** price from the sales the
+operator logs with buttonmatcher's `/scout sold`, joined on the eBay item number.
+
+**Per-lot price.** Each pipeline lot's `scan_log/YYYY-MM.jsonl` row now carries
+`buttons_detected` (every crop, named or not, minus the carpet guard's
+`off_board` phantoms; on this path `crops_scored` has only ever counted the
+confirmed crops), `price_per_button` (`asking / buttons_detected`, null with no
+price or no buttons; shipping not included), `buttons` (every confirmed button
+with its count; `top_matches` keeps five), and now `buying_options` /
+`bid_count`, which this path never recorded. Pure logic:
+`scan_log.button_price_fields`. The frozen legacy CLIP scan writes none of it.
+`tools/market_report.py` averages it per button and leaves auctions out,
+because an auction's price at scan time is a bid.
+
+**The sheet: `price_log.py`, a new SHARED byte-identical file** (added to
+CLAUDE.md's list, with `tests/test_price_log.py`). Three tabs in the Logger
+workbook (`LOGGER_ID`), created at startup when missing:
+- `price_log` holds one row per identified button per lot: kind (`listing` from
+  this service's scans, `sold` from `/scout sold`), source, `ebay_id` (the item
+  number, the join key), year, slogan, `n_in_lot`, `buttons_detected`,
+  `lot_price`, `shipping`, `price_per_button`, allocation, `sale_format`, bids,
+  `sale_date`, `price_basis`, `superseded`, title, URL and run id. Rows are
+  written RAW. The logger fails open, and a `price_log` tab with a different
+  header disables it rather than writing under the wrong columns.
+- `price_avg` is a `QUERY` pivot. Per year + slogan, it shows the average price
+  per button and the lot count, listing beside sold. Auction listings are left
+  out of the listing average; superseded rows are left out of both.
+- `price_by_item` shows each item's lot price as listed beside its sold price.
+
+Neither formula tab is ever rewritten, and **neither formula has been run in a
+real sheet**. If one shows an error, fix it in the sheet, since it's written
+only once. Logging a sale again for the same item marks the earlier rows
+superseded, so it counts once.
+
+**No sold-price checks run here.** An auction tracker was built the same day
+(a watch list, then eBay lookups near each close). It was cut back to a
+once-a-day pass, then removed at the operator's request: the 9 AM scan does its
+usual work and nothing more, and sales are logged by hand with `/scout sold`.
+`tests/test_price_log_wiring.py` pins that none of it comes back quietly.
+
+**Operator, after merge + deploy:** nothing to set up. buttonmatcher needs
+nothing new in Slack either: `/scout sold` is text on the existing `/scout`
+command.
+
 ## 2026-09-27 — CI on production pins; no-overwrite copies; stop list retired
 
 Branch `claude/bot-context-window-check-liwewp` (buttonmatcher has a companion
