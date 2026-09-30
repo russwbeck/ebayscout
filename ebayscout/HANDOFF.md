@@ -9,7 +9,7 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
-## 2026-09-30 — price per button in the scan log and the market report
+## 2026-09-30 — price per button in the scan log, the market report and a sheet
 
 Branch `ccr-e3b3d859-dga8r8`. Each pipeline lot's `scan_log/YYYY-MM.jsonl` row
 now carries:
@@ -26,8 +26,24 @@ now carries:
 named, and a re-crawled listing counts once, at its latest record. Older rows
 have no `price_per_button` and are left out, so the table fills in only from
 this deploy on. The legacy CLIP scan (frozen) does not write the fields. The
-pure logic is `scan_log.button_price_fields`. **Not run:** nothing against Cloud
-Run or GCS; 748 pure tests pass here.
+pure logic is `scan_log.button_price_fields`.
+
+**The same numbers go to a Google Sheet** (`price_log.py`, ebayscout-only). They
+land in the logging workbook (`LOGGER_ID`), beside `match_log`, so no new
+sharing is needed:
+
+- `price_log` gets one row per identified button per lot: year, slogan,
+  `n_in_lot`, `buttons_detected`, asking, `price_per_button`, title, URL and
+  run id. Rows are written RAW, one append per lot, retried on 429 through
+  `sheet_retry`. The logger fails open.
+- `price_avg` holds one `QUERY` that gives each year + slogan its lot count and
+  average / min / max `price_per_button`. Startup creates both tabs if they are
+  missing, and it never rewrites `price_avg` once it exists.
+
+The sheet does not de-duplicate: a listing re-run with `?ignore_seen=1` adds
+its rows again. `market_report.py` de-duplicates.
+
+**Not run:** nothing against Cloud Run, GCS or Sheets; 767 pure tests pass here.
 
 ---
 

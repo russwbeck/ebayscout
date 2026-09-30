@@ -40,6 +40,7 @@ from . import pipeline_classify
 from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
+from . import price_log
 from . import scan_log
 from . import seen_items
 from . import confusable_slogans as cfs
@@ -113,6 +114,10 @@ vectors_loaded: bool = False
 # match_logging.SheetLogger, built in startup() against the LOGGER_ID workbook.
 # Fail-open: if it can't open the sheet, logging is silently disabled.
 match_logger: mlog.SheetLogger | None = None
+
+# price_log.PriceLogger: one row per identified button per lot, with the lot's
+# price per button, on the price_log tab of the same workbook. Fail-open.
+price_logger: price_log.PriceLogger | None = None
 
 # Held for the duration of a daily scan / crawl so an overlapping trigger can't
 # start a second concurrent run.
@@ -1390,6 +1395,10 @@ def process_pipeline_lot(job_id: str) -> None:
         )
         if run_id:
             record["run_id"] = run_id        # joins a non-deal lot to watcher.log
+        # Button prices to the sheet (price_log tab), from this same record.
+        # Never raises.
+        if price_logger is not None:
+            price_logger.log_lot(record)
         with _scanlog_lock:                  # serialize the GCS read-modify-write
             seen_items.append_scan_log([record])
     except Exception as exc:
@@ -2743,7 +2752,7 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
 
 def startup() -> None:
     """Load Google Sheets, the match-logging workbook, and CLIP in the background."""
-    global buy_rules, match_logger
+    global buy_rules, match_logger, price_logger
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -2761,9 +2770,11 @@ def startup() -> None:
         gclient       = sheets_client.get_gspread_client(sheets_json)
         match_ws, confirm_ws = mlog.open_log_sheets(gclient, logger_id)
         match_logger  = mlog.SheetLogger(match_ws, confirm_ws, service="ebayscout")
+        price_logger  = price_log.PriceLogger(price_log.open_price_sheet(gclient, logger_id))
     except Exception as exc:
         print(f"!!! STARTUP: match-logging init failed (logging disabled): {exc}", flush=True)
         match_logger = mlog.SheetLogger(None, None, service="ebayscout")
+        price_logger = price_log.PriceLogger(None)
 
     # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
     # may not finish until an HTTP request (a scan) provides CPU — those paths
