@@ -41,6 +41,19 @@ def _lookalike_line(note: dict | None, indent: str = "     ") -> str:
     return "\n".join(bits)
 
 
+def _trace_text(listing: dict) -> str:
+    """"`ebayscout__<key>.png` · run `3f9a2c1d`" for a pipeline lot: the file
+    the watcher processed and its run id, which the watcher stamps on every
+    watcher.log line of that Gem read — so an alert can be traced to the log
+    and back.  "" when absent (the frozen legacy scan, an older watcher)."""
+    parts = []
+    if listing.get("lot_file"):
+        parts.append(f"`{_esc(listing['lot_file'])}`")
+    if listing.get("run_id"):
+        parts.append(f"run `{_esc(listing['run_id'])}`")
+    return " · ".join(parts)
+
+
 def send_undervalued_alert(
     slack_token: str,
     channel: str,
@@ -102,6 +115,7 @@ def send_undervalued_alert(
         header_text,
         "Matched buttons:\n" + buttons_text + unmatched_text,
         seller_text,
+        _trace_text(listing),
     ]))
 
     _post_message(slack_token, channel, full_text)
@@ -159,6 +173,7 @@ def send_needed_alert(
         header_text,
         "Needed buttons in this lot:\n" + needed_text,
         seller_text,
+        _trace_text(listing),
     ]))
 
     _post_message(slack_token, channel, full_text)

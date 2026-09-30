@@ -78,6 +78,27 @@ def test_image_name_for_response():
     assert pi.image_name_for_response("pipeline/output/a.png") is None
 
 
+# --- run_id_of ---------------------------------------------------------------
+
+def test_run_id_read_from_the_watcher_payload():
+    payload = {"fileName": "IMG_5948.jpg", "runId": "3f9a2c1d",
+               "response": {"total_button_count": 1}}
+    assert pi.run_id_of(payload) == "3f9a2c1d"
+    assert pi.run_id_of(json.dumps(payload)) == "3f9a2c1d"
+    assert pi.run_id_of(json.dumps(payload).encode()) == "3f9a2c1d"
+
+
+def test_run_id_absent_or_unsafe_is_none():
+    # an older watcher sends none; anything but short lowercase hex is dropped,
+    # since it goes into a Slack message verbatim
+    assert pi.run_id_of({"fileName": "a.png", "response": {}}) is None
+    for bad in ("", "abc", "3F9A2C1D", "3f9a2c1d`<!here>", "x" * 8,
+                "a" * 33, 12345678, None):
+        assert pi.run_id_of({"runId": bad}) is None, bad
+    for junk in (None, "", "not json", b"\xff", "[1, 2]", 7):
+        assert pi.run_id_of(junk) is None
+
+
 # --- parse_gemini_response ---------------------------------------------------
 
 FULL = {

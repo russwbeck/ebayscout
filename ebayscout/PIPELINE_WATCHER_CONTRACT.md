@@ -38,6 +38,25 @@ ebayscout posts only **deals** (a needed button, or matched value > asking),
 3. **Notify ebayscout.** `POST https://<ebayscout-service>/pipeline/notify`
    with header `X-Pipeline-Secret: <PIPELINE_SHARED_SECRET>` and body
    `{"object": "pipeline/output/ebayscout__<key>.png.response.json"}`.
+   Wait 45 s per attempt (a cold start runs past 15 s) and retry timeouts, 5xx
+   and 429; on a final failure post "⚠️ Handoff failed … run …" to Slack with
+   `python3 watcher.py --config workerN.json --renotify "<file>"`, which
+   re-sends the saved result without a Gem read.
+
+## Run id — joining watcher.log to a lot (added 2026-09-30)
+The watcher gives every Gem attempt a short hex run id, prefixes every
+watcher.log line of that attempt with it (`[r:3f9a2c1d] …`), and writes it into
+the `.response.json` as top-level `"runId"` beside `fileName`.
+`pipeline_ingest.run_id_of()` (byte-shared with buttonmatcher) reads it, and
+ebayscout puts it:
+- on the **deal alert**, as its last line: `` `ebayscout__<key>.png` · run `3f9a2c1d` ``;
+- on the lot's **`scan_log` row** as `"run_id"` — the only trace for the many
+  lots that post nothing;
+- in the Cloud Run log: `>>> PIPELINE: job … run=…`.
+
+`grep <id> watcher.log` gives that attempt's full story. A watcher from before
+this change sends no id: the alert then names only the file, and the row has no
+`run_id`.
 
 (The provided `watcher.py` already implements all three — `process_gcs_input` +
 the `gcs_input_prefix` poller + `notify_pipeline` routing.)

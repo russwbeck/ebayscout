@@ -875,10 +875,16 @@ def process_pipeline_lot(job_id: str) -> None:
 
     # 1) download image + Gemini JSON from GCS
     try:
-        gemini = ping.parse_gemini_response(_gcs_blob_text(response_name))
+        _rsp_text = _gcs_blob_text(response_name)
+        gemini = ping.parse_gemini_response(_rsp_text)
     except Exception as exc:
         print(f"!!! PIPELINE: response.json read failed for {response_name}: {exc}", flush=True)
         return
+    # The watcher's run id for this Gem read: it tags every watcher.log line of
+    # the attempt, and goes on the deal alert and the scan_log row, so either
+    # side finds the other.  None from a watcher that predates it.
+    run_id = ping.run_id_of(_rsp_text)
+    print(f">>> PIPELINE: job {job_id} run={run_id} image={image_name}", flush=True)
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp.close()
     try:
@@ -1311,7 +1317,9 @@ def process_pipeline_lot(job_id: str) -> None:
     #    yellow-review crops are not surfaced at scale.
     listing = {"item_id": item_id, "title": title, "url": url, "listing_url": url,
                "current_price": asking, "seller": ctx.get("seller", ""),
-               "gallery_url": ctx.get("gallery_url")}
+               "gallery_url": ctx.get("gallery_url"),
+               # shown on the alert (notifier._trace_text) to join it to watcher.log
+               "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id}
     if needed_hits:
         needed = list(needed_hits.values())
         try:
@@ -1356,6 +1364,8 @@ def process_pipeline_lot(job_id: str) -> None:
             best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
                          if needed_hits else None),
         )
+        if run_id:
+            record["run_id"] = run_id        # joins a non-deal lot to watcher.log
         with _scanlog_lock:                  # serialize the GCS read-modify-write
             seen_items.append_scan_log([record])
     except Exception as exc:
