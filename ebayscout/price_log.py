@@ -7,8 +7,8 @@ the way match_logging.py imports sheet_retry, so one file works in ebayscout's
 package layout and buttonmatcher's flat one.  Pure apart from the injected
 worksheet: no gspread import, no clock beyond the row timestamp.
 
-Three writers, one tab, one key
--------------------------------
+Two writers, one tab, one key
+-----------------------------
 Every row is one identified button in one lot, carrying that lot's price per
 button.  A lot holding three of one button gives that button ONE row with
 n_in_lot = 3, so a lot is one observation whatever its duplicates.
@@ -16,8 +16,6 @@ n_in_lot = 3, so a lot is one observation whatever its duplicates.
   kind     source      written by
   listing  scan        ebayscout: a lot the daily scan or /crawl read, at the
                        price it was listed at when scanned
-  sold     auction     ebayscout: the auction tracker, when an auction the scan
-                       saw closes with a bid
   sold     scout_sold  buttonmatcher: /scout sold, a sale the operator reported
                        and confirmed button by button
 
@@ -26,11 +24,12 @@ listing and its sale join on one value however each writer first saw it.
 
 One sale counts once
 --------------------
-The tracker and /scout sold can both record the same sale, and the operator's
-entry is the better record (every button confirmed, prices set by hand).  So:
-/scout sold marks every earlier sold row for its item superseded; the tracker
-writes its rows already superseded when the operator got there first; and the
-tracker never writes an item twice.  Both formula tabs read superseded = no only.
+Logging a sale again — after a correction, or with other prices — marks the
+earlier sold rows for that item superseded, and both formula tabs read
+superseded = no only.  A sale with no item number cannot be matched, so
+/scout sold lets it be logged only once.  (There is no automatic sold-price
+source: an auction tracker was built and removed on 2026-09-30 — the operator
+logs sales by hand.)
 
 Tabs
 ----
@@ -38,7 +37,7 @@ price_log      the rows.
 price_avg      per year + slogan, listing vs sold: average price per button and
                the number of lots.  Auction LISTINGS are left out of the listing
                average — an auction's price when scanned is its opening or
-               current bid, not what anyone is asking — but their sale counts.
+               current bid, not what anyone is asking.
 price_by_item  per eBay item: the lot's listing price beside its sold price.
 Each formula tab is written once, when it is created; edits to it survive.
 """
@@ -64,7 +63,6 @@ KIND_LISTING = "listing"
 KIND_SOLD = "sold"
 
 SOURCE_SCAN = "scan"
-SOURCE_AUCTION = "auction"
 SOURCE_SCOUT_SOLD = "scout_sold"
 
 FORMAT_AUCTION = "auction"
@@ -74,8 +72,6 @@ FORMAT_OTHER = "other"
 FORMATS = (FORMAT_AUCTION, FORMAT_BUY_IT_NOW, FORMAT_BEST_OFFER, FORMAT_OTHER)
 
 BASIS_ASKING = "asking"        # the listing's price when the scan read it
-BASIS_FINAL = "final"          # eBay still showed the ended auction: its close
-BASIS_LAST_SEEN = "last_seen"  # the last bid seen before close; a late bid is missed
 BASIS_ENTERED = "entered"      # typed by the operator
 
 PRICE_HEADER = [
@@ -310,20 +306,17 @@ class PriceLogger:
         with self._lock:
             return self._append(rows, f"listing write for {record.get('item_id')}")
 
-    def log_sale(self, rows, ebay_id, *, source) -> dict:
-        """Write one sale's rows so that the sale counts once.
+    def log_sale(self, rows, ebay_id) -> dict:
+        """Write one sale's rows, replacing any earlier entry for the same item.
 
-        Returns {"status": ..., "replaced": n}: "written"; "superseded" (the
-        tracker's rows, written already superseded because the operator logged
-        this item first); "duplicate" (the tracker already has it — nothing
-        written); "empty"; or "failed".  ``replaced`` counts the earlier rows a
-        /scout sold entry superseded.
+        Returns {"status": "written" | "empty" | "failed", "replaced": n}, where
+        ``replaced`` counts the earlier sold rows for ``ebay_id`` now marked
+        superseded — so a sale logged again counts once, at its latest entry.
         """
         if not rows:
             return {"status": "empty", "replaced": 0}
         if self._ws is None:
             return {"status": "failed", "replaced": 0}
-        sup_i = PRICE_HEADER.index("superseded")
         with self._lock:
             live = []
             if ebay_id:
@@ -333,25 +326,17 @@ class PriceLogger:
                     f"sale lookup for {ebay_id}")
                 if ok and got and len(got) == 2:
                     live = live_sales(got[0], got[1], ebay_id)
-            sources = {s for _, s in live}
-            status = "written"
-            if source == SOURCE_AUCTION:
-                if SOURCE_AUCTION in sources:
-                    return {"status": "duplicate", "replaced": 0}
-                if sources:
-                    rows = [r[:sup_i] + ["yes"] + r[sup_i + 1:] for r in rows]
-                    status = "superseded"
             if not self._append(rows, f"sale write for {ebay_id or '(no item number)'}"):
                 return {"status": "failed", "replaced": 0}
             replaced = 0
-            if source != SOURCE_AUCTION and live:
+            if live:
                 cells = [{"range": f"{col('superseded')}{r}", "values": [["yes"]]}
                          for r, _ in live]
                 ok, _ = self._call(
                     lambda: self._ws.batch_update(cells, value_input_option="RAW"),
                     f"superseding {len(cells)} earlier row(s) for {ebay_id}")
                 replaced = len(cells) if ok else 0
-            return {"status": status, "replaced": replaced}
+            return {"status": "written", "replaced": replaced}
 
 
 # --- the workbook ------------------------------------------------------------------

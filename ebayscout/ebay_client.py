@@ -163,9 +163,6 @@ def find_listings(
             "buying_options": item.get("buyingOptions") or [],
             "condition":      item.get("condition", "") or "",
             "bid_count":      item.get("bidCount"),
-            # When an auction closes (UTC, ISO-8601); the auction tracker
-            # watches it to then (auction_watch.py).
-            "end_date":       item.get("itemEndDate"),
         }
 
     print(f">>> EBAY FIND: '{keywords}' → {len(results)} unique listings", flush=True)
@@ -390,73 +387,6 @@ def get_item(client_id: str, client_secret: str, item_id: str) -> dict | None:
         "buying_options": data.get("buyingOptions") or [],
         "condition":      data.get("condition", "") or "",
         "bid_count":      data.get("bidCount"),
-        "end_date":       data.get("itemEndDate"),
-    }
-
-
-def _money(block) -> float | None:
-    try:
-        v = float((block or {}).get("value"))
-    except (TypeError, ValueError):
-        return None
-    return v if v == v and v not in (float("inf"), float("-inf")) else None
-
-
-def get_auction_state(client_id: str, client_secret: str, item_id: str) -> dict:
-    """One look at an auction for the tracker (auction_watch.py).
-
-    Returns {"status": "live" | "gone" | "error", ...}.  "live" carries
-    current_bid, bid_count, end_date and reserve_met (None when eBay does not
-    say).  "gone" is a 404: eBay no longer shows the item — for an auction past
-    its end date, that means it closed.  Anything else is "error" and the
-    tracker asks again next time.  One attempt, no retry: the next day's pass
-    is the retry.
-
-    The Browse API documents live listings; whether it still returns an auction
-    after it closes is not documented, so the status and eBay's error id are
-    printed on every non-200 — the tracker's first days settle that.
-    """
-    try:
-        token = _get_app_token(client_id, client_secret)
-    except Exception as exc:
-        print(f"!!! EBAY AUTH: token request failed: {exc}", flush=True)
-        return {"status": "error", "error": "auth"}
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
-    }
-    url = f"{config.EBAY_BROWSE_ITEM_URL}/{quote(item_id, safe='')}"
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-    except Exception as exc:
-        print(f"!!! EBAY AUCTION: {item_id}: request failed: {exc}", flush=True)
-        return {"status": "error", "error": str(exc)[:200]}
-    if resp.status_code != 200:
-        try:
-            err = ((resp.json().get("errors") or [{}])[0]).get("errorId")
-        except Exception:
-            err = None
-        print(f">>> EBAY AUCTION: {item_id}: HTTP {resp.status_code} errorId={err}",
-              flush=True)
-        if resp.status_code == 404:
-            return {"status": "gone", "http": 404, "error_id": err}
-        return {"status": "error", "http": resp.status_code, "error_id": err}
-    try:
-        data = resp.json()
-    except Exception:
-        return {"status": "error", "http": 200, "error": "bad json"}
-    try:
-        bids = int(data.get("bidCount") or 0)
-    except (TypeError, ValueError):
-        bids = 0
-    reserve = data.get("reservePriceMet")
-    return {
-        "status":      "live",
-        "current_bid": _money(data.get("currentBidPrice")),
-        "price":       _money(data.get("price")),
-        "bid_count":   bids,
-        "end_date":    data.get("itemEndDate"),
-        "reserve_met": reserve if isinstance(reserve, bool) else None,
     }
 
 

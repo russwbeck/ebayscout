@@ -1,6 +1,6 @@
-"""Standalone runner for test_auction_watch (works without pytest).
+"""Standalone runner for test_price_log_wiring (works without pytest).
 
-    python tests/run_auction_watch_tests.py
+    python tests/run_price_log_wiring_tests.py
 Exits non-zero if any test fails.
 """
 
@@ -15,7 +15,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
 spec = importlib.util.spec_from_file_location(
-    "test_auction_watch", os.path.join(HERE, "test_auction_watch.py")
+    "test_price_log_wiring", os.path.join(HERE, "test_price_log_wiring.py")
 )
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)

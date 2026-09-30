@@ -76,8 +76,8 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
   2026-09-27. `price_log.py` joined on 2026-09-30, with its test
   (`tests/test_price_log.py`, which finds the module in either layout): both
   services write one `price_log` tab in the Logger workbook — ebayscout its
-  listing rows and auction-tracker sales, buttonmatcher's `/scout sold` the
-  sales the operator enters — keyed by the eBay item number, and one file has
+  listing rows, buttonmatcher's `/scout sold` the sales the operator
+  enters — keyed by the eBay item number, and one file has
   to define the columns and the one-sale-counts-once rule. It imports
   `sheet_retry` relative-first, plain-second, like `match_logging.py`. `diff`
   before and after touching any of them.

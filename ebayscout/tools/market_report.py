@@ -161,8 +161,8 @@ def price_per_button_by_button(records, min_comps: int = 1) -> dict:
     per-button figure would be too high and their button list incomplete.
     A listing logged more than once (a re-crawl) counts once, at its latest
     record.  Auctions are left out: an auction's price when scanned is its
-    opening or current bid, not an asking price (their SOLD prices are in the
-    price_log sheet, from the auction tracker).
+    opening or current bid, not an asking price (sold prices are logged by
+    hand with buttonmatcher's /scout sold, in the price_log sheet).
 
     Returns {
       "lots":    # lots with a per-button price,

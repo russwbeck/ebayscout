@@ -40,7 +40,6 @@ from . import pipeline_classify
 from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
-from . import auction_watch
 from . import price_log
 from . import scan_log
 from . import seen_items
@@ -132,10 +131,6 @@ _seen_lock = threading.Lock()
 # several Gem workers feeding results concurrently, unguarded appends would clobber
 # each other's lines; this serializes them within the single ebayscout instance.
 _scanlog_lock = threading.Lock()
-
-# Guards the auction tracker's watch list (a GCS read-modify-write): the lots
-# that add to it and the /check-auctions pass that settles it.
-_watch_lock = threading.Lock()
 
 # --- Gemini → GCS pipeline state (Drive watcher → Gem → GCS → /pipeline/notify) -
 # Shared secret the watcher presents on /pipeline/notify (watcher-direct path).
@@ -523,10 +518,6 @@ def run_scan():
             n = limit if limit > 0 else config.DAILY_PIPELINE_N
             remaining = _run_crawl(n, source="daily", ignore_seen=ignore_seen,
                                    dry_run=effective_dry)
-            # Settle yesterday's closed auctions here, inside this request —
-            # the tracker's only run, so it costs no wake-up of its own.
-            if not effective_dry:
-                _settle_auctions(budget_s=config.AUCTION_CHECK_BUDGET_S)
         else:
             remaining = _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
                                         year_crawl=year_crawl, era_crawl=era_crawl,
@@ -544,112 +535,6 @@ def run_scan():
         "limit":       limit,
         "remaining":   remaining,   # chunk mode: unseen listings left (0 = done)
     }), 200
-
-
-def _watch_auction(record: dict, ctx: dict) -> None:
-    """Add a priced auction lot to the tracker's watch list.  Fail-open."""
-    entry = auction_watch.entry_for_lot(record, ctx)
-    if entry is None:
-        return
-    try:
-        with _watch_lock:
-            watch = seen_items.load_auction_watch()
-            if watch is None or entry["ebay_id"] in watch:
-                return                       # unreadable, or already watched
-            watch[entry["ebay_id"]] = entry
-            if not seen_items.save_auction_watch(watch):
-                return
-        print(f">>> AUCTIONS: watching {entry['ebay_id']} to its close "
-              f"({entry.get('end_date') or 'end unknown'}), {len(watch)} watched.",
-              flush=True)
-    except Exception as exc:
-        print(f"!!! AUCTIONS: could not watch {entry.get('ebay_id')}: {exc}", flush=True)
-
-
-def _settle_auctions(budget_s: float | None = None) -> None:
-    """The daily scan's auction pass.  Fail-open: it must never cost the scan."""
-    if not _watch_lock.acquire(timeout=30):
-        print(">>> AUCTIONS: watch list busy — skipped this scan.", flush=True)
-        return
-    try:
-        print(f">>> AUCTIONS: {_check_auctions(budget_s=budget_s)}", flush=True)
-    except Exception as exc:
-        print(f"!!! AUCTIONS: pass failed: {exc}", flush=True)
-    finally:
-        _watch_lock.release()
-
-
-def _check_auctions(budget_s: float | None = None) -> dict:
-    """One pass of the auction tracker (auction_watch.py).  Caller holds
-    _watch_lock.  Looks up only the auctions that have closed (or close within
-    auction_watch.SNAPSHOT_WINDOW, or have no known end); a close with a bid
-    becomes sold rows in price_log.  ``budget_s`` caps the pass's time."""
-    from . import ebay_client
-    started = time.monotonic()
-    watch = seen_items.load_auction_watch()
-    if watch is None:
-        return {"status": "watch list unreadable"}
-    now = datetime.datetime.now(datetime.timezone.utc)
-    tally: Counter = Counter()
-    todo = [eid for eid in auction_watch.order(watch)
-            if auction_watch.due(watch[eid], now) != "wait"]
-    if todo:
-        try:
-            app_id, cert = _get_secret("EBAY_APP_ID"), _get_secret("EBAY_CERT_ID")
-        except Exception as exc:
-            return {"status": f"no eBay credentials: {exc}", "watching": len(watch)}
-    for eid in todo:
-        if (tally["checked"] >= auction_watch.MAX_CHECKS_PER_RUN
-                or (budget_s and time.monotonic() - started > budget_s)):
-            tally["deferred"] += 1
-            continue
-        tally["checked"] += 1
-        entry = watch[eid]
-        state = ebay_client.get_auction_state(app_id, cert, entry.get("item_id") or eid)
-        outcome = auction_watch.apply_state(entry, state, now)
-        if outcome == "sold":
-            rows = auction_watch.sold_rows(entry)
-            res = (price_logger.log_sale(rows, eid, source=price_log.SOURCE_AUCTION)
-                   if price_logger is not None else {"status": "failed"})
-            r = entry["result"]
-            print(f">>> AUCTIONS: {eid} sold for ${r['price']:.2f} ({r['bids']} bid(s), "
-                  f"{r['basis']}) — {len(rows)} row(s) {res['status']}.", flush=True)
-            if res["status"] == "failed" and not auction_watch.expired(entry, now):
-                tally["write_failed"] += 1     # kept: settled again next pass
-                continue
-            tally["sold"] += 1
-            del watch[eid]
-        elif outcome in ("unsold", "unpriced", "drop"):
-            print(f">>> AUCTIONS: {eid} {outcome} "
-                  f"(eBay: {(state or {}).get('status')}).", flush=True)
-            tally[outcome] += 1
-            del watch[eid]
-    if tally["checked"]:
-        seen_items.save_auction_watch(watch)
-    return {"status": "ok", "watching": len(watch), **tally}
-
-
-@flask_app.route("/check-auctions", methods=["POST"])
-def check_auctions():
-    """
-    Run the auction tracker's pass by hand.  It already runs once a day inside
-    the daily scan (/run-scan), which is the only schedule it has; nothing
-    calls this route on a timer.
-
-    Looks up the watched auctions that have closed and writes each sale to
-    price_log.  Light: eBay item lookups and a sheet write per sale, no CLIP
-    and no images.  An empty or all-open watch list costs one GCS read.
-
-    Auth: as /run-scan — the X-Pipeline-Secret header (DEPLOY.md).
-    """
-    if not _run_scan_authorized(request):
-        return jsonify({"status": "forbidden"}), 403
-    if not _watch_lock.acquire(timeout=120):
-        return jsonify({"status": "busy"}), 409
-    try:
-        return jsonify(_check_auctions()), 200
-    finally:
-        _watch_lock.release()
 
 
 @flask_app.route("/health", methods=["GET"])
@@ -1523,11 +1408,6 @@ def process_pipeline_lot(job_id: str) -> None:
             seen_items.append_scan_log([record])
     except Exception as exc:
         print(f"!!! PIPELINE: scan_log append failed for {item_id}: {exc}", flush=True)
-
-    # An auction goes on the tracker's watch list, to be priced again at its
-    # close (/check-auctions).
-    if record is not None:
-        _watch_auction(record, ctx)
 
     # Per-crop match records carrying the Gemini reconcile fields, so the
     # match_log is schema-compatible with buttonmatcher's pipeline rows.
@@ -2719,11 +2599,10 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
         "search_era":   listing.get("search_era") or "",
         "title_years":   sorted(extract_years(title)),
         "title_decades": sorted(extract_decades(title)),
-        # The listing's format and, for an auction, when it closes — for the
-        # scan_log row and the auction tracker (auction_watch.entry_for_lot).
+        # The listing's format and bids, for the scan_log row and price_log:
+        # an auction's price when scanned is a bid, not an asking price.
         "buying_options": listing.get("buying_options") or [],
         "bid_count":      listing.get("bid_count"),
-        "end_date":       listing.get("end_date"),
         "command":      command,
         "created":      datetime.datetime.utcnow().isoformat() + "Z",
     }

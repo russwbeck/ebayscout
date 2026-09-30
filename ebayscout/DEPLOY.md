@@ -242,27 +242,6 @@ gcloud scheduler jobs create http ebay-scout-daily \
 > returns 409 to an overlapping trigger, so a retry can't start a second
 > concurrent scan.
 
-## Auction tracker — no trigger of its own (2026-09-30)
-
-The auction tracker (`auction_watch.py`) runs **inside the daily scan**: after
-`/run-scan` feeds the day's lots, the same request looks up the watched
-auctions that closed since yesterday (one eBay lookup each, 10 s timeout,
-capped at `config.AUCTION_CHECK_BUDGET_S` = 120 s) and writes each sale to the
-`price_log` tab of the Logger workbook. It adds no wake-up and needs no
-Scheduler job. A dry run (`?dry_run=1`) skips it.
-
-A closed auction gets a sale price only if eBay still returns it
-(`price_basis=final`), or if a bid was seen within 2 hours of the close
-(`last_seen`). A bid seen a day earlier is usually the opening bid and is not
-logged as a sale. Whether the Browse API returns closed auctions is not
-documented; the first days' logs answer it (`>>> EBAY AUCTION: … HTTP …`,
-`>>> AUCTIONS: … sold for …` / `… unpriced …`).
-
-To run the pass by hand, use the operator header (`TOKEN`, as set in "One-time
-backfill" below):
-`curl -X POST "${SERVICE_URL}/check-auctions" -H "$TOKEN"`. It returns
-`{"status": "ok", "watching": N, "checked": …, "sold": …}`.
-
 ---
 
 ## Cloud Build Trigger (auto-deploy on push)

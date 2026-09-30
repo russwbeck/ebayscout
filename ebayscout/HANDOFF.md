@@ -12,7 +12,8 @@ newest is at the top, as in buttonmatcher's copy.
 ## 2026-09-30 — button prices, listed and sold (with buttonmatcher's /scout sold)
 
 Branch `ccr-e3b3d859-dga8r8` in both repos. The goal: an average **listing** price
-and an average **sold** price per button, joined on the eBay item number.
+per button from the scans, and an average **sold** price from the sales the
+operator logs with buttonmatcher's `/scout sold`, joined on the eBay item number.
 
 **Per-lot price.** Each pipeline lot's `scan_log/YYYY-MM.jsonl` row now carries
 `buttons_detected` (every crop, named or not, minus the carpet guard's
@@ -28,8 +29,8 @@ because an auction's price at scan time is a bid.
 **The sheet: `price_log.py`, a new SHARED byte-identical file** (added to
 CLAUDE.md's list, with `tests/test_price_log.py`). Three tabs in the Logger
 workbook (`LOGGER_ID`), created at startup when missing:
-- `price_log` holds one row per identified button per lot: kind (`listing` /
-  `sold`), source (`scan` / `auction` / `scout_sold`), `ebay_id` (the item
+- `price_log` holds one row per identified button per lot: kind (`listing` from
+  this service's scans, `sold` from `/scout sold`), source, `ebay_id` (the item
   number, the join key), year, slogan, `n_in_lot`, `buttons_detected`,
   `lot_price`, `shipping`, `price_per_button`, allocation, `sale_format`, bids,
   `sale_date`, `price_basis`, `superseded`, title, URL and run id. Rows are
@@ -42,43 +43,18 @@ workbook (`LOGGER_ID`), created at startup when missing:
 
 Neither formula tab is ever rewritten, and **neither formula has been run in a
 real sheet**. If one shows an error, fix it in the sheet, since it's written
-only once.
+only once. Logging a sale again for the same item marks the earlier rows
+superseded, so it counts once.
 
-**One sale counts once.** `PriceLogger.log_sale` checks the item's live sold
-rows first. A `/scout sold` entry marks earlier sold rows for that item
-`superseded`. A tracker sale for an item the operator already logged is written
-already superseded. The tracker never writes an item twice.
-
-**The auction tracker** (`auction_watch.py`, pure):
-- When a priced pipeline lot is an auction, it goes on the
-  `ebay_scout/auction_watch.json` watch list with the scan's button breakdown.
-  The feed context now carries format, bids and `itemEndDate`.
-- **Once a day, inside the daily scan's request, after the feed**
-  (`_settle_auctions`): one eBay lookup for each auction that closed since
-  yesterday. It's capped at 120 s and 40 lookups, and skipped on a dry run. There
-  is no scheduler job and no wake-up of its own. The first cut used an hourly
-  job; the operator rejected it on cost the same day. `POST /check-auctions`
-  runs the same pass by hand (operator header).
-- If Browse still returns the closed item, the sale is recorded at the closing
-  bid (`price_basis=final`). If it's gone, the sale is priced only from a bid
-  seen within 2 h of the close (`last_seen`). Otherwise it's dropped as
-  `unpriced`, since a bid seen a day out is usually the opening bid.
-- A close with a bid and no unmet reserve becomes sold rows, spread evenly over
-  the detected buttons. Anything else is dropped. eBay errors are retried daily
-  until 2 days past the close.
-- **Whether Browse returns closed auctions is undocumented.** Every non-200 is
-  logged (`>>> EBAY AUCTION: … HTTP … errorId=…`). If eBay doesn't return them,
-  the tracker records little, and a check timed to each close is the next step.
-  That's a cost to weigh then.
+**No sold-price checks run here.** An auction tracker was built the same day
+(a watch list, then eBay lookups near each close). It was cut back to a
+once-a-day pass, then removed at the operator's request: the 9 AM scan does its
+usual work and nothing more, and sales are logged by hand with `/scout sold`.
+`tests/test_price_log_wiring.py` pins that none of it comes back quietly.
 
 **Operator, after merge + deploy:** nothing to set up. buttonmatcher needs
 nothing new in Slack either: `/scout sold` is text on the existing `/scout`
 command.
-
-**Not run:** nothing against Cloud Run, GCS, eBay, Slack or a real Sheet. 810
-pure tests pass here, and 1741 in buttonmatcher, including its shared copy.
-
----
 
 ## 2026-09-27 — CI on production pins; no-overwrite copies; stop list retired
 

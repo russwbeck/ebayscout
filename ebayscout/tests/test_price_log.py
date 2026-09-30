@@ -239,68 +239,51 @@ def _sup(row):
     return _col(row, "superseded")
 
 
-def test_the_operators_entry_replaces_the_trackers_row_for_the_same_item():
-    ws = _Sheet(_sale("auction"))
-    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold", price=45.0), "256123456789",
-                                      source="scout_sold")
-    assert res == {"status": "written", "replaced": 1}
-    assert [_sup(r) for r in ws.sold("auction")] == ["yes"]
-    assert [_sup(r) for r in ws.sold("scout_sold")] == ["no"]
-
-
-def test_the_tracker_arriving_second_writes_its_row_already_superseded():
-    ws = _Sheet(_sale("scout_sold"))
-    res = pl.PriceLogger(ws).log_sale(_sale("auction"), "256123456789", source="auction")
-    assert res["status"] == "superseded"
-    assert [_sup(r) for r in ws.sold("auction")] == ["yes"]
-    assert [_sup(r) for r in ws.sold("scout_sold")] == ["no"]
-
-
-def test_the_tracker_never_writes_an_item_twice():
-    ws = _Sheet(_sale("auction"))
-    res = pl.PriceLogger(ws).log_sale(_sale("auction"), "256123456789", source="auction")
-    assert res["status"] == "duplicate" and len(ws.sold()) == 1
-
-
 def test_logging_a_sale_again_replaces_the_earlier_entry():
     ws = _Sheet(_sale("scout_sold"))
-    pl.PriceLogger(ws).log_sale(_sale("scout_sold", price=41.0), "256123456789",
-                                source="scout_sold")
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold", price=41.0), "256123456789")
+    assert res == {"status": "written", "replaced": 1}
     assert [_sup(r) for r in ws.sold()] == ["yes", "no"]
+
+
+def test_a_first_entry_replaces_nothing():
+    ws = _Sheet()
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789")
+    assert res == {"status": "written", "replaced": 0} and len(ws.sold()) == 1
 
 
 def test_other_items_and_listing_rows_are_left_alone():
     listing = pl.lot_rows(kind="listing", source="scan", ebay_id="256123456789",
                           counts={(1975, "A"): 1}, prices={(1975, "A"): 3.0},
                           buttons_in_lot=1, lot_price=3.0)
-    ws = _Sheet(listing + _sale("auction", ebay_id="111111111111"))
-    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789", source="scout_sold")
+    ws = _Sheet(listing + _sale("scout_sold", ebay_id="111111111111"))
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789")
     assert res == {"status": "written", "replaced": 0}
     assert all(_sup(r) == "no" for r in ws.rows[1:])
 
 
 def test_a_sale_with_no_item_number_is_written_without_a_lookup():
     ws = _Sheet()
-    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold", ebay_id=""), "", source="scout_sold")
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold", ebay_id=""), "")
     assert res["status"] == "written"
     assert [c[0] for c in ws.calls] == ["append"]
 
 
 def test_a_failed_write_supersedes_nothing():
-    ws = _Sheet(_sale("auction"), fail=[None, ValueError("tab deleted")])
-    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789", source="scout_sold")
+    ws = _Sheet(_sale("scout_sold"), fail=[None, ValueError("tab deleted")])
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold", price=41.0), "256123456789")
     assert res["status"] == "failed"
     assert [_sup(r) for r in ws.sold()] == ["no"]
 
 
 def test_a_failed_lookup_still_records_the_sale():
     ws = _Sheet(fail=[ValueError("read failed")])
-    res = pl.PriceLogger(ws).log_sale(_sale("auction"), "256123456789", source="auction")
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789")
     assert res["status"] == "written" and len(ws.sold()) == 1
 
 
 def test_live_sales_reads_the_trimmed_columns_the_api_returns():
-    bd = [["kind", "source", "ebay_id"], ["sold", "auction", "9"], ["sold", "auction", "256123456789"],
+    bd = [["kind", "source", "ebay_id"], ["sold", "scout_sold", "9"], ["sold", "scout_sold", "256123456789"],
           [], ["listing", "scan", "256123456789"], ["sold", "scout_sold", "256123456789"]]
     q = [["superseded"], ["no"], ["yes"]]
     assert pl.live_sales(bd, q, "256123456789") == [(6, "scout_sold")]
@@ -319,7 +302,7 @@ def test_a_scanned_lot_is_one_raw_write():
 def test_nothing_to_write_makes_no_call():
     ws = _Sheet()
     assert not pl.PriceLogger(ws).log_listing(_scan_record(price_per_button=None))
-    assert pl.PriceLogger(ws).log_sale([], "1", source="auction")["status"] == "empty"
+    assert pl.PriceLogger(ws).log_sale([], "1")["status"] == "empty"
     assert ws.calls == []
 
 
@@ -340,7 +323,7 @@ def test_any_other_failure_is_reported_not_raised_or_retried():
 def test_a_disabled_logger_does_nothing():
     lg = pl.PriceLogger(None)
     assert not lg.enabled and not lg.log_listing(_scan_record())
-    assert lg.log_sale(_sale("auction"), "1", source="auction")["status"] == "failed"
+    assert lg.log_sale(_sale("scout_sold"), "1")["status"] == "failed"
 
 
 # --- the averages --------------------------------------------------------------------
