@@ -400,8 +400,7 @@ def _scheduler_token_ok(token: str, host: str) -> bool:
              if b]
     audiences = {a.rstrip("/") for a in (
         [os.environ.get("SCHEDULER_AUDIENCE", "").strip()] + bases
-        + [f"{b}/run-scan" for b in bases]
-        + [f"{b}/check-auctions" for b in bases]) if a}
+        + [f"{b}/run-scan" for b in bases]) if a}
     try:
         from google.oauth2 import id_token as _idtok
         from google.auth.transport import requests as _greq
@@ -524,6 +523,10 @@ def run_scan():
             n = limit if limit > 0 else config.DAILY_PIPELINE_N
             remaining = _run_crawl(n, source="daily", ignore_seen=ignore_seen,
                                    dry_run=effective_dry)
+            # Settle yesterday's closed auctions here, inside this request —
+            # the tracker's only run, so it costs no wake-up of its own.
+            if not effective_dry:
+                _settle_auctions(budget_s=config.AUCTION_CHECK_BUDGET_S)
         else:
             remaining = _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
                                         year_crawl=year_crawl, era_crawl=era_crawl,
@@ -563,11 +566,26 @@ def _watch_auction(record: dict, ctx: dict) -> None:
         print(f"!!! AUCTIONS: could not watch {entry.get('ebay_id')}: {exc}", flush=True)
 
 
-def _check_auctions() -> dict:
+def _settle_auctions(budget_s: float | None = None) -> None:
+    """The daily scan's auction pass.  Fail-open: it must never cost the scan."""
+    if not _watch_lock.acquire(timeout=30):
+        print(">>> AUCTIONS: watch list busy — skipped this scan.", flush=True)
+        return
+    try:
+        print(f">>> AUCTIONS: {_check_auctions(budget_s=budget_s)}", flush=True)
+    except Exception as exc:
+        print(f"!!! AUCTIONS: pass failed: {exc}", flush=True)
+    finally:
+        _watch_lock.release()
+
+
+def _check_auctions(budget_s: float | None = None) -> dict:
     """One pass of the auction tracker (auction_watch.py).  Caller holds
-    _watch_lock.  Looks up only the auctions near or past their close; a
-    close with a bid becomes sold rows in price_log."""
+    _watch_lock.  Looks up only the auctions that have closed (or close within
+    auction_watch.SNAPSHOT_WINDOW, or have no known end); a close with a bid
+    becomes sold rows in price_log.  ``budget_s`` caps the pass's time."""
     from . import ebay_client
+    started = time.monotonic()
     watch = seen_items.load_auction_watch()
     if watch is None:
         return {"status": "watch list unreadable"}
@@ -581,7 +599,8 @@ def _check_auctions() -> dict:
         except Exception as exc:
             return {"status": f"no eBay credentials: {exc}", "watching": len(watch)}
     for eid in todo:
-        if tally["checked"] >= auction_watch.MAX_CHECKS_PER_RUN:
+        if (tally["checked"] >= auction_watch.MAX_CHECKS_PER_RUN
+                or (budget_s and time.monotonic() - started > budget_s)):
             tally["deferred"] += 1
             continue
         tally["checked"] += 1
@@ -600,7 +619,7 @@ def _check_auctions() -> dict:
                 continue
             tally["sold"] += 1
             del watch[eid]
-        elif outcome in ("unsold", "drop"):
+        elif outcome in ("unsold", "unpriced", "drop"):
             print(f">>> AUCTIONS: {eid} {outcome} "
                   f"(eBay: {(state or {}).get('status')}).", flush=True)
             tally[outcome] += 1
@@ -613,15 +632,15 @@ def _check_auctions() -> dict:
 @flask_app.route("/check-auctions", methods=["POST"])
 def check_auctions():
     """
-    The auction tracker, called hourly by Cloud Scheduler (DEPLOY.md).
+    Run the auction tracker's pass by hand.  It already runs once a day inside
+    the daily scan (/run-scan), which is the only schedule it has; nothing
+    calls this route on a timer.
 
-    Looks up the watched auctions that close within the hour (their bid) or
-    have closed (their result), and writes each sale to price_log.  Light: eBay
-    item lookups and a sheet write per sale, no CLIP and no images, done inside
-    this request so it has CPU.  An empty or all-distant watch list costs one
-    GCS read.
+    Looks up the watched auctions that have closed and writes each sale to
+    price_log.  Light: eBay item lookups and a sheet write per sale, no CLIP
+    and no images.  An empty or all-open watch list costs one GCS read.
 
-    Auth: as /run-scan — Cloud Scheduler's OIDC token or X-Pipeline-Secret.
+    Auth: as /run-scan — the X-Pipeline-Secret header (DEPLOY.md).
     """
     if not _run_scan_authorized(request):
         return jsonify({"status": "forbidden"}), 403

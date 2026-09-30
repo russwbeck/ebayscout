@@ -12,19 +12,25 @@ The loop
    one named button, goes on the watch list (``AUCTION_WATCH_BLOB``), keyed by
    its eBay item number and carrying the button breakdown the scan already
    made.  Nothing about the lot is looked at again.
-2. ``/check-auctions`` — Cloud Scheduler, hourly — asks eBay about every entry
-   that closes within SNAPSHOT_WINDOW and records its bid ("last seen"), and
-   about every entry whose end time has passed:
+2. Once a day, inside the daily scan's own request (no extra wake-up, no
+   scheduler job), the tracker asks eBay about every entry whose end time has
+   passed — one lookup each, only for auctions that closed since yesterday:
      * eBay still shows it → its closing bid is final (price_basis "final");
-     * eBay no longer shows it → the last bid seen stands (price_basis
-       "last_seen"), because a bid in the last minutes is missed.
+     * eBay no longer shows it → the sale price is unknown and it is dropped,
+       unless a bid was seen within SNAPSHOT_WINDOW of the close (price_basis
+       "last_seen").  A bid from a day before the close is usually the opening
+       bid, and logging it as the sale would be wrong, not just imprecise.
+   An entry whose close is within SNAPSHOT_WINDOW of that run, or whose end
+   time is unknown, is looked at too, for that fallback bid or the end time.
 3. A close with at least one bid, and no reserve left unmet, becomes sold rows
    (price_log, source "auction") priced evenly over the lot's detected buttons.
    Anything else was unsold and is dropped.
 
 The Browse API documents only live listings, so whether step 2 ever sees
 "final" is an open question the first days of running answer
-(ebay_client.get_auction_state prints eBay's status for every non-200).
+(ebay_client.get_auction_state prints eBay's status for every non-200).  If
+eBay does not return closed auctions, this tracker records little, and a check
+timed to each close would be the next step — a cost to weigh then, not now.
 """
 
 from __future__ import annotations
@@ -33,13 +39,13 @@ import datetime
 
 from . import price_log as pl
 
-# Checks run hourly, so looking at everything that closes within 75 minutes
-# means the last look before a close is 0–60 minutes out.
-SNAPSHOT_WINDOW = datetime.timedelta(minutes=75)
+# A bid seen this close to the close is taken as the sale price when eBay
+# stops showing the item; anything older is not a sale price.
+SNAPSHOT_WINDOW = datetime.timedelta(hours=2)
 # eBay errors on an entry this long after its close: stop asking.
 GIVE_UP_AFTER = datetime.timedelta(days=2)
-# Bounds one request's eBay calls; the rest wait an hour.
-MAX_CHECKS_PER_RUN = 60
+# Bounds one pass's eBay calls; the rest wait for the next day's scan.
+MAX_CHECKS_PER_RUN = 40
 
 
 def parse_time(value) -> datetime.datetime | None:
@@ -106,9 +112,10 @@ def apply_state(entry: dict, state: dict, now: datetime.datetime) -> str:
     """Fold one look at eBay into ``entry`` (in place) and say what happens.
 
     Returns "keep" (look again later), "sold" (``entry["result"]`` holds the
-    sale), "unsold" (closed with no bid, or reserve not met), or "drop" (nothing
-    more to learn: it vanished before its end, or eBay could not be asked for
-    GIVE_UP_AFTER past it).
+    sale), "unsold" (closed with no bid, or reserve not met), "unpriced" (closed,
+    but eBay no longer shows it and no bid was seen near the close), or "drop"
+    (it vanished before its end, or eBay could not be asked for GIVE_UP_AFTER
+    past it).
     """
     status = (state or {}).get("status")
     if status == "live":
@@ -123,9 +130,12 @@ def apply_state(entry: dict, state: dict, now: datetime.datetime) -> str:
         return "keep"
     end = parse_time(entry.get("end_date"))
     if status == "gone":
-        if end is not None and now >= end and entry.get("last_seen"):
-            return _close(entry, pl.BASIS_LAST_SEEN)
-        return "drop"          # ended early, pulled, or closed before we ever saw a bid
+        if end is not None and now >= end:
+            seen_at = parse_time((entry.get("last_seen") or {}).get("ts"))
+            if seen_at is not None and end - seen_at <= SNAPSHOT_WINDOW:
+                return _close(entry, pl.BASIS_LAST_SEEN)
+            return "unpriced"
+        return "drop"          # ended early, or pulled
     if end is not None and now - end > GIVE_UP_AFTER:
         return "drop"
     return "keep"

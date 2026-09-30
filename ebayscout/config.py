@@ -185,6 +185,10 @@ HUNT_IDS_BLOB = "ebay_scout/hunt_ids.json"
 # The auctions the scan priced, watched until they close: {ebay item number:
 # entry}.  Read and written only by main under _watch_lock (one container).
 AUCTION_WATCH_BLOB = "ebay_scout/auction_watch.json"
+# The daily scan settles the auctions that closed since yesterday inside its own
+# request, after the feed.  This caps how long that pass may add to the scan
+# (one eBay lookup per closed auction, 10 s timeout each); the rest wait a day.
+AUCTION_CHECK_BUDGET_S = 120
 
 # How many hunt IDs the ordinary DAILY scheduled run drains per day (auto, in
 # the background of the normal scan). The daily run already happens, so this

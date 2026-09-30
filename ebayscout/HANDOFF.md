@@ -49,25 +49,31 @@ rows first. A `/scout sold` entry marks earlier sold rows for that item
 `superseded`. A tracker sale for an item the operator already logged is written
 already superseded. The tracker never writes an item twice.
 
-**The auction tracker** (`auction_watch.py`, pure; `/check-auctions`):
+**The auction tracker** (`auction_watch.py`, pure):
 - When a priced pipeline lot is an auction, it goes on the
   `ebay_scout/auction_watch.json` watch list with the scan's button breakdown.
   The feed context now carries format, bids and `itemEndDate`.
-- An hourly Cloud Scheduler call (auth as `/run-scan`; the audience may also be
-  `…/check-auctions`) records the bid of each auction in its last 75 minutes.
-- Once an auction's end time has passed, the same call settles it. If Browse
-  still returns the item, the sale is recorded at the closing bid
-  (`price_basis=final`). A 404 means the last bid seen stands (`last_seen`).
+- **Once a day, inside the daily scan's request, after the feed**
+  (`_settle_auctions`): one eBay lookup for each auction that closed since
+  yesterday. It's capped at 120 s and 40 lookups, and skipped on a dry run. There
+  is no scheduler job and no wake-up of its own. The first cut used an hourly
+  job; the operator rejected it on cost the same day. `POST /check-auctions`
+  runs the same pass by hand (operator header).
+- If Browse still returns the closed item, the sale is recorded at the closing
+  bid (`price_basis=final`). If it's gone, the sale is priced only from a bid
+  seen within 2 h of the close (`last_seen`). Otherwise it's dropped as
+  `unpriced`, since a bid seen a day out is usually the opening bid.
 - A close with a bid and no unmet reserve becomes sold rows, spread evenly over
-  the detected buttons. Anything else is dropped as unsold. eBay errors are
-  retried until 2 days past the close. At most 60 lookups per call.
+  the detected buttons. Anything else is dropped. eBay errors are retried daily
+  until 2 days past the close.
 - **Whether Browse returns closed auctions is undocumented.** Every non-200 is
-  logged (`>>> EBAY AUCTION: … HTTP … errorId=…`), so the first days answer it.
+  logged (`>>> EBAY AUCTION: … HTTP … errorId=…`). If eBay doesn't return them,
+  the tracker records little, and a check timed to each close is the next step.
+  That's a cost to weigh then.
 
-**Operator, after merge + deploy:** create the hourly `ebay-scout-auctions`
-job (DEPLOY.md → "Auction tracker trigger"). Until it exists, auctions pile up
-on the watch list and are never settled. buttonmatcher needs nothing new in
-Slack: `/scout sold` is text on the existing `/scout` command.
+**Operator, after merge + deploy:** nothing to set up. buttonmatcher needs
+nothing new in Slack either: `/scout sold` is text on the existing `/scout`
+command.
 
 **Not run:** nothing against Cloud Run, GCS, eBay, Slack or a real Sheet. 810
 pure tests pass here, and 1741 in buttonmatcher, including its shared copy.

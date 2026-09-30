@@ -1,5 +1,6 @@
 """The auction tracker (2026-09-30): auctions the scan priced, followed to their
-close, and their sale written to price_log.
+close, and their sale written to price_log — once a day, inside the daily
+scan's request, never on a timer of its own.
 
 auction_watch.py is pure and tested directly; ebay_client.get_auction_state
 with requests patched out; main.py imports the heavy stack, so its wiring is
@@ -68,8 +69,9 @@ def test_only_priced_auctions_with_a_named_button_are_watched():
 
 # --- when to look -------------------------------------------------------------------------
 
-def test_an_auction_is_looked_at_in_its_last_hour_and_after_it_closes():
+def test_an_auction_is_looked_at_only_near_or_after_its_close():
     e = _entry()
+    assert aw.due(e, T_END - datetime.timedelta(hours=20)) == "wait"
     assert aw.due(e, T_END - datetime.timedelta(hours=3)) == "wait"
     assert aw.due(e, T_END - datetime.timedelta(minutes=50)) == "snapshot"
     assert aw.due(e, T_END) == "settle"
@@ -103,10 +105,19 @@ def test_ebay_still_showing_the_closed_auction_gives_the_final_price():
     assert e["result"] == {"price": 39.0, "bids": 1, "basis": "final"}
 
 
-def test_gone_after_the_close_settles_on_the_last_bid_seen():
-    e = _entry(last_seen={"ts": "x", "bid": 31.0, "bids": 4, "reserve_met": None})
-    assert aw.apply_state(e, {"status": "gone"}, T_END + datetime.timedelta(minutes=5)) == "sold"
+def test_gone_after_the_close_settles_on_a_bid_seen_near_the_close():
+    near = (T_END - datetime.timedelta(minutes=40)).isoformat()
+    e = _entry(last_seen={"ts": near, "bid": 31.0, "bids": 4, "reserve_met": None})
+    assert aw.apply_state(e, {"status": "gone"}, T_END + datetime.timedelta(hours=15)) == "sold"
     assert e["result"] == {"price": 31.0, "bids": 4, "basis": "last_seen"}
+
+
+def test_a_bid_from_long_before_the_close_is_not_a_sale_price():
+    """A daily pass sees most auctions a day out, at their opening bid."""
+    early = (T_END - datetime.timedelta(hours=20)).isoformat()
+    e = _entry(last_seen={"ts": early, "bid": 0.99, "bids": 1, "reserve_met": None})
+    assert aw.apply_state(e, {"status": "gone"}, T_END + datetime.timedelta(hours=4)) == "unpriced"
+    assert "result" not in e
 
 
 def test_no_bid_or_an_unmet_reserve_is_unsold():
@@ -119,8 +130,8 @@ def test_nothing_to_learn_is_dropped():
     # gone before its end: pulled or ended early
     assert aw.apply_state(_entry(), {"status": "gone"},
                           T_END - datetime.timedelta(hours=2)) == "drop"
-    # gone after the close, but never seen live near it
-    assert aw.apply_state(_entry(), {"status": "gone"}, T_END) == "drop"
+    # gone after the close, never seen live at all
+    assert aw.apply_state(_entry(), {"status": "gone"}, T_END) == "unpriced"
 
 
 def test_ebay_errors_are_retried_until_two_days_past_the_close():
@@ -240,6 +251,23 @@ def test_startup_opens_the_price_tab_in_the_logging_workbook():
     assert "price_logger = price_log.PriceLogger(None)" in body   # fail-open
 
 
+def test_the_daily_scan_is_the_trackers_only_schedule():
+    body = _fn("run_scan")
+    crawl = body.index("_run_crawl(n, source=\"daily\"")
+    settle = body.index("_settle_auctions(budget_s=config.AUCTION_CHECK_BUDGET_S)")
+    assert crawl < settle                                  # after the feed, same request
+    assert "if not effective_dry:" in body[crawl:settle]   # a dry run writes nothing
+    # no scheduler job addresses the tracker
+    assert "check-auctions" not in _fn("_scheduler_token_ok")
+
+
+def test_the_pass_is_bounded_and_can_never_cost_the_scan():
+    body = _fn("_check_auctions")
+    assert "time.monotonic() - started > budget_s" in body
+    settle = _fn("_settle_auctions")
+    assert "_watch_lock.acquire(timeout=" in settle and "except Exception" in settle
+
+
 def test_the_tracker_route_is_authorized_like_run_scan():
     body = _fn("check_auctions")
     assert body.index("_run_scan_authorized(request)") < body.index("_check_auctions()")
@@ -253,6 +281,3 @@ def test_a_sale_goes_through_the_shared_count_once_path():
     # an unreadable list is never overwritten with an empty one
     assert body.index("if watch is None:") < body.index("save_auction_watch(watch)")
 
-
-def test_the_scheduler_may_address_its_token_to_the_tracker():
-    assert '[f"{b}/check-auctions" for b in bases]' in _fn("_scheduler_token_ok")

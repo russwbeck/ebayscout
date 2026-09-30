@@ -409,8 +409,8 @@ def get_auction_state(client_id: str, client_secret: str, item_id: str) -> dict:
     current_bid, bid_count, end_date and reserve_met (None when eBay does not
     say).  "gone" is a 404: eBay no longer shows the item — for an auction past
     its end date, that means it closed.  Anything else is "error" and the
-    tracker asks again next time.  One attempt, no retry: the next scheduled
-    check is the retry.
+    tracker asks again next time.  One attempt, no retry: the next day's pass
+    is the retry.
 
     The Browse API documents live listings; whether it still returns an auction
     after it closes is not documented, so the status and eBay's error id are
@@ -427,7 +427,7 @@ def get_auction_state(client_id: str, client_secret: str, item_id: str) -> dict:
     }
     url = f"{config.EBAY_BROWSE_ITEM_URL}/{quote(item_id, safe='')}"
     try:
-        resp = requests.get(url, headers=headers, timeout=20)
+        resp = requests.get(url, headers=headers, timeout=10)
     except Exception as exc:
         print(f"!!! EBAY AUCTION: {item_id}: request failed: {exc}", flush=True)
         return {"status": "error", "error": str(exc)[:200]}
