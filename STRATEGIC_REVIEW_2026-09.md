@@ -13,6 +13,19 @@ parity diffs, the GitHub PR state (re-queried: zero open PRs in either repo),
 and the three Slack channels the services post to. The torch/cv2/GCP paths did
 not run here and nothing in GCS or Cloud Run logs was read. See §9.*
 
+> **SUPERSEDED IN DIRECTION, 2026-10-02 (operator).** The goal is now to
+> **replace Gemini entirely: the learned YOLO detector plus CLIP is the whole
+> pipeline.** This review's advice to move the effort away from "drop Gemini"
+> (§1, §3.5) and to keep detection Gemini-guided no longer stands. It was
+> right about Hough: dense lots were 65.9% and not closing. A trained detector
+> changed the numbers. On 254 operator-reviewed lots it counts 98.0% exact
+> against the operator's corrected count, and Gemini counts 85.4% (80.5% on
+> dense lots). That also meets SR-20's own condition: park detection-first
+> work "unless SR-18 shows Gemini itself under 95%". The rollout and what
+> replaces each of Gemini's jobs: buttonmatcher `HANDOFF.md`, entry
+> "2026-10-02 (evening)". The defects, the correction affordance and the
+> human-side metrics below still stand.
+
 ---
 
 ## 1. The verdict, in five lines
@@ -46,7 +59,8 @@ not run here and nothing in GCS or Cloud Run logs was read. See §9.*
    own 2026-09-13 audit: 100 buttons confirmed, 1 written), and hand
    corrections in the sheet. The next quarter should be aimed there.
 
-**Recommendation in one sentence:** freeze the register, fix the four
+**Recommendation in one sentence** (its "drop the human, not Gemini" half is
+superseded: see the 2026-10-02 note at the top)**:** freeze the register, fix the four
 defects, build the correction affordance that Stage D actually needs, and
 redirect the automation effort from "drop Gemini" to "drop the human's
 clicks" — measured by the two numbers that matter (clicks per lot, buttons
@@ -224,8 +238,9 @@ every lever has a kill switch, every fix ships to both repos. But the program's
 own data now says the detection-first staircase (B → C) is not the path to
 "fewer human clicks" in any reasonable horizon, while the human-side stage (D)
 is blocked on an unbuilt affordance and the largest human costs are unmeasured.
-The recommendation is to keep detection in Gemini-guided steady state, stop
-adding measurement, and put the next quarter into the human-side levers with
+The recommendation *(superseded 2026-10-02: the goal is now to replace Gemini
+with the learned detector + CLIP; see the note at the top)* is to keep
+detection in Gemini-guided steady state, stop adding measurement, and put the next quarter into the human-side levers with
 two headline metrics: **operator taps per confirmed button** and
 **buttons written to the sheet per operator-hour**, both derivable from
 `confirm_log` + `Bot Writes` today.

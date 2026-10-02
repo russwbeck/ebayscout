@@ -1,7 +1,10 @@
 # Automation Roadmap — Hough Detection & Slogan Matching
 
 **Goal:** fully automated button identification — no human count input, no human
-review on the happy path.
+review on the happy path, **and no Gemini: the learned YOLO detector plus CLIP is
+the whole pipeline** (operator, 2026-10-02). The Hough phases below are history
+now that a trained detector counts 98.0% of reviewed lots exactly. The live
+rollout is in buttonmatcher `HANDOFF.md`, "2026-10-02 (evening)".
 **Grounding data:** `buttonmatcher/log_analysis.md` (Logger_5: 2,891 match rows /
 615 images; +788-lot instrumented follow-up) and the Logger_3 validation batch
 (2026-07-01: five `/sort` lots with user counts + 13 daily-pipeline lots), and

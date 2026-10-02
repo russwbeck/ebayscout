@@ -17,6 +17,11 @@ The legacy CLIP-only scan (`_run_daily_scan` / `_evaluate_listing`) is FROZEN,
 not live: reachable only via `?year_crawl` / `?era_crawl` / `?hunt_ids` and
 `DAILY_PIPELINE_FEED=0`. See DECISIONS.md #33.
 
+**Strategic goal (operator, 2026-10-02): replace Gemini entirely.** The learned
+YOLO detector plus CLIP is to be the whole pipeline, in both services. The
+rollout runs in buttonmatcher first (its `HANDOFF.md`, "2026-10-02 (evening)"),
+and this service follows each step after buttonmatcher has proved it.
+
 Full design history and rationale live in `ebayscout/DECISIONS.md` — read it
 before changing deploy/gunicorn/CPU behavior. For the latest status and next
 steps, start with `ebayscout/HANDOFF.md`; the standing plan is
