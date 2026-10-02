@@ -12,6 +12,15 @@ and ebayscout — update both.*
 
 ## 1. The end state we are building toward
 
+> **2026-10-02, operator: Gemini is replaced entirely.** The end state is the
+> learned YOLO detector (buttonmatcher `learned_detector.py`, `tools/detector/`) finding and
+> cropping every button and CLIP plus the reference library naming it. There
+> is no Gemini call at all, not even as an auditor, so Stage C below becomes
+> "Gemini removed". Hough is no longer the road to Stage B: the trained
+> detector counts 98.0% of 254 operator-reviewed lots exactly (Gemini 85.4%).
+> Rollout and the job-by-job replacement table: buttonmatcher `HANDOFF.md`,
+> "2026-10-02 (evening)".
+
 A lot photo arrives — from the eBay crawl, the daily scan, or the user's
 camera — and with **no human input and no Gemini call on the happy path**:
 
@@ -31,7 +40,8 @@ rare mistake* — and every correction makes the system permanently better.
 (never propose otherwise), CPU only exists inside in-flight HTTP requests,
 Gemini worker capacity is finite and shared, and the human's taps are the most
 expensive resource in the system. Automation here means *moving work down the
-cost ladder*: human → Gemini → CLIP/Hough → nothing.
+cost ladder*: human → Gemini → CLIP/learned detector → nothing. Since
+2026-10-02 the Gemini rung is to be removed, not just used less.
 
 ---
 
@@ -201,7 +211,10 @@ lets an unchecked count through as `auto` — so it may trip the rollback but
 cannot show a stratum is clean. *Prize:* radius/count independence; Gemini load unchanged but now
 redundant on ~⅓ of lots (growing as mask variants land).
 
-**Stage C — Gemini becomes an auditor, not a guide.** Call the Gem only when
+**Stage C — Gemini becomes an auditor, not a guide.** *(Superseded
+2026-10-02: the target is now no Gemini at all. Gemini's slogan read is
+replaced by CLIP plus reference agreement once that is measured to match
+`gemini_auto`'s precision. See the note in §1.)* Call the Gem only when
 (a) the gate is below `auto`, (b) CLIP's match lacks reference agreement
 (`ref_sim` low or absent), or (c) the lot is flagged needed/valuable.
 *Enter when:* Stage B stable AND the `ref_sim` calibration (in flight — now

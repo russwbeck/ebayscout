@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-09-26)
+# eBay Scout — Session Handoff (latest entry 2026-10-02)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,25 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-02 — strategic goal: replace Gemini (YOLO + CLIP is the whole pipeline)
+
+**Operator, 2026-10-02: Gemini is to be removed entirely.** The end state for
+both services is buttonmatcher's learned YOLO detector finding and cropping
+every button, and CLIP plus the reference library naming it, with no Gem call.
+This supersedes `STRATEGIC_REVIEW_2026-09.md`'s advice to keep detection
+Gemini-guided; the shared strategy docs now say so. The detector counts 98.0%
+of 254 operator-reviewed buttonmatcher lots exactly, and Gemini counts 85.4%.
+
+**Nothing changes here yet.** The rollout runs in buttonmatcher first. Its
+`HANDOFF.md` entry "2026-10-02 (evening)" has the step list and what replaces
+each of Gemini's jobs. ebayscout follows each step only after buttonmatcher has
+proved it, because this service has no human lane: a wrong auto here is never
+reviewed, and its surest crops auto-stage into the reference set. Do not add
+new dependence on Gemini (new Gem prompt fields, new Gemini-only guards)
+without asking the operator.
 
 ---
 
