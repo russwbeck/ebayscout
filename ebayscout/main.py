@@ -43,6 +43,7 @@ from . import normalize
 from . import price_log
 from . import scan_log
 from . import seen_items
+from . import seller_listings
 from . import confusable_slogans as cfs
 from . import edition_twins as edt
 from .utils import (
@@ -576,11 +577,16 @@ def handle_crawl_command(ack, body):
     """
     raw = (body.get("text") or "").strip()
     cap = config.CRAWL_MAX_LOTS_CAP
+    is_seller, seller = seller_listings.parse_command(raw)
+    if is_seller:
+        _start_seller_pull(ack, seller)
+        return
     try:
         n = int(raw)
     except ValueError:
         ack(f"Usage: `/crawl <N>` — N = how many lots to search (1–{cap}). "
-            f"Example: `/crawl 800`.")
+            f"Example: `/crawl 800`.  Or `/crawl seller <username>` to pull one "
+            f"seller's Penn State prices into the Logger sheet.")
         return
     if n < 1 or n > cap:
         ack(f"`/crawl {raw}` is out of range — pick N between 1 and {cap}. "
@@ -608,6 +614,71 @@ def handle_crawl_command(ack, body):
                 pass
 
     threading.Thread(target=_kick, daemon=True).start()
+
+
+def _start_seller_pull(ack, seller) -> None:
+    """`/crawl seller <username>`: ack now, pull inside /internal/seller.
+
+    A few Browse pages and one sheet write — no photos, no Gemini, no CLIP — so
+    it needs no cap and no confirmation.  It still runs inside its own request
+    through the load balancer, like /crawl, so it never depends on CPU after
+    the ack.
+    """
+    if not seller:
+        ack("Usage: `/crawl seller <username>` — e.g. `/crawl seller kling24toys`.")
+        return
+    ack(f"📋 Pulling *{seller}*'s Penn State listings into the "
+        f"`{seller_listings.tab_name(seller)}` tab of the Logger sheet "
+        f"(prices only: no photos, no Gemini).")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            requests.post(f"{base}/internal/seller", params={"seller": seller},
+                          headers=headers, timeout=600)
+        except Exception as exc:
+            print(f"!!! SELLER: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"seller pull for {seller} failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
+@flask_app.route("/internal/seller", methods=["POST"])
+def internal_seller():
+    """Pull one seller's Penn State listings into seller_<username> in the
+    Logger workbook (seller_listings.py), synchronously in this request.
+    Auth: per-startup X-Internal-Secret header."""
+    if not _internal_request_ok(request):
+        return jsonify({"status": "forbidden"}), 403
+    _, seller = seller_listings.parse_command("seller " + (request.args.get("seller") or ""))
+    if not seller:
+        return jsonify({"status": "bad seller"}), 400
+
+    from . import ebay_client
+    tab, rows, error = seller_listings.tab_name(seller), [], None
+    try:
+        items = ebay_client.find_seller_listings(
+            _get_secret("EBAY_APP_ID"), _get_secret("EBAY_CERT_ID"), seller)
+        pulled_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        rows = [r for r in (seller_listings.summary_row(i, pulled_at, seller) for i in items) if r]
+        gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
+        tab = seller_listings.write_tab(gclient, _get_secret("LOGGER_ID"), seller, rows)
+    except Exception as exc:
+        traceback.print_exc()
+        error = f"{type(exc).__name__}: {exc}"
+    try:
+        notifier.send_text(_slack_token, _channel_id,
+                           seller_listings.summary_text(seller, len(rows), tab, error))
+    except Exception as exc:
+        print(f"!!! SELLER: Slack summary failed: {exc}", flush=True)
+    if error:
+        return jsonify({"status": "failed", "seller": seller, "error": error}), 500
+    return jsonify({"status": "ok", "seller": seller, "listings": len(rows), "tab": tab}), 200
 
 
 @flask_app.route("/internal/crawl", methods=["POST"])

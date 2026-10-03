@@ -342,6 +342,11 @@ def send_crawl10_summary(
     _post_message(slack_token, channel, "\n".join(lines))
 
 
+def send_text(slack_token: str, channel: str, text: str) -> None:
+    """Post one ready-made line to the scout channel (e.g. a seller-pull summary)."""
+    _post_message(slack_token, channel, text)
+
+
 def send_warning(slack_token: str, channel: str, message: str) -> None:
     """Post a plain-text operational warning to the scout channel."""
     _post_message(slack_token, channel, f"⚠️ *ebayscout warning*: {message}")

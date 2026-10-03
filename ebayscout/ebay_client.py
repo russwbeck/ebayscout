@@ -294,6 +294,59 @@ def find_era_augmented_listings(
     return all_listings
 
 
+def find_seller_listings(
+    client_id: str,
+    client_secret: str,
+    seller: str,
+    queries=None,
+    max_pages: int | None = None,
+) -> list[dict]:
+    """
+    Every Penn State listing one seller has up, as raw Browse item summaries
+    (seller_listings.summary_row turns them into sheet rows).
+
+    The Browse ``sellers:{…}`` filter does the narrowing, so this is a few pages
+    of title + price — no getItem, no photos.  EXCLUDED_SELLERS is deliberately
+    NOT applied: the seller being priced against may be one the deal scan skips.
+    Apparel and excluded categories are still dropped, as in find_listings.
+    Raises when the token or a page fails: a partial pull would read as the
+    seller's whole stock.
+    """
+    from . import seller_listings as sl
+
+    queries = queries or sl.QUERIES
+    max_pages = max_pages or sl.MAX_PAGES
+    excluded_cats = {str(c) for c in config.EXCLUDED_CATEGORY_IDS}
+    token = _get_app_token(client_id, client_secret)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
+    }
+
+    items: dict[str, dict] = {}
+    for query in queries:
+        for page in range(max_pages):
+            params = sl.search_params(seller, query, page * sl.PAGE_SIZE)
+            batch = _get_with_retry(config.EBAY_BROWSE_SEARCH_URL, params, headers).json()
+            summaries = batch.get("itemSummaries") or []
+            for item in summaries:
+                iid = item.get("itemId")
+                if not iid or iid in items:
+                    continue
+                if any(str((c or {}).get("categoryId")) in excluded_cats
+                       for c in (item.get("categories") or [])):
+                    continue
+                if title_has_excluded_keyword(item.get("title") or "", config.EXCLUDED_KEYWORDS):
+                    continue
+                items[iid] = item
+            if len(summaries) < sl.PAGE_SIZE:
+                break
+
+    print(f">>> EBAY SELLER: {seller} → {len(items)} listings over "
+          f"{len(queries)} queries.", flush=True)
+    return list(items.values())
+
+
 def get_item_pictures(client_id: str, client_secret: str, item_id: str) -> list[str]:
     """
     Fetch the primary + additional image URLs for a listing via Browse getItem.
