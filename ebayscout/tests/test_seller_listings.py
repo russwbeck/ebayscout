@@ -202,6 +202,6 @@ def test_nothing_but_the_command_pulls_a_seller():
     assert callers == ["internal_seller"]
 
 
-def test_kling24toys_is_not_excluded_from_the_scan():
-    """Removed 2026-10-03: its lots belong in scan_log and price_log."""
-    assert "kling24toys" not in {s.lower() for s in config.EXCLUDED_SELLERS}
+def test_no_seller_is_excluded_from_the_scan():
+    """Emptied 2026-10-03: every seller's lots belong in scan_log and price_log."""
+    assert config.EXCLUDED_SELLERS == []

@@ -189,13 +189,12 @@ HUNT_IDS_BLOB = "ebay_scout/hunt_ids.json"
 DAILY_HUNT_BUDGET = 50
 
 # --- eBay sellers to exclude (exact username, case-insensitive) ---
-# kling24toys was removed 2026-10-03: excluding it kept its lots out of the
-# scan_log and price_log, so the listing prices undercounted a major seller.
-# Its lots now run like anyone else's, deal alerts included.
-EXCLUDED_SELLERS: list[str] = [
-    "gertb2002",
-    "wearepinstate",
-]
+# Empty since 2026-10-03, at the operator's request ("we want the data"): an
+# excluded seller's lots never reached scan_log or price_log, so the listing
+# prices left out kling24toys, gertb2002 and wearepinstate.  Every seller's lots
+# now run the same way, deal alerts included.  Apparel is still dropped by
+# EXCLUDED_KEYWORDS and EXCLUDED_CATEGORY_IDS.
+EXCLUDED_SELLERS: list[str] = []
 
 # --- Etsy sellers to exclude (shop_name, case-insensitive) ---
 ETSY_EXCLUDED_SELLERS: list[str] = []
