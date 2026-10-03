@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-02)
+# eBay Scout — Session Handoff (latest entry 2026-10-03)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,34 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-03 — `/crawl seller <username>`: another seller's prices, on demand
+
+The operator is pricing a batch of their own listings (season sets and bowl
+buttons) and wants to be competitive with kling24toys. **`/crawl seller
+kling24toys`** pulls that seller's Penn State listings from the Browse API (the
+`sellers:{…}` filter, queries "penn state" / "psu" / "nittany", up to 5 pages of
+200 each) and writes them to a **`seller_kling24toys`** tab in the Logger workbook:
+item number, title, price, shipping, format, bids, condition, URL. Each pull
+replaces the tab. A line in `#ebay-checker` says how many it found, or why it
+failed.
+
+- **Cost:** a handful of Browse calls and one sheet write. No photos, no Gemini,
+  no CLIP, nothing marked seen. It runs only when typed: nothing schedules it and
+  the daily scan never calls it (`test_nothing_but_the_command_pulls_a_seller`),
+  in keeping with "no checks beyond the 9 AM scan".
+- **EXCLUDED_SELLERS is not applied.** kling24toys is excluded from deal alerts;
+  reading its prices is a different job. Apparel keywords and excluded
+  categories are still dropped.
+- **Matching titles to buttons is left to the sheet**, not done here. The
+  comparison is a one-off pricing job, and a seller's own title wording is
+  easier to read by hand than to guess at in code.
+- Code: `seller_listings.py` (pure: command parsing, Browse params, row shape,
+  the tab write), `ebay_client.find_seller_listings`, `main._start_seller_pull`
+  → `/internal/seller` (the work runs inside its own request, like `/crawl`).
+  Tests: `tests/test_seller_listings.py` (+ runner).
 
 ---
 
