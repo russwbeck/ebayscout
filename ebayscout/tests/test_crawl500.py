@@ -17,10 +17,11 @@ from ebayscout import config
 
 class TestCrawl500Queries:
     def test_or_expansion_covers_all_banks_and_types(self):
+        # singular and plural types since 2026-10-03 (SEARCH_BUTTON_TYPES)
         q = config.CRAWL500_QUERIES
-        assert len(q) == len(config.CRAWL500_BANKS) * len(config.BUTTON_TYPES)
+        assert len(q) == len(config.CRAWL500_BANKS) * len(config.SEARCH_BUTTON_TYPES)
         for bank in config.CRAWL500_BANKS:
-            for btn in config.BUTTON_TYPES:
+            for btn in config.SEARCH_BUTTON_TYPES:
                 assert f"Penn State {bank} {btn}" in q
 
     def test_includes_all_three_banks(self):

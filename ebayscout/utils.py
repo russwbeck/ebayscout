@@ -320,16 +320,34 @@ def parse_price_source(text: str) -> tuple[float | None, str, int | None]:
         return None, "", None
 
 
-def title_has_excluded_keyword(title: str, excluded_keywords: list[str]) -> bool:
+def _keyword_pattern(phrase: str) -> str:
+    """A phrase as a whole word (or words), allowing a plural "s"/"es"."""
+    return (r"(?<![a-z0-9])" + re.escape(phrase.lower().strip())
+            + r"(?:e?s)?(?![a-z0-9])")
+
+
+def title_has_excluded_keyword(title: str, excluded_keywords: list[str],
+                               exceptions=()) -> bool:
     """
     Return True if the listing title contains any of the excluded keywords.
-    Comparison is case-insensitive substring match.
+
+    Keywords match as WHOLE words, case-insensitively, with or without a plural
+    "s"/"es": "shirt" catches "Shirt", "T-Shirt" and "shirts" but no longer
+    "vest" inside "Harvest" or "map" inside "Mapleton".  Until 2026-10-03 this
+    was a substring test, which dropped real buttons.
+
+    ``exceptions`` are phrases taken out of the title before the test, for the
+    few keywords that also name a button: "yellow jacket" (the 1979 basketball
+    "Sting the Yellow Jackets") keeps "jacket" from firing, and "new jersey"
+    keeps "jersey" from dropping a Rutgers game.
 
     Used to filter out apparel/clothing listings from eBay and Etsy results
     before CLIP processing.
     """
-    title_lower = title.lower()
-    return any(kw.lower() in title_lower for kw in excluded_keywords)
+    text = (title or "").lower()
+    for phrase in exceptions or ():
+        text = re.sub(_keyword_pattern(phrase), " ", text)
+    return any(re.search(_keyword_pattern(kw), text) for kw in excluded_keywords)
 
 
 def format_manual_result(

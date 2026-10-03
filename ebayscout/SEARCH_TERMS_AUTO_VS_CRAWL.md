@@ -12,18 +12,27 @@
 > are now shared from `config` across both paths — see the seller-safeguard PR.
 > This note is purely about *which search phrases each path sends to eBay*.
 
+> **Update (2026-10-03):** both paths also search the plurals `buttons` and
+> `pins` as their own phrases (`SEARCH_BUTTON_TYPES`), the daily scan adds four
+> bank-only `Mellon Bank` phrases, and `/crawl` reads up to `CRAWL_MAX_PAGES` (5)
+> newest-first pages of 200 per query instead of one. The two sets are still
+> separate; nothing below was unified. The frozen year/era crawls keep the
+> singular `BUTTON_TYPES`.
+
 ## Daily / auto scan — runs every day (`main.py`, general pass)
 
-`EBAY_SEARCH_QUERIES` (9, unrestricted):
-- `Penn State {button, pin, badge, pinback}` (4)
-- `Nittany Lions {button, pin, badge, pinback}` (4)
+`EBAY_SEARCH_QUERIES` (17, unrestricted):
+- `Penn State {button, pin, badge, pinback, buttons, pins}` (6)
+- `Nittany Lions {button, pin, badge, pinback, buttons, pins}` (6)
 - `Central Counties Bank` (1, standalone — no button-type suffix)
+- `Mellon Bank {button, pin, buttons, pins}` (4, bank-only titles name no school;
+  Citizens Bank gets none — alone it is Citizens Bank Park)
 
-`PSU_SEARCH_QUERIES` (4, **restricted to Sports-Mem category 64482** to drop
+`PSU_SEARCH_QUERIES` (6, **restricted to Sports-Mem category 64482** to drop
 "Power Supply Unit" electronics noise):
-- `PSU {button, pin, badge, pinback}`
+- `PSU {button, pin, badge, pinback, buttons, pins}`
 
-→ **13 queries per daily run.**
+→ **23 queries per daily run**, one page (newest 100) each.
 
 ### On-demand only (separate flags, NOT part of the daily run or `/crawl`)
 - `?era_crawl=1` → `MELLON_CITIZENS_ERA_QUERIES`: prefixes
@@ -32,10 +41,13 @@
 - `?year_crawl=1` → year-augmented `YEAR_CRAWL_TERMS` / `YEAR_CRAWL_PSU_TERMS`
   across a set of years.
 
-## `/crawl <N>` — `CRAWL500_QUERIES` (12, unrestricted)
-- `Penn State Citizens {button, pin, badge, pinback}` (4)
-- `Penn State Mellon {button, pin, badge, pinback}` (4)
-- `Penn State Central Counties {button, pin, badge, pinback}` (4)
+## `/crawl <N>` — `CRAWL500_QUERIES` (18, unrestricted)
+- `Penn State Citizens {button, pin, badge, pinback, buttons, pins}` (6)
+- `Penn State Mellon {button, pin, badge, pinback, buttons, pins}` (6)
+- `Penn State Central Counties {button, pin, badge, pinback, buttons, pins}` (6)
+
+Up to 5 newest-first pages of 200 per query (`CRAWL_MAX_PAGES`). The Gemini cost
+is still bounded by N: only N lots are fed.
 
 ## Differences
 

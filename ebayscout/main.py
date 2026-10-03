@@ -29,6 +29,7 @@ from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 from . import config
+from . import catchup
 from . import sheets_client
 from . import notifier
 from . import etsy_client
@@ -581,12 +582,17 @@ def handle_crawl_command(ack, body):
     if is_seller:
         _start_seller_pull(ack, seller)
         return
+    is_catchup, catchup_n, catchup_err = catchup.parse_command(raw)
+    if is_catchup:
+        _start_catchup(ack, catchup_n, catchup_err)
+        return
     try:
         n = int(raw)
     except ValueError:
         ack(f"Usage: `/crawl <N>` — N = how many lots to search (1–{cap}). "
             f"Example: `/crawl 800`.  Or `/crawl seller <username>` to pull one "
-            f"seller's Penn State prices into the Logger sheet.")
+            f"seller's Penn State prices into the Logger sheet, or "
+            f"`/crawl catchup` to count still-listed lots that have no price row.")
         return
     if n < 1 or n > cap:
         ack(f"`/crawl {raw}` is out of range — pick N between 1 and {cap}. "
@@ -648,6 +654,46 @@ def _start_seller_pull(ack, seller) -> None:
     threading.Thread(target=_kick, daemon=True).start()
 
 
+def _start_catchup(ack, n, error) -> None:
+    """`/crawl catchup [N]`: ack now, run inside /internal/catchup.
+
+    Bare `/crawl catchup` only counts the qualifying lots (catchup.py): Browse
+    calls and one sheet read, nothing fed.  `/crawl catchup <N>` feeds up to N
+    of them, one Gemini read each, so N is capped like /crawl's.
+    """
+    cap = config.CRAWL_MAX_LOTS_CAP
+    if error:
+        ack(error)
+        return
+    if n > cap:
+        ack(f"`/crawl catchup {n}` is out of range — pick N between 1 and {cap}. "
+            f"(Each lot is a paid Gemini read, so the cap guards a typo.)")
+        return
+    if n:
+        ack(f"🧾 Starting `/crawl catchup {n}` — feeding up to {n} still-listed lot(s) "
+            f"that have no price row (one Gemini read each; no alerts, no crop "
+            f"staging). A summary posts here when the feed is done.")
+    else:
+        ack("🧾 Counting still-listed lots that were read before price logging "
+            "began and have no price row (nothing is fed). The count posts here.")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            requests.post(f"{base}/internal/catchup", params={"n": n},
+                          headers=headers, timeout=3500)
+        except Exception as exc:
+            print(f"!!! CATCHUP: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"/crawl catchup failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
 @flask_app.route("/internal/seller", methods=["POST"])
 def internal_seller():
     """Pull one seller's Penn State listings into seller_<username> in the
@@ -679,6 +725,32 @@ def internal_seller():
     if error:
         return jsonify({"status": "failed", "seller": seller, "error": error}), 500
     return jsonify({"status": "ok", "seller": seller, "listings": len(rows), "tab": tab}), 200
+
+
+@flask_app.route("/internal/catchup", methods=["POST"])
+def internal_catchup():
+    """Run `/crawl catchup` synchronously in this request (catchup.py, _run_catchup).
+    ?n=0 counts; ?n=N feeds up to N.  Auth: per-startup X-Internal-Secret header.
+    Holds the scan lock, so it never overlaps the daily scan or a /crawl feed."""
+    if not _internal_request_ok(request):
+        return jsonify({"status": "forbidden"}), 403
+    try:
+        n = max(0, min(config.CRAWL_MAX_LOTS_CAP, int(request.args.get("n", 0) or 0)))
+    except ValueError:
+        return jsonify({"status": "bad n"}), 400
+    if not _scan_lock.acquire(blocking=False):
+        try:
+            notifier.send_warning(_slack_token, _channel_id,
+                                  "/crawl catchup: a scan or /crawl is running — try again "
+                                  "when it finishes.")
+        except Exception:
+            pass
+        return jsonify({"status": "already running"}), 409
+    try:
+        result = _run_catchup(n)
+    finally:
+        _scan_lock.release()
+    return jsonify({"status": "catchup complete", "n": n, **result}), 200
 
 
 @flask_app.route("/internal/crawl", methods=["POST"])
@@ -1020,6 +1092,11 @@ def process_pipeline_lot(job_id: str) -> None:
     # leaving a labeled example"; the answer was none of ebayscout's, ~75% of
     # pipeline volume.
     pipeline_command = f'{ctx.get("command", "/crawl")}-pipeline'
+    # `/crawl catchup` (catchup.py): a lot read once before price logging began,
+    # re-read only for its price rows.  It writes scan_log + price_log and is
+    # marked seen; no alert, no staged crop, no label / vectors / match rows,
+    # since each of those already exists from its first pass.
+    is_catchup = ctx.get("command") == catchup.COMMAND
 
     gem_slogans = gemini.get("detected_slogans") or []
     gem_count   = gemini.get("total_button_count") or 0
@@ -1181,7 +1258,7 @@ def process_pipeline_lot(job_id: str) -> None:
     # input/output blobs after processing, so this is the only durable copy.
     # Fail-open; kill switch BUTTONMATCHER_LABEL_HARVEST=0. Confirmation
     # outcomes join via confirm_log on job_id.
-    if lharv.harvest_enabled():
+    if lharv.harvest_enabled() and not is_catchup:
         try:
             _lh_rec_n = len(rec_info) if rec_crops else 0
             _lh_base = ("gemini_led" if _lh_led
@@ -1242,7 +1319,8 @@ def process_pipeline_lot(job_id: str) -> None:
                                                    restrict_years=restrict_years,
                                                    vec_sink=_vec_sink)
     crop_candidates = {i: d["candidates"] for i, d in enumerate(diagnostics)}
-    seen_items.write_crop_vectors(job_id, _vec_sink, item_id=item_id)
+    if not is_catchup:
+        seen_items.write_crop_vectors(job_id, _vec_sink, item_id=item_id)
 
     # 5b) DB-DIRECT agreement tier (buttonmatcher parity — main._gemini_db_candidates).
     #     The candidate lists above are YEAR-FOLDED: _score_slogans emits ONE row
@@ -1352,13 +1430,15 @@ def process_pipeline_lot(job_id: str) -> None:
     # the alert and the scan_log's `alerted` column can never disagree about
     # whether this lot was reported.
     undervalued = undervalued and config.ENABLE_UNDERVALUED_ALERTS
+    # A catch-up lot was reported (or not) on its first pass; never twice.
+    post_alerts = not is_catchup
 
     # 8) AUTO-STAGE the surest crops (real Hough detection + Gemini-confirmed +
     #    overall >= STAGE_CONF) straight into reference/_staging for buttonmatcher's
     #    /reference review — no Yes/No prompt. Reuses stage_pipeline_crop + promote
     #    so there is one promotion path; ebayscout never writes vectors.pt.
-    stageable = pipeline_classify.staging_candidates(
-        auto_confirmed, circle_info, resolution, config.STAGE_CONF)
+    stageable = ([] if is_catchup else pipeline_classify.staging_candidates(
+        auto_confirmed, circle_info, resolution, config.STAGE_CONF))
     manifest_crops: list[dict] = []
     _roi_used = bool(_diag.get("roi_retry"))
     for b in stageable:
@@ -1421,7 +1501,7 @@ def process_pipeline_lot(job_id: str) -> None:
                # recorded neither (an auction's "asking" is a bid, not a price)
                "buying_options": ctx.get("buying_options") or [],
                "bid_count": ctx.get("bid_count")}
-    if needed_hits:
+    if needed_hits and post_alerts:
         needed = list(needed_hits.values())
         try:
             # Report the value of the WHOLE lot (all confirmed buttons), not just
@@ -1432,7 +1512,7 @@ def process_pipeline_lot(job_id: str) -> None:
                 needed_buttons=needed, asking_price=asking or 0.0, lot_value=lot_value)
         except Exception as exc:
             print(f"!!! PIPELINE: needed alert failed for {item_id}: {exc}", flush=True)
-    if undervalued:
+    if undervalued and post_alerts:
         try:
             matches = []
             for b in auto_confirmed:
@@ -1462,7 +1542,8 @@ def process_pipeline_lot(job_id: str) -> None:
             best_score=max((b["overall"] or 0.0 for b in auto_confirmed), default=0.0),
             top_matches=[{"year": b["year"], "slogan": b["slogan"],
                           "overall": b["overall"] or 0.0} for b in auto_confirmed],
-            needed_hit=bool(needed_hits), alerted=bool(needed_hits or undervalued),
+            needed_hit=bool(needed_hits),
+            alerted=bool(needed_hits or undervalued) and post_alerts,
             best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
                          if needed_hits else None),
             # every crop cut from the photo, named or not, less the carpet
@@ -1471,6 +1552,10 @@ def process_pipeline_lot(job_id: str) -> None:
         )
         if run_id:
             record["run_id"] = run_id        # joins a non-deal lot to watcher.log
+        if is_catchup:
+            # a second record for a lot first read before PRICE_LOG_START, so
+            # tools/market_report can tell it from the first one
+            record["catchup"] = True
         # Button prices to the sheet (price_log tab), from this same record.
         # Never raises.
         if price_logger is not None:
@@ -1483,7 +1568,7 @@ def process_pipeline_lot(job_id: str) -> None:
     # Per-crop match records carrying the Gemini reconcile fields, so the
     # match_log is schema-compatible with buttonmatcher's pipeline rows.
     try:
-        if match_logger is not None and diagnostics:
+        if match_logger is not None and diagnostics and not is_catchup:
             _det = mlog.build_detection_diag(
                 h=_diag.get("h") or image_bgr.shape[0],
                 w=_diag.get("w") or image_bgr.shape[1],
@@ -1556,7 +1641,8 @@ def process_pipeline_lot(job_id: str) -> None:
     except Exception as exc:
         print(f"!!! PIPELINE: match_log failed for {item_id}: {exc}", flush=True)
 
-    _log_pipeline_count(job_id, item_id, gem_count, command=pipeline_command)
+    if not is_catchup:
+        _log_pipeline_count(job_id, item_id, gem_count, command=pipeline_command)
 
     # mark the lot seen on confirmation (never at feed) so it's never re-run; a
     # Gem that never answered leaves the lot un-seen (the watcher retries it), so
@@ -2685,19 +2771,21 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
     return key
 
 
-def _collect_ebay_listings(ebay_app_id, ebay_cert_id):
+def _collect_ebay_listings(ebay_app_id, ebay_cert_id, max_pages: int = 1):
     """The daily eBay pull (used by the daily CLIP scan and the daily pipeline
     feed — NOT by /crawl, which has its own search): the general queries
     (EBAY_SEARCH_QUERIES) plus the PSU queries restricted to Sports-Mem (drops
     Power-Supply-Unit noise), with the standard seller/keyword/category
     safeguards from config. Returns a combined (not-yet-deduped) list; callers
-    dedup."""
+    dedup.  ``max_pages`` reads deeper than the newest window (catch-up only;
+    the daily scan reads one page)."""
     from . import ebay_client       # lazy import — matches the other callers
     out = ebay_client.find_all_listings(
         client_id=ebay_app_id, client_secret=ebay_cert_id,
         queries=config.EBAY_SEARCH_QUERIES,
         excluded_sellers=config.EXCLUDED_SELLERS,
         max_results=config.EBAY_MAX_RESULTS,
+        max_pages=max_pages,
     )
     out += ebay_client.find_all_listings(
         client_id=ebay_app_id, client_secret=ebay_cert_id,
@@ -2705,6 +2793,7 @@ def _collect_ebay_listings(ebay_app_id, ebay_cert_id):
         excluded_sellers=config.EXCLUDED_SELLERS,
         max_results=config.EBAY_MAX_RESULTS,
         category_ids=config.SPORTS_MEMO_CATEGORY_ID,
+        max_pages=max_pages,
     )
     return out
 
@@ -2753,16 +2842,18 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
             all_listings = _collect_ebay_listings(ebay_app_id, ebay_cert_id)
         else:
             # /crawl: its own fixed on-demand search — deliberately separate from
-            # the daily queries. OR-expansion → one <=200 window per (bank x type),
-            # with the same eBay safeguards as the daily/auto scan (excluded
-            # sellers + keywords; category 11450 dropped inside find_listings via
-            # config.EXCLUDED_CATEGORY_IDS regardless).
+            # the daily queries. OR-expansion → up to CRAWL_MAX_PAGES newest-first
+            # pages of 200 per (bank x type), with the same eBay safeguards as
+            # the daily/auto scan (excluded sellers + keywords; category 11450
+            # dropped inside find_listings via config.EXCLUDED_CATEGORY_IDS
+            # regardless).
             all_listings = ebay_client.find_all_listings(
                 client_id=ebay_app_id, client_secret=ebay_cert_id,
                 queries=config.CRAWL500_QUERIES,
                 excluded_sellers=config.EXCLUDED_SELLERS,
                 excluded_keywords=config.EXCLUDED_KEYWORDS,
                 max_results=200,
+                max_pages=config.CRAWL_MAX_PAGES,
             )
     except Exception as exc:
         print(f"!!! FEED[{source}]: search failed: {exc}", flush=True)
@@ -2824,6 +2915,98 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
     )
     print(f">>> FEED[{source}]: feed complete — fed={fed}/{len(new_listings)}.", flush=True)
     return fed
+
+
+def _run_catchup(n: int) -> dict:
+    """`/crawl catchup`: find still-listed lots read before price logging began
+    that have no listing row (catchup.candidates), then count them (n == 0) or
+    feed up to n into the pipeline as catch-up lots.
+
+    The searches are the daily and /crawl phrases, CRAWL_MAX_PAGES deep, because
+    these lots are by definition older than the newest windows.  Fed lots are
+    marked seen at once (see catchup.py) so a second run cannot feed them again.
+    process_pipeline_lot recognises the command and writes only scan_log and
+    price_log for them: no alert, no staging, no training records.
+    """
+    from . import ebay_client
+
+    def _warn(msg):
+        try:
+            notifier.send_warning(_slack_token, _channel_id, msg)
+        except Exception:
+            pass
+
+    try:
+        ebay_app_id  = _get_secret("EBAY_APP_ID")
+        ebay_cert_id = _get_secret("EBAY_CERT_ID")
+    except Exception as exc:
+        _warn(f"/crawl catchup: no eBay credentials ({exc}).")
+        return {"qualify": 0, "fed": 0}
+
+    try:
+        found = _collect_ebay_listings(ebay_app_id, ebay_cert_id,
+                                       max_pages=config.CRAWL_MAX_PAGES)
+        found += ebay_client.find_all_listings(
+            client_id=ebay_app_id, client_secret=ebay_cert_id,
+            queries=config.CRAWL500_QUERIES,
+            excluded_sellers=config.EXCLUDED_SELLERS,
+            excluded_keywords=config.EXCLUDED_KEYWORDS,
+            max_results=200, max_pages=config.CRAWL_MAX_PAGES,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        _warn(f"/crawl catchup: search failed ({exc}); nothing fed.")
+        return {"qualify": 0, "fed": 0}
+    found = dedup_listings(found)
+
+    # The price_log ids are read fresh rather than trusted from memory: a lot
+    # that already has a listing row must not get a second one.  No sheet, no
+    # feed — guessing here is how a lot's prices would count twice.
+    try:
+        gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
+        ws = price_log.open_price_sheet(gclient, _get_secret("LOGGER_ID"))
+        if ws is None:
+            raise RuntimeError("the price_log tab is unavailable")
+        cols = f"{price_log.col('kind')}:{price_log.col('ebay_id')}"
+        logged = catchup.logged_listing_numbers(ws.batch_get([cols])[0])
+    except Exception as exc:
+        traceback.print_exc()
+        _warn(f"/crawl catchup: couldn't read price_log ({exc}); nothing fed.")
+        return {"qualify": 0, "fed": 0}
+
+    seen = seen_items.load_seen()
+    qualify = catchup.candidates(found, seen, logged, config.PRICE_LOG_START)
+    print(f">>> CATCHUP: {len(found)} found, {len(qualify)} qualify "
+          f"(seen, last seen < {config.PRICE_LOG_START}, no listing row); n={n}.",
+          flush=True)
+
+    if n <= 0:
+        _warn(catchup.preview_text(len(qualify), len(found), config.CRAWL_MAX_LOTS_CAP))
+        return {"qualify": len(qualify), "fed": 0}
+
+    picked = qualify[:n]
+    fed_ids: list[str] = []
+    flushed, marked = 0, True
+    for listing in picked:
+        try:
+            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, catchup.COMMAND):
+                fed_ids.append(listing["item_id"])
+        except Exception as exc:
+            print(f"!!! CATCHUP: feed failed for {listing.get('item_id')}: {exc}", flush=True)
+            traceback.print_exc()
+        # Marked at feed time, unlike /crawl, so a second run can't re-feed them;
+        # checkpointed so a container lost mid-feed leaves few unmarked.
+        if len(fed_ids) - flushed >= 25:
+            flushed, ok = _flush_seen_marks(fed_ids, flushed)
+            marked = marked and ok
+    flushed, ok = _flush_seen_marks(fed_ids, flushed)
+    marked = marked and ok
+    _warn(catchup.summary_text(len(fed_ids), len(picked), len(qualify)))
+    if fed_ids and not marked:
+        _warn("⚠️ /crawl catchup: the fed lots could not be marked seen, so a second "
+              "catch-up run would feed them again. Don't re-run it until the Gem "
+              "has answered for these (each answer marks its lot seen).")
+    return {"qualify": len(qualify), "fed": len(fed_ids)}
 
 
 # ---------------------------------------------------------------------------

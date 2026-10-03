@@ -377,9 +377,8 @@ curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1"  -H "$TOKEN"   # 2. Mellon + 
 Edit `ebayscout/config.py`:
 ```python
 EXCLUDED_SELLERS: list[str] = [
-    "kling24toys",
-    "another_seller",   # add more here
-]
+    "some_seller",      # empty since 2026-10-03; an excluded seller's
+]                       # lots never reach scan_log or price_log
 ```
 Push to `main` → Cloud Build automatically rebuilds and updates the job image.
 

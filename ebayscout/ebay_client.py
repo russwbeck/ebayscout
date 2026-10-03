@@ -65,6 +65,7 @@ def find_listings(
     category_ids: str | None = None,
     search_year: int | None = None,
     search_era: str | None = None,
+    max_pages: int = 1,
 ) -> list[dict]:
     """
     Search the Browse API item_summary/search for one keyword string.
@@ -80,6 +81,15 @@ def find_listings(
     Excluded sellers, excluded categories (e.g. Clothing/Shoes/Accessories),
     and apparel keywords are filtered client-side (the Browse API has no
     server-side exclude equivalent).
+
+    max_pages: how many newest-first pages of ``max_results`` to read (default
+    one, the daily scan's window).  /crawl reads several so ``/crawl <N>`` can
+    reach past each query's newest window.  Paging stops early on a short page
+    or once eBay's reported total is covered; a later page that fails keeps the
+    pages already read rather than discarding them.
+
+    Every call logs eBay's ``total`` for the query beside what it returned, so
+    the Cloud Run log shows whether a window overflows.
     """
     if excluded_keywords is None:
         excluded_keywords = config.EXCLUDED_KEYWORDS
@@ -97,76 +107,107 @@ def find_listings(
         "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
     }
 
-    # A single page of the newest listings is plenty for a daily scan; the
-    # Browse API rejects deep offsets for application tokens, so we don't
-    # paginate. limit caps at the Browse page maximum of 200.
-    params = {
-        "q":     keywords,
-        "limit": str(min(200, max_results)),
-        "sort":  "newlyListed",
-    }
-    if category_ids:
-        params["category_ids"] = category_ids
-    try:
-        resp = _get_with_retry(config.EBAY_BROWSE_SEARCH_URL, params, headers)
-    except Exception as exc:
-        print(f"!!! EBAY FIND: HTTP error for '{keywords}': {exc}", flush=True)
-        return []
-
-    try:
-        data = resp.json()
-    except Exception:
-        print(f"!!! EBAY FIND: JSON parse error for '{keywords}'", flush=True)
-        return []
-
+    # Newest-first pages of at most 200 (the Browse page maximum).  The daily
+    # scan reads one; /crawl passes max_pages so its N can reach past the
+    # newest window.  (This used to say the Browse API rejects deep offsets for
+    # application tokens; eBay documents offsets up to 10,000, and a page that
+    # fails here now ends the paging instead of the query.)
+    limit = min(200, max_results)
     results: dict[str, dict] = {}
-    for item in data.get("itemSummaries") or []:
-        item_id = item.get("itemId")
-        if not item_id or item_id in results:
-            continue
-
-        title  = item.get("title") or ""
-        seller = (item.get("seller") or {}).get("username", "") or ""
-        if seller.lower() in excluded_lower:
-            continue
-        if any(str((c or {}).get("categoryId")) in excluded_cats
-               for c in (item.get("categories") or [])):
-            continue
-        if title_has_excluded_keyword(title, excluded_keywords):
-            continue
-
-        price_data = item.get("price") or {}
-        try:
-            price = float(price_data.get("value", "0"))
-        except (TypeError, ValueError):
-            price = 0.0
-
-        image = (item.get("image") or {}).get("imageUrl", "") or ""
-        if not image:
-            thumbs = item.get("thumbnailImages") or []
-            if thumbs:
-                image = thumbs[0].get("imageUrl", "") or ""
-
-        results[item_id] = {
-            "item_id":       item_id,
-            "title":         title,
-            "current_price": price,
-            "currency":      price_data.get("currency", "USD"),
-            "listing_url":   item.get("itemWebUrl", "") or "",
-            "gallery_url":   image,
-            "seller":        seller,
-            "search_year":   search_year,
-            "search_era":    search_era,
-            # Market-analysis signals (Browse summary fields we previously dropped).
-            # buyingOptions: ["FIXED_PRICE"] / ["AUCTION"] / ["AUCTION","FIXED_PRICE"].
-            # bidCount + currentBidPrice are present only for auctions.
-            "buying_options": item.get("buyingOptions") or [],
-            "condition":      item.get("condition", "") or "",
-            "bid_count":      item.get("bidCount"),
+    total = None
+    pages_read = 0
+    for page in range(max(1, int(max_pages or 1))):
+        params = {
+            "q":     keywords,
+            "limit": str(limit),
+            "sort":  "newlyListed",
         }
+        if page:
+            params["offset"] = str(page * limit)
+        if category_ids:
+            params["category_ids"] = category_ids
+        try:
+            resp = _get_with_retry(config.EBAY_BROWSE_SEARCH_URL, params, headers)
+        except Exception as exc:
+            print(f"!!! EBAY FIND: HTTP error for '{keywords}' (page {page + 1}): {exc}",
+                  flush=True)
+            break
 
-    print(f">>> EBAY FIND: '{keywords}' → {len(results)} unique listings", flush=True)
+        try:
+            data = resp.json()
+        except Exception:
+            print(f"!!! EBAY FIND: JSON parse error for '{keywords}' (page {page + 1})",
+                  flush=True)
+            break
+
+        pages_read += 1
+        if total is None:
+            total = data.get("total")
+        summaries = data.get("itemSummaries") or []
+        for item in summaries:
+            listing = _listing_from_summary(item, excluded_lower, excluded_cats,
+                                            excluded_keywords, search_year, search_era)
+            if listing and listing["item_id"] not in results:
+                results[listing["item_id"]] = listing
+
+        if len(summaries) < limit:
+            break
+        if isinstance(total, int) and (page + 1) * limit >= total:
+            break
+
+    print(f">>> EBAY FIND: '{keywords}' → {len(results)} unique listings "
+          f"(eBay total {total}; {pages_read} page(s) of {limit})", flush=True)
     return list(results.values())
+
+
+def _listing_from_summary(item, excluded_lower, excluded_cats, excluded_keywords,
+                          search_year, search_era) -> dict | None:
+    """One Browse item summary as a listing dict, or None when it has no id or a
+    seller, category or title keyword excludes it."""
+    item_id = item.get("itemId")
+    if not item_id:
+        return None
+
+    title  = item.get("title") or ""
+    seller = (item.get("seller") or {}).get("username", "") or ""
+    if seller.lower() in excluded_lower:
+        return None
+    if any(str((c or {}).get("categoryId")) in excluded_cats
+           for c in (item.get("categories") or [])):
+        return None
+    if title_has_excluded_keyword(title, excluded_keywords,
+                                  config.EXCLUDED_KEYWORD_EXCEPTIONS):
+        return None
+
+    price_data = item.get("price") or {}
+    try:
+        price = float(price_data.get("value", "0"))
+    except (TypeError, ValueError):
+        price = 0.0
+
+    image = (item.get("image") or {}).get("imageUrl", "") or ""
+    if not image:
+        thumbs = item.get("thumbnailImages") or []
+        if thumbs:
+            image = thumbs[0].get("imageUrl", "") or ""
+
+    return {
+        "item_id":       item_id,
+        "title":         title,
+        "current_price": price,
+        "currency":      price_data.get("currency", "USD"),
+        "listing_url":   item.get("itemWebUrl", "") or "",
+        "gallery_url":   image,
+        "seller":        seller,
+        "search_year":   search_year,
+        "search_era":    search_era,
+        # Market-analysis signals (Browse summary fields we previously dropped).
+        # buyingOptions: ["FIXED_PRICE"] / ["AUCTION"] / ["AUCTION","FIXED_PRICE"].
+        # bidCount + currentBidPrice are present only for auctions.
+        "buying_options": item.get("buyingOptions") or [],
+        "condition":      item.get("condition", "") or "",
+        "bid_count":      item.get("bidCount"),
+    }
 
 
 def find_all_listings(
@@ -177,10 +218,12 @@ def find_all_listings(
     excluded_keywords: list[str] | None = None,
     max_results: int = 100,
     category_ids: str | None = None,
+    max_pages: int = 1,
 ) -> list[dict]:
     """
     Run find_listings() for each query, deduplicate by item_id, return combined
-    unique list. Pass category_ids to restrict all queries to a specific category.
+    unique list. Pass category_ids to restrict all queries to a specific category,
+    and max_pages to read past each query's newest window (see find_listings).
     """
     if queries is None:
         queries = config.EBAY_SEARCH_QUERIES
@@ -196,7 +239,7 @@ def find_all_listings(
         batch = find_listings(
             client_id, client_secret, query,
             excluded_sellers, excluded_keywords, max_results,
-            category_ids=category_ids,
+            category_ids=category_ids, max_pages=max_pages,
         )
         for listing in batch:
             iid = listing["item_id"]
@@ -336,7 +379,8 @@ def find_seller_listings(
                 if any(str((c or {}).get("categoryId")) in excluded_cats
                        for c in (item.get("categories") or [])):
                     continue
-                if title_has_excluded_keyword(item.get("title") or "", config.EXCLUDED_KEYWORDS):
+                if title_has_excluded_keyword(item.get("title") or "", config.EXCLUDED_KEYWORDS,
+                                              config.EXCLUDED_KEYWORD_EXCEPTIONS):
                     continue
                 items[iid] = item
             if len(summaries) < sl.PAGE_SIZE:

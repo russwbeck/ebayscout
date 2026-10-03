@@ -189,11 +189,12 @@ HUNT_IDS_BLOB = "ebay_scout/hunt_ids.json"
 DAILY_HUNT_BUDGET = 50
 
 # --- eBay sellers to exclude (exact username, case-insensitive) ---
-EXCLUDED_SELLERS: list[str] = [
-    "kling24toys",
-    "gertb2002",
-    "wearepinstate",
-]
+# Empty since 2026-10-03, at the operator's request ("we want the data"): an
+# excluded seller's lots never reached scan_log or price_log, so the listing
+# prices left out kling24toys, gertb2002 and wearepinstate.  Every seller's lots
+# now run the same way, deal alerts included.  Apparel is still dropped by
+# EXCLUDED_KEYWORDS and EXCLUDED_CATEGORY_IDS.
+EXCLUDED_SELLERS: list[str] = []
 
 # --- Etsy sellers to exclude (shop_name, case-insensitive) ---
 ETSY_EXCLUDED_SELLERS: list[str] = []
@@ -234,6 +235,17 @@ EXCLUDED_KEYWORDS: list[str] = [
     "map",
     "sticker",
     "decal",
+    # whole-word matching (utils.title_has_excluded_keyword, 2026-10-03) no
+    # longer finds "shirt" inside "tshirt"
+    "tshirt",
+]
+
+# Phrases removed from a title before EXCLUDED_KEYWORDS is checked: each names a
+# real button that contains a keyword.  "Sting the Yellow Jackets" is a 1979
+# basketball button on the buy sheet; "New Jersey" turns up in Rutgers titles.
+EXCLUDED_KEYWORD_EXCEPTIONS: list[str] = [
+    "yellow jacket",
+    "new jersey",
 ]
 
 # --- eBay category IDs to exclude entirely ---
@@ -248,6 +260,15 @@ EXCLUDED_CATEGORY_IDS: list[str] = ["11450"]
 # low-frequency, precise term that collides with noise when combined with other words.
 BUTTON_TYPES  = ["button", "pin", "badge", "pinback"]
 
+# The daily scan and /crawl also search the plurals as their own phrases
+# (2026-10-03).  Whether eBay's search folds "buttons" into "button" is
+# unverified, and kling24toys alone lists four bank sets titled only "BUTTONS"
+# or "BUTTONS/PINS".  If eBay already folds them, these return the same items
+# and the dedup drops them: a few more Browse calls, no extra Gemini read.
+# BUTTON_TYPES stays singular for the frozen year/era crawls.
+PLURAL_BUTTON_TYPES = ["buttons", "pins"]
+SEARCH_BUTTON_TYPES = BUTTON_TYPES + PLURAL_BUTTON_TYPES
+
 # eBay category 64482 = "Sports Mem, Cards & Fan Shop" (top-level sports
 # memorabilia). Restricting PSU queries to this category keeps Penn State
 # University results while dropping the Power Supply Unit electronics noise
@@ -258,12 +279,20 @@ SPORTS_MEMO_CATEGORY_ID = "64482"
 # unambiguous. "Central Counties Bank" STAYS here, unrestricted, and runs every
 # day: CCB buttons are the rarest, so we want maximum broad coverage on them
 # (matched against the full slogan/reference set, not era-narrowed).
+# "Mellon Bank {button, pin, buttons, pins}" (2026-10-03) reaches lots titled
+# by the bank alone — "Mellon Bank 1989 Notre Tamed button" names no school, so
+# none of the Penn State / Nittany Lions / PSU phrases match it.  Citizens Bank
+# gets no bank-only phrase: alone it pulls in Citizens Bank Park (Phillies).
+MELLON_BANK_QUERIES: list[str] = [f"Mellon Bank {btn}"
+                                  for btn in ("button", "pin", "buttons", "pins")]
+
 EBAY_SEARCH_QUERIES: list[str] = (
-    [f"Penn State {btn}" for btn in BUTTON_TYPES]
-    + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
+    [f"Penn State {btn}" for btn in SEARCH_BUTTON_TYPES]
+    + [f"Nittany Lions {btn}" for btn in SEARCH_BUTTON_TYPES]
     + ["Central Counties Bank"]
+    + MELLON_BANK_QUERIES
 )
-# Produces 9 queries.
+# Produces 17 queries.
 
 # --- Era-named searches (bake the bank era into the query → restrict matching) ---
 # Mellon + Citizens only. Each (query, era_label) result is tagged search_era and
@@ -280,8 +309,8 @@ MELLON_CITIZENS_ERA_QUERIES: list[tuple[str, str]] = (
 
 # PSU queries run with category_ids=SPORTS_MEMO_CATEGORY_ID so "PSU" matches
 # Penn State University buttons rather than Power Supply Units.
-PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
-# Produces 4 queries: "PSU button", "PSU pin", "PSU badge", "PSU pinback"
+PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in SEARCH_BUTTON_TYPES]
+# Produces 6 queries: "PSU button" … "PSU pinback", "PSU buttons", "PSU pins"
 
 # --- on-demand2 (/crawl) search ------------------------------------------------
 # User-stipulated search, distinct from everything above:
@@ -290,21 +319,32 @@ PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
 # The eBay Browse `q` parameter has no reliable boolean/wildcard support, and
 # find_listings() does not paginate past one <=200 window, so we OR-expand the
 # query into one explicit phrase per (bank x button-type) and dedup.
-# NO seller exclusion (see /internal/crawl); the apparel-keyword + Clothing
-# category noise filters stay on.
+# The same EXCLUDED_SELLERS, apparel-keyword and Clothing-category filters as
+# the daily scan apply (_run_crawl).
 CRAWL500_BANKS: list[str] = ["Citizens", "Mellon", "Central Counties"]
 CRAWL500_QUERIES: list[str] = [
     f"Penn State {bank} {btn}"
     for bank in CRAWL500_BANKS
-    for btn in BUTTON_TYPES
+    for btn in SEARCH_BUTTON_TYPES
 ]
-# Produces 3 banks x 4 button-types = 12 queries.
+# Produces 3 banks x 6 button-types = 18 queries.
+
+# Pages of 200 /crawl reads per query, newest first (2026-10-03).  It read one,
+# so `/crawl 1000` could never reach past each query's newest 200.  Five reaches
+# 1,000 per query: at most 90 Browse calls a run, which cost nothing; the
+# Gemini cost is still bounded by N, since only N lots are ever fed.
+CRAWL_MAX_PAGES = 5
 CRAWL500_MAX_LOTS = 500   # historical default; the /crawl command now takes N.
 
 # Hard upper bound on the N accepted by the `/crawl <N>` slash command. A bigger
 # number is a costly paid run (eBay + CLIP), so this guards against a fat-finger
 # like `/crawl 50000` — the handler rejects N outside 1..CRAWL_MAX_LOTS_CAP.
 CRAWL_MAX_LOTS_CAP = 1000
+
+# The first day the pipeline wrote price_log listing rows.  `/crawl catchup`
+# (catchup.py) re-feeds still-listed lots whose LAST seen mark is earlier, so
+# they get the listing row they never had.
+PRICE_LOG_START = "2026-09-30"
 
 # The default daily /run-scan FEEDS THE GEMINI PIPELINE (detection → Gemini →
 # CLIP via process_pipeline_lot) instead of the legacy CLIP-only scan. `/crawl
@@ -352,7 +392,7 @@ YEAR_CRAWL_TERMS: list[str] = (
     [f"Penn State {btn}" for btn in BUTTON_TYPES]
     + [f"Nittany Lions {btn}" for btn in BUTTON_TYPES]
 )
-YEAR_CRAWL_PSU_TERMS: list[str] = list(PSU_SEARCH_QUERIES)
+YEAR_CRAWL_PSU_TERMS: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]   # frozen: singular only
 
 # --- Dry-run mode (set True for smoke testing) ---
 # When True: the scan runs end-to-end but fires no real alerts and does NOT

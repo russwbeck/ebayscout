@@ -777,7 +777,7 @@ treat like `?year_crawl=1`.
 |-------|--------|-------|
 | CLIP accuracy on multi-button photos | Mitigated (#21, #22, #26) | Scan flags *needed-button candidates* (recall-biased, multi-photo) for `/scout` review. Year-aware matching (#22) removes most year-confusion; the 12-crop cap is gone and detection is multi-scale (#26). Tune `NEEDED_MATCH_THRESHOLD` from `SCAN_LOG_BLOB` data. |
 | Dense-lot detection of small buttons | Open (improved #26) | Multi-scale Hough + 1400px resize catch far more than the old 12 cap, but truly tiny buttons in a 100+ photo may still be missed; the radius sweep / `IMAGE_MAX_DIM` can be pushed further if logs show misses. |
-| kling24toys seller filter | Open | Listed in `EXCLUDED_SELLERS` but need to confirm actual eBay username matches after new scan logs show seller names in brackets. |
+| Seller filter (`EXCLUDED_SELLERS`) | Emptied (2026-10-03) | kling24toys, gertb2002 and wearepinstate removed at the operator's request ("we want the data"): an excluded seller's listings never reached `scan_log` / `price_log`, so the logged listing prices were incomplete. Every seller's lots now feed the pipeline and can raise deal alerts. The list and its plumbing remain, empty. |
 | Manual upload "still loading" loop | Gone with `/scout` (PR #17, 2026-06-03) | ebayscout has no manual upload mode; every lot arrives through the Gem pipeline. buttonmatcher owns `/scout` now. |
 | Automated undervalued-lot valuation | **Live, not deferred** (#33) | The alert has been firing whenever `lot_value > asking` since the pipeline shipped; `ENABLE_UNDERVALUED_ALERTS` now says so and can switch it off. Whether it is wanted at all is the operator's call. |
 
