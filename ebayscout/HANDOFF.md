@@ -20,6 +20,8 @@ building the next batch. In short:
 - Account shipping isn't applied, so shipping must be spelled out in the file.
 - Ground Advantage's code is `USPSParcel`.
 - The "Fifty Cent" combined-shipping rule is applied in Seller Hub, not in the file.
+- **Allow offers:** set `BestOfferEnabled` = `1`. This batch left it blank and the
+  operator turned offers on by hand.
 
 No service code changed.
 

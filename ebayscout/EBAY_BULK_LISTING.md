@@ -74,6 +74,8 @@ that, or whether the free monthly listings covered it. The operator had 183 of
 | `*Duration` | `GTC` | Good 'Til Cancelled. Fixed price only. |
 | `*StartPrice` | the price | For `FixedPrice` the price goes here. |
 | `BuyItNowPrice` | blank | Only used on auctions. |
+| `BestOfferEnabled` | **`1`** | **Allow offers on every listing.** The 2026-10-03 file left this blank and the operator turned offers on by hand afterwards; set it in the file next time. `1` = on, `0` = off, per an eBay community answer. Not yet run through `VerifyAdd`. |
+| `BestOfferAutoAcceptPrice`, `MinimumBestOfferPrice` | blank | Optional thresholds. The operator hasn't set any. |
 | `*Quantity` | units in the listing | |
 | `PicURL` | eBay-hosted image URL | Every listing led with the operator's logo, `https://i.ebayimg.com/images/g/c~oAAeSw4QFpPckz/s-l1600.jpg`. The link was supplied as `.webp`; it was used as `.jpg`. |
 | `*Description` | HTML, one `<p>…</p>` per paragraph | Plain newlines don't render. |
@@ -173,6 +175,8 @@ were blocked from the session container.
   Wallop NL, Wallop logo, Trip NL, Trip logo, plus the 1972 Sugar Bowl button.
 - The operator's photos of the collection are in Slack `#general-sorting`.
 
+**Offers:** allowed on every listing (`BestOfferEnabled` = `1`).
+
 **Shipping and returns:**
 - Shipping: $7 for sets, $6 for singles, +$0.50 for each additional unit.
 - Free local pickup at 16686. Domestic only.
@@ -205,7 +209,7 @@ were blocked from the session container.
 1. Get stock from the Inventory sheet and live listings from eBay's "all active
    listings" report. Available = stock − what's already listed.
 2. Run `/crawl seller kling24toys` for current prices.
-3. Build the rows with the values in §3–§6.
+3. Build the rows with the values in §3–§6, **including `BestOfferEnabled` = `1`**.
 4. Upload with `VerifyAdd`. Repeat until every row reads `Success`, and read
    `InsertionFee`.
 5. Change `*Action` to `Add`, set `ScheduleTime`, and upload.
