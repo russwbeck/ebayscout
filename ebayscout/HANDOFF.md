@@ -9,6 +9,22 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-10-03 (night) — bulk listing upload recorded: `EBAY_BULK_LISTING.md`
+
+The operator listed 73 buttons/sets on eBay with one Seller Hub bulk upload. The
+file that worked is `listing_uploads/2026-10-03_penn-state-button-listings.csv`.
+**`EBAY_BULK_LISTING.md`** records the template's working field values, the
+operator's listing rules, and the five failed uploads before it. Read it before
+building the next batch. In short:
+- `Draft` is not an action. Test with `VerifyAdd`.
+- Account shipping isn't applied, so shipping must be spelled out in the file.
+- Ground Advantage's code is `USPSParcel`.
+- The "Fifty Cent" combined-shipping rule is applied in Seller Hub, not in the file.
+
+No service code changed.
+
+---
+
 ## 2026-10-03 (evening) — search coverage: five gaps closed, plus `/crawl catchup`
 
 A review of the daily and `/crawl` searches against real titles (kling24toys's
