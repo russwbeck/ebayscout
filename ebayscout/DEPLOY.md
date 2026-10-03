@@ -377,7 +377,7 @@ curl -X POST "${SERVICE_URL}/run-scan?era_crawl=1"  -H "$TOKEN"   # 2. Mellon + 
 Edit `ebayscout/config.py`:
 ```python
 EXCLUDED_SELLERS: list[str] = [
-    "kling24toys",
+    "gertb2002",
     "another_seller",   # add more here
 ]
 ```

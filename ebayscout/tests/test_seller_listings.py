@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from ebayscout import ebay_client, seller_listings as sl   # noqa: E402
+from ebayscout import config, ebay_client, seller_listings as sl   # noqa: E402
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MAIN = open(os.path.join(PKG, "main.py")).read()
@@ -145,7 +145,7 @@ def _resp(items):
 
 
 def test_the_search_pages_dedupes_and_keeps_an_excluded_seller():
-    """kling24toys is on EXCLUDED_SELLERS for deal alerts; its prices are still wanted."""
+    """EXCLUDED_SELLERS is not applied: an excluded seller's prices are still wanted."""
     full_page = [_item(number=str(267000000000 + i)) for i in range(sl.PAGE_SIZE)]
     pages = {("penn state", "0"): full_page,
              ("penn state", "200"): [_item(number="267999999999")],
@@ -200,3 +200,8 @@ def test_nothing_but_the_command_pulls_a_seller():
     callers = [n.name for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)
                and "find_seller_listings" in (ast.get_source_segment(_MAIN, n) or "")]
     assert callers == ["internal_seller"]
+
+
+def test_kling24toys_is_not_excluded_from_the_scan():
+    """Removed 2026-10-03: its lots belong in scan_log and price_log."""
+    assert "kling24toys" not in {s.lower() for s in config.EXCLUDED_SELLERS}

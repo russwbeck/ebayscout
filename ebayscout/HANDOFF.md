@@ -9,6 +9,25 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-10-03 (later) — kling24toys is no longer excluded from the scan
+
+The operator asked for it: `EXCLUDED_SELLERS` kept kling24toys's lots out of the
+daily scan and `/crawl`, so they never reached `scan_log` or the `price_log`
+listing rows, and the listing averages were missing a major seller.
+
+- Its lots are now fed into the Gemini pipeline like any other seller's, and they
+  can raise deal alerts (a needed button, or value over asking) the same way.
+- **Cost:** a few more lots per day for Gemini and CLIP. The daily search still
+  reads only the newest 100 per query and skips seen lots, so the
+  first run takes only the kling24toys lots in those windows, not its whole store.
+  Lots it already listed that have dropped out of those windows are not
+  picked up. `/crawl seller kling24toys` still reads its full price list
+  without Gemini.
+- `gertb2002` and `wearepinstate` stay excluded.
+- Pinned by `test_kling24toys_is_not_excluded_from_the_scan`.
+
+---
+
 ## 2026-10-03 — `/crawl seller <username>`: another seller's prices, on demand
 
 The operator is pricing a batch of their own listings (season sets and bowl

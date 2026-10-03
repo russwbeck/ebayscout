@@ -189,8 +189,10 @@ HUNT_IDS_BLOB = "ebay_scout/hunt_ids.json"
 DAILY_HUNT_BUDGET = 50
 
 # --- eBay sellers to exclude (exact username, case-insensitive) ---
+# kling24toys was removed 2026-10-03: excluding it kept its lots out of the
+# scan_log and price_log, so the listing prices undercounted a major seller.
+# Its lots now run like anyone else's, deal alerts included.
 EXCLUDED_SELLERS: list[str] = [
-    "kling24toys",
     "gertb2002",
     "wearepinstate",
 ]
@@ -290,8 +292,8 @@ PSU_SEARCH_QUERIES: list[str] = [f"PSU {btn}" for btn in BUTTON_TYPES]
 # The eBay Browse `q` parameter has no reliable boolean/wildcard support, and
 # find_listings() does not paginate past one <=200 window, so we OR-expand the
 # query into one explicit phrase per (bank x button-type) and dedup.
-# NO seller exclusion (see /internal/crawl); the apparel-keyword + Clothing
-# category noise filters stay on.
+# The same EXCLUDED_SELLERS, apparel-keyword and Clothing-category filters as
+# the daily scan apply (_run_crawl).
 CRAWL500_BANKS: list[str] = ["Citizens", "Mellon", "Central Counties"]
 CRAWL500_QUERIES: list[str] = [
     f"Penn State {bank} {btn}"

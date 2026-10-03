@@ -13,8 +13,8 @@ is done from the sheet.
 It is cheap on purpose: a few Browse API pages and one sheet write.  No photo is
 downloaded, nothing goes to Gemini or CLIP, nothing is marked seen, and nothing
 runs on a schedule — the operator asked for no checks beyond the 9 AM scan, so
-this only ever runs when someone types it.  The seller can be one the daily scan
-excludes (kling24toys is on EXCLUDED_SELLERS): excluding them from deal alerts
+this only ever runs when someone types it.  EXCLUDED_SELLERS is not applied, so
+the seller can be one the daily scan excludes: excluding a seller from the scan
 and reading their prices are different jobs.
 
 Pure apart from ``write_tab``, which takes the gspread client from the caller.
