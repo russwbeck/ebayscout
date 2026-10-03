@@ -22,6 +22,12 @@ building the next batch. In short:
 - The "Fifty Cent" combined-shipping rule is applied in Seller Hub, not in the file.
 - **Allow offers:** set `BestOfferEnabled` = `1`. This batch left it blank and the
   operator turned offers on by hand.
+- **Photos (§9):** 70 listings got photos with one bulk `Revise`:
+  - Set photos plus button crops from the season photos, hosted in a
+    shared Drive folder.
+  - Link format: `lh3.googleusercontent.com/d/<id>`.
+  - The logo must be a Drive copy too: eBay rejects a mix of eBay-hosted
+    and self-hosted photos (`20004`).
 
 No service code changed.
 

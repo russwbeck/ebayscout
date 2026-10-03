@@ -3,8 +3,12 @@
 On 2026-10-03 the operator created **73 listings (308 buttons, $3,171 asking)**
 with one Seller Hub bulk upload. That exact file is in the repo at
 `listing_uploads/2026-10-03_penn-state-button-listings.csv`. It took six uploads
-to get right. This note records what each failure taught, so the next batch
-works on the first real upload.
+to get right. Three more uploads then put a photo on 70 of them (§9). This note
+records what each failure taught, so the next batch works on the first real
+upload.
+
+Afterwards the operator ended `SET-1982` and `BOWL-1982` because too few 1982
+buttons were in stock.
 
 This is operator tooling, not part of the service: nothing in ebayscout reads
 these files. The file was generated in a session by a one-off script that is
@@ -56,9 +60,16 @@ estimates, and creates nothing. Then change only the `*Action` column to `Add`.
   every B row passed.
 
 **Fees:** `VerifyAdd` estimated **$0.35 InsertionFee per listing**, about $25.55
-for all 73, and $0.00 SchedulingFee. Unverified: whether the real `Add` charged
-that, or whether the free monthly listings covered it. The operator had 183 of
-250 in use. Check the `Add` results file or the invoice.
+for all 73. **The real `Add` charged $0.00** on every row, including
+`SchedulingFee`. The free monthly listings covered them: the operator had 183
+of 250 in use. Expect the `VerifyAdd` estimate to read high when free listings
+remain.
+
+**Where the results file is:** Seller Hub → Reports → **Uploads**. The list of
+past uploads below the upload box has a **Download results** link on each row
+once eBay has processed it. The `Add` results file is the only place the new
+listings' **item numbers** (`ItemID`) come back, keyed by `CustomLabel`. Keep
+it: any later bulk revise needs those numbers.
 
 ## 3. Field values that worked
 
@@ -77,7 +88,7 @@ that, or whether the free monthly listings covered it. The operator had 183 of
 | `BestOfferEnabled` | **`1`** | **Allow offers on every listing.** The 2026-10-03 file left this blank and the operator turned offers on by hand afterwards; set it in the file next time. `1` = on, `0` = off, per an eBay community answer. Not yet run through `VerifyAdd`. |
 | `BestOfferAutoAcceptPrice`, `MinimumBestOfferPrice` | blank | Optional thresholds. The operator hasn't set any. |
 | `*Quantity` | units in the listing | |
-| `PicURL` | eBay-hosted image URL | Every listing led with the operator's logo, `https://i.ebayimg.com/images/g/c~oAAeSw4QFpPckz/s-l1600.jpg`. The link was supplied as `.webp`; it was used as `.jpg`. |
+| `PicURL` | image URLs joined with `|`, first one is the main photo | The `Add` file used only the operator's logo, `https://i.ebayimg.com/images/g/c~oAAeSw4QFpPckz/s-l1600.jpg` (eBay-hosted). **All URLs in one cell must come from the same kind of host**: eBay-hosted and self-hosted together fail with `20004` (§9). Next time put the Drive photo links here directly (§9). |
 | `*Description` | HTML, one `<p>…</p>` per paragraph | Plain newlines don't render. |
 | `*Location` | `16686` | |
 | `ShippingType` | `Flat` | |
@@ -198,8 +209,8 @@ were blocked from the session container.
 
 - **Combined shipping:** apply the "Fifty Cent" rule to the new listings in
   Seller Hub. It can't go in the file.
-- **Photos:** each listing has only the logo photo. Add the button photos
-  before the `ScheduleTime`.
+- **Photos:** the 2026-10-03 `Add` file carried only the logo, so the photos
+  went on afterwards with a bulk `Revise`, before the `ScheduleTime` (§9).
 - **Older 1972 listing:** a 1972 Central Counties set listing ($100,
   quantity 2) was already live and draws on the same 1972 stock as the new
   singles. Watch for double-selling.
@@ -209,14 +220,111 @@ were blocked from the session container.
 1. Get stock from the Inventory sheet and live listings from eBay's "all active
    listings" report. Available = stock − what's already listed.
 2. Run `/crawl seller kling24toys` for current prices.
-3. Build the rows with the values in §3–§6, **including `BestOfferEnabled` = `1`**.
-4. Upload with `VerifyAdd`. Repeat until every row reads `Success`, and read
+3. **Photos first** (§9):
+   - Crop the single buttons and name every photo by its SKU.
+   - Put them, with `LOGO.jpg`, in the shared Drive folder.
+4. Build the rows with the values in §3–§6:
+   - Include **`BestOfferEnabled` = `1`**.
+   - Fill `PicURL` with the Drive links: `<photo>|<logo>`.
+5. Upload with `VerifyAdd`. Repeat until every row reads `Success`, and read
    `InsertionFee`.
-5. Change `*Action` to `Add`, set `ScheduleTime`, and upload.
-6. Do the §7 steps.
+6. Change `*Action` to `Add`, set `ScheduleTime`, and upload.
+7. Download and keep the `Add` results file (the item numbers).
+8. Do the §7 steps.
+
+Putting Drive links in an `Add` file instead of a `Revise` hasn't been tried
+yet. It uses the same `PicURL` column, and `VerifyAdd` will show whether eBay
+accepts it. If it doesn't, fall back to the §9 `Revise` route, which is proven.
 
 **What not to commit:**
 - **Never commit** eBay's **orders report**. It carries buyer names and
   addresses, and this repo is public.
 - The listing upload file is listing text and prices only: what the public sees
   on eBay. That's why it's here.
+
+## 9. Photos: cropped from the season photos, hosted on Drive (2026-10-03)
+
+After the `Add`, 70 listings got photos in **one bulk `Revise` upload**. The
+photos were 16 season-set photos and 54 single-button crops, each followed by
+the logo. All 70 rows returned `Success` with $0.00 fees.
+
+**Listings left without a photo:**
+- `BOWL-2025` ("Lions De-Stripe Tigers"): no photo of that button was found.
+- The two 1982 listings: the operator ended them.
+
+### Where the photos came from
+
+- **Season photos:** the operator's Drive folder of season photos, one per
+  year, 1973–2024, each named by its year.
+  - Each set listing uses its year's photo as is.
+  - Check that each photo shows exactly the listing's buttons. The 1982 photo
+    held a 13th button, "National Champions 1982", that wasn't in the set.
+- **Single buttons:** cropped out of the season photos (below).
+- **1972 variants:**
+  - Most came from the photos posted to Slack `#general-sorting` on
+    2026-09-29, one photo per variant and count.
+  - "Trip the Terrapins" no-logo came from the Drive photo
+    `1972 Trip No Logo Front` in the shared `1972 - 1996+` folder.
+- **When a crop is spoiled, use an older photo.** In the 2026 season photo,
+  "Pitt Isn't It" (1980) is overlapped by its neighbor. The older
+  `1980 front` photo in the same `1972 - 1996+` folder has it clear.
+- **Joe Paterno set:** a 4×3 grid of the 12 single crops. It is not a photo of
+  the physical set.
+
+### Cropping (done in the session, not in the repo)
+
+1. **Find each button:** OpenCV Hough-circle detection on a 1000px-wide copy,
+   drawn as a numbered overlay.
+2. **Match buttons to listings by eye:** read each overlay and match the slogan
+   to the SKU.
+3. **Refine and crop:** refine the circle at full size with
+   `HOUGH_GRADIENT_ALT`. Crop a square of side **2 × 1.2 × r**, where r is the
+   larger of the detected and refined radius.
+   - At 1.13 × r, rims were clipped.
+   - The 1993 bowl button's circle was wrong and was placed by hand.
+4. **Review** every crop on a contact sheet before shipping.
+   - Crops came out 590–1600px, above eBay's 500px minimum.
+
+### Getting them to Drive
+
+- **The session can download** Drive and Slack images. Large tool results land
+  on disk, not in the conversation.
+- **The session can't upload** images to Drive. The connector takes file
+  contents as text, which is impractical for 54 photos.
+  - It can **copy** Drive files server-side, which is how the set photos got
+    into the folder.
+  - The crops went to the operator as a zip, named `<SKU>.jpg`, and the
+    operator dragged them into the folder.
+- **Check the copies:** each Drive copy of a crop was compared with the local
+  file's size to make sure the right photo went to the right listing.
+- **Folder:** a dedicated `eBay listing photos` folder holding only listing
+  photos, set to **Anyone with the link → Viewer**. eBay can't fetch a private
+  file.
+- **Keep the folder shared** until a listing's photos show `i.ebayimg.com`
+  addresses. Whether eBay keeps its own copy of self-hosted photos is
+  unverified.
+
+### The `Revise` file
+
+```
+*Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8),ItemID,PicURL
+Revise,<item number>,https://lh3.googleusercontent.com/d/<photo file id>|https://lh3.googleusercontent.com/d/<LOGO.jpg file id>
+```
+
+- **Item numbers:** from the `Add` results file.
+- **`Revise` replaces every photo on the listing,** so each row re-sends the
+  logo.
+
+### Uploads and what each taught
+
+| Upload | Result | Lesson |
+|---|---|---|
+| Test 1: Drive photo + the eBay-hosted logo | Both rows failed with `20004`, "A mixture of Self Hosted and EPS pictures are not allowed." | **All photos on a listing must come from the same kind of host.** The logo went into the Drive folder as `LOGO.jpg`. |
+| Test 2: Drive photo + Drive logo, two link formats | Both rows `Success`. | `https://lh3.googleusercontent.com/d/<id>` was confirmed on the live listing: the 1975 set showed the photo, then the logo. `https://drive.google.com/uc?export=view&id=<id>` also returned `Success`, but nobody looked at the listing. |
+| All 70 rows, `lh3` links | 70/70 `Success`, $0.00. | The route works. |
+
+**Two-row test first.** Pick two real listings, one per link style, and look
+at them in Seller Hub before sending the full file.
+
+**eBay's own pages are blocked from the session container.** The `20004` fix
+came from reading the error itself.
