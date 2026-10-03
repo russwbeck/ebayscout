@@ -100,7 +100,8 @@ def find_listings(
                 title       = item.get("title", "")
 
                 if etsy_id not in results:
-                    if title_has_excluded_keyword(title, excluded_keywords):
+                    if title_has_excluded_keyword(title, excluded_keywords,
+                                                  config.EXCLUDED_KEYWORD_EXCEPTIONS):
                         continue
                     results[etsy_id] = {
                         "item_id":       etsy_id,

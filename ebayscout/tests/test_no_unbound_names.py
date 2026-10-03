@@ -99,7 +99,8 @@ def test_pipeline_command_is_bound_before_the_label_sidecar_reads_it():
 def test_the_label_sidecar_block_imports_storage():
     """`storage` is function-local in this module, never module-level."""
     src = open(os.path.join(REPO, "main.py")).read()
-    block = src.split("if lharv.harvest_enabled():")[1].split("# 5) CLIP matching")[0]
+    # located by the guard's start: it also reads `and not is_catchup` since 2026-10-03
+    block = src.split("if lharv.harvest_enabled()")[1].split("# 5) CLIP matching")[0]
     assert "storage.Client()" in block
     assert "from google.cloud import storage" in block, (
         "storage.Client() with no local import — NameError, fail-open, silent")

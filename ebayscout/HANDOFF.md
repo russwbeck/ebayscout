@@ -9,6 +9,52 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-10-03 (evening) — search coverage: five gaps closed, plus `/crawl catchup`
+
+A review of the daily and `/crawl` searches against real titles (kling24toys's
+whole store, the operator's sold screenshots) found five gaps. All five are built;
+tests are `tests/test_search_coverage.py` and `tests/test_catchup.py` (+ runners).
+
+1. **eBay's total is logged.** Every query's log line now reads
+   `→ N unique listings (eBay total T; P page(s) of L)`, so the Cloud Run log
+   shows whether a window overflows. Nothing else reads it yet.
+2. **Plurals are searched.** `buttons` and `pins` are their own phrases in both
+   paths (`SEARCH_BUTTON_TYPES`). Whether eBay folds plurals is unverified;
+   kling24toys has four bank sets titled only "BUTTONS/PINS". If eBay folds
+   them, the dedup drops the repeats: more Browse calls, no extra Gemini read.
+3. **`Mellon Bank {button, pin, buttons, pins}`** joins the daily queries, for
+   titles that name only the bank. Some Mellon Bank employee lapel pins will be
+   read once each (then seen). Daily: 13 → 23 queries; `/crawl`: 12 → 18.
+4. **The apparel filter matches whole words** (`utils.title_has_excluded_keyword`),
+   plural allowed: "vest" no longer drops "Harvest", "map" no longer "Mapleton".
+   `EXCLUDED_KEYWORD_EXCEPTIONS` removes "yellow jacket" (the 1979 "Sting the
+   Yellow Jackets" button) and "new jersey" (Rutgers titles) first. "tshirt" was
+   added, since whole words no longer find "shirt" inside it. "christmas" stays:
+   dropping it would send Penn State holiday lapel pins to Gemini.
+5. **`/crawl` pages.** Up to `CRAWL_MAX_PAGES` (5) newest-first pages of 200 per
+   query, so `/crawl 1000` can reach past the newest window. A page that fails
+   ends the paging and keeps what was read. The daily scan still reads one page.
+   The old comment said eBay rejects deep offsets for app tokens; eBay documents
+   offsets to 10,000, and this is the first production use beyond page 1.
+
+**`/crawl catchup [N]`** (`catchup.py`, `main._run_catchup`): still-listed lots
+whose LAST seen mark predates `PRICE_LOG_START` (2026-09-30) and that have no
+listing row in `price_log` get re-fed once, for their price rows.
+- Bare `/crawl catchup` **feeds nothing**: Browse calls plus one sheet read, and
+  a Slack line saying how many qualify. `/crawl catchup <N>` feeds up to N
+  (cap 1000), **one Gemini read each**. Nothing schedules it.
+- A catch-up lot writes scan_log (`"catchup": true`) and price_log only. No deal
+  alert, no crop staged into `reference/_staging`, no label sidecar, crop vectors
+  or match/confirm rows — each already exists from the lot's first pass.
+- Fed lots are marked seen **at feed time** (checkpointed every 25), unlike
+  `/crawl`, so a second run can't feed them twice. A lot the Gem never answers
+  is not retried.
+
+Not built (named in the review): `PSU` / `Nittany Lions` prefixes on `/crawl`,
+the PSU category restriction, misspellings like "BUTON".
+
+---
+
 ## 2026-10-03 (later) — no seller is excluded from the scan any more
 
 The operator asked for it ("we want the data"): `EXCLUDED_SELLERS` kept
