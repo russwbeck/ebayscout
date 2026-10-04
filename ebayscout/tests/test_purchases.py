@@ -40,20 +40,30 @@ def _response(orders="", ack="Success", more="false", errors=""):
             "</GetOrdersResponse>")
 
 
-def _order(order_id, created, seller, total, txs, status="Completed"):
+def _order(order_id, created, seller, total, txs, status="Completed", subtotal="",
+           shipping="", sales_tax=""):
+    sub = f'<Subtotal currencyID="USD">{subtotal}</Subtotal>' if subtotal else ""
+    ship = (f'<ShippingServiceSelected><ShippingServiceCost currencyID="USD">{shipping}'
+            f"</ShippingServiceCost></ShippingServiceSelected>") if shipping else ""
+    tax = (f'<ShippingDetails><SalesTax><SalesTaxAmount currencyID="USD">{sales_tax}'
+           f"</SalesTaxAmount></SalesTax></ShippingDetails>") if sales_tax else ""
     return (f"<Order><OrderID>{order_id}</OrderID><OrderStatus>{status}</OrderStatus>"
+            f"{tax}{ship}{sub}"
             f'<Total currencyID="USD">{total}</Total><CreatedTime>{created}</CreatedTime>'
             f"<SellerUserID>{seller}</SellerUserID>"
             f"<TransactionArray>{txs}</TransactionArray></Order>")
 
 
-def _tx(item_id, title, price, qty="1", ship="", tid="1001", line_id=None):
+def _tx(item_id, title, price, qty="1", ship="", tid="1001", line_id=None, tax="",
+        tax_as="eBayCollectAndRemitTaxes"):
     line = f"<OrderLineItemID>{line_id}</OrderLineItemID>" if line_id is not None \
         else f"<OrderLineItemID>{item_id}-{tid}</OrderLineItemID>"
     ship_el = f'<ActualShippingCost currencyID="USD">{ship}</ActualShippingCost>' if ship else ""
+    tax_el = (f'<{tax_as}><TotalTaxAmount currencyID="USD">{tax}</TotalTaxAmount></{tax_as}>'
+              if tax else "")
     return (f"<Transaction><Item><ItemID>{item_id}</ItemID><Title>{title}</Title></Item>"
             f"<QuantityPurchased>{qty}</QuantityPurchased>"
-            f'<TransactionPrice currencyID="USD">{price}</TransactionPrice>{ship_el}'
+            f'<TransactionPrice currencyID="USD">{price}</TransactionPrice>{ship_el}{tax_el}'
             f"<TransactionID>{tid}</TransactionID>{line}</Transaction>")
 
 
@@ -101,9 +111,10 @@ def test_an_oauth_token_goes_in_the_header_and_not_the_body():
 
 def test_each_line_item_of_a_combined_order_is_its_own_row():
     xml = _response(
-        _order("12-111-222", "2026-09-20T18:00:00.000Z", "kling24toys", "26.50",
-               _tx("158298813627", "2019 PENN STATE SET", "20.00", ship="6.50")
-               + _tx("128083142875", "2025 SET OF 12", "17.00", qty="2", tid="1002"))
+        _order("12-111-222", "2026-09-20T18:00:00.000Z", "kling24toys", "62.66",
+               _tx("158298813627", "2019 PENN STATE SET", "20.00", ship="6.50", tax="1.80")
+               + _tx("128083142875", "2025 SET OF 12", "17.00", qty="2", tid="1002", tax="2.36"),
+               subtotal="54.00", shipping="4.50")
         + _order("12-333-444", "2026-09-28T01:02:03.000Z", "someone", "9.75",
                  _tx("267000000001", "1980 Pitt Isn't It", "8.00", ship="1.75")))
     lines, more = pu.parse_page(xml)
@@ -112,9 +123,45 @@ def test_each_line_item_of_a_combined_order_is_its_own_row():
                                                   "267000000001-1001"]
     first = lines[0]
     assert first["seller"] == "kling24toys" and first["order_id"] == "12-111-222"
-    assert first["item_price"] == 20.0 and first["shipping"] == 6.5
-    assert first["order_total"] == 26.5 and first["quantity"] == 1
-    assert lines[1]["quantity"] == 2 and lines[1]["shipping"] == ""
+    assert first["item_price"] == 20.0 and first["quantity"] == 1
+    assert lines[1]["item_price"] == 17.0 and lines[1]["quantity"] == 2
+    for line in lines[:2]:   # every line carries the order's money; merge keeps one
+        assert (line["order_subtotal"], line["order_shipping"], line["order_tax"],
+                line["order_total"]) == (54.0, 4.5, 4.16, 62.66)
+    assert "shipping" not in first
+
+
+def test_the_shipping_is_what_the_order_charged_not_each_listings_own():
+    # Two lines whose listings each say $8.75 shipping, combined into one $8.75
+    # charge: the order-level figure is the one that adds up to the total.
+    lines, _ = pu.parse_page(_response(_order(
+        "16-1", "2026-09-24T20:15:33.000Z", "s", "33.97",
+        _tx("318900000001", "a", "12.00", ship="8.75", tax="1.45")
+        + _tx("318900000002", "b", "10.00", ship="8.75", tid="1002", tax="1.77"),
+        subtotal="22.00", shipping="8.75")))
+    d = lines[0]
+    assert d["order_shipping"] == 8.75
+    assert round(d["order_subtotal"] + d["order_shipping"] + d["order_tax"], 2) == d["order_total"]
+
+
+def test_the_tax_is_counted_once_per_line_and_falls_back_to_the_orders_own():
+    both = ('<eBayCollectAndRemitTaxes><TotalTaxAmount currencyID="USD">0.84</TotalTaxAmount>'
+            '</eBayCollectAndRemitTaxes><Taxes><TotalTaxAmount currencyID="USD">0.84'
+            '</TotalTaxAmount></Taxes>')
+    tx = _tx("267000000003", "t", "12.00").replace("<TransactionID>", both + "<TransactionID>")
+    lines, _ = pu.parse_page(_response(_order("1", "2026-09-01T00:00:00.000Z", "s", "12.84", tx)))
+    assert lines[0]["order_tax"] == 0.84                       # not 1.68
+    lines, _ = pu.parse_page(_response(_order(
+        "2", "2026-09-01T00:00:00.000Z", "s", "10.60",
+        _tx("267000000004", "t", "10.00", tax="0.60", tax_as="Taxes"))))
+    assert lines[0]["order_tax"] == 0.6
+    lines, _ = pu.parse_page(_response(_order(
+        "3", "2026-09-01T00:00:00.000Z", "s", "10.70",
+        _tx("267000000005", "t", "10.00"), sales_tax="0.70")))
+    assert lines[0]["order_tax"] == 0.7
+    lines, _ = pu.parse_page(_response(_order(
+        "4", "2026-09-01T00:00:00.000Z", "s", "10.00", _tx("267000000006", "t", "10.00"))))
+    assert lines[0]["order_tax"] == "" and lines[0]["order_shipping"] == ""
 
 
 def test_a_line_without_an_OrderLineItemID_is_keyed_by_item_and_transaction():
@@ -144,11 +191,13 @@ def test_a_warning_is_not_a_failure():
 
 # --- rows and the merge --------------------------------------------------------------
 
-def _line(line_id, when, price=8.0):
+def _line(line_id, when, price=8.0, order=None):
     item = line_id.split("-")[0]
     return {"purchased_at": when, "seller": "s", "ebay_id": item, "title": "t",
-            "quantity": 1, "item_price": price, "shipping": "", "order_total": price,
-            "order_status": "Completed", "order_id": "o", "line_item_id": line_id}
+            "quantity": 1, "item_price": price, "order_subtotal": price,
+            "order_shipping": 1.0, "order_tax": 0.5, "order_total": price + 1.5,
+            "order_status": "Completed", "order_id": order or f"o-{line_id}",
+            "line_item_id": line_id}
 
 
 def test_a_row_is_in_header_order_with_the_listing_link():
@@ -172,13 +221,26 @@ def test_the_merge_keeps_rows_eBay_no_longer_returns_and_refreshes_repeats():
     assert dict(zip(pu.HEADER, merged[2]))["pulled_at"] == "old"            # kept
 
 
+def test_an_orders_money_is_on_its_first_line_only():
+    when = "2026-09-25T00:40:27.000Z"
+    combined = [pu.row(_line(f"40615948312{n}-1", when, order="06-1"), "P") for n in range(3)]
+    single = pu.row(_line("267000000009-1", "2026-09-26T00:00:00.000Z"), "P")
+    merged = pu.merge([], combined + [single])
+    money = [[r[i] for i in pu.ORDER_MONEY] for r in merged]
+    assert merged[0][pu.KEY] == "267000000009-1" and money[0] == [8.0, 1.0, 0.5, 9.5]
+    assert [r[pu.ORDER] for r in merged[1:]] == ["06-1"] * 3          # kept together
+    assert money[1] == [8.0, 1.0, 0.5, 9.5] and money[2] == money[3] == [""] * 4
+    assert [r[pu.HEADER.index("item_price")] for r in merged] == [8.0] * 4
+    assert combined[1][pu.ORDER_MONEY[-1]] == 9.5                     # caller's rows untouched
+
+
 # --- the sheet ---------------------------------------------------------------------
 
 def _gc(existing_values=None):
     ss = MagicMock()
     tabs = {}
     if existing_values is not None:
-        ws = MagicMock(title=pu.TAB)
+        ws = MagicMock(title=pu.TAB, row_count=100, col_count=len(pu.HEADER))
         ws.get_all_values.return_value = existing_values
         tabs[pu.TAB] = ws
     ss.worksheets.return_value = list(tabs.values())
@@ -205,6 +267,31 @@ def test_a_later_pull_merges_into_the_tab():
     ss.add_worksheet.assert_not_called()
     written = tabs[pu.TAB].update.call_args.kwargs["values"]
     assert [r[pu.KEY] for r in written[1:]] == ["267000000009-1", "267000000001-1"]
+    tabs[pu.TAB].get_all_values.assert_called_once_with(value_render_option="UNFORMATTED_VALUE")
+    tabs[pu.TAB].resize.assert_not_called()
+
+
+def test_a_tab_from_before_the_order_columns_is_relaid():
+    # The first pull (2026-10-04) wrote one `shipping` per line and the order's
+    # total on every line.  Read back unformatted, its numbers stay numbers.
+    old_header = ["purchased_at", "seller", "ebay_id", "title", "quantity", "item_price",
+                  "shipping", "order_total", "order_status", "order_id", "line_item_id",
+                  "listing_url", "pulled_at"]
+    old = [["2026-07-07T00:09:27.000Z", "g", "117261226188", "a", 1, 25, 1.4, 120.87,
+            "Completed", "26-1", "117261226188-1", "u", "P0"],
+           ["2026-07-07T00:09:27.000Z", "g", "117261234267", "b", 1, 15, 0.84, 120.87,
+            "Completed", "26-1", "117261234267-1", "u", "P0"]]
+    gc, ss, tabs = _gc(existing_values=[old_header] + old)
+    tabs[pu.TAB].col_count = len(old_header)
+    new = [pu.row(_line("267000000009-1", "2026-10-01T00:00:00.000Z"), "new")]
+    assert pu.write_tab(gc, "KEY", new) == ("purchases", 1, 3)
+    tabs[pu.TAB].resize.assert_called_once_with(rows=100, cols=len(pu.HEADER))
+    written = tabs[pu.TAB].update.call_args.kwargs["values"]
+    assert written[0] == pu.HEADER
+    kept = [dict(zip(pu.HEADER, r)) for r in written[2:]]
+    assert [k["item_price"] for k in kept] == [25, 15]
+    assert [k["order_total"] for k in kept] == [120.87, ""]          # once per order
+    assert kept[0]["order_shipping"] == "" and kept[0]["pulled_at"] == "P0"
 
 
 def test_the_slack_line_says_what_happened():
