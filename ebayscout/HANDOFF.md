@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-03)
+# eBay Scout — Session Handoff (latest entry 2026-10-04)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,40 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-04 — `/crawl purchases`: the operator's own eBay purchases
+
+**What it does:** `/crawl purchases [days]` pulls the operator's eBay purchases
+into a `purchases` tab of the Logger workbook, one row per line item: date,
+seller, item number, title, quantity, price, shipping, order total and status.
+- **The call:** Trading API `GetOrders` with `OrderRole=Buyer`.
+- **90-day limit:** eBay returns at most the last **90 days**. So the tab is
+  **merged** by line-item id rather than replaced: rows eBay no longer returns
+  stay. Pull at least every 90 days and the history stays complete.
+- **Manual only:** like `/crawl seller`, a few API pages and one sheet write. No
+  schedule, no photos, no Gemini.
+
+**Needs a new secret, `EBAY_USER_TOKEN`:** a user token for the buying account
+(DEPLOY.md §3b), because purchases are private and the app token can't read
+them. Until the secret exists, the command posts in Slack that it isn't set up,
+and nothing else changes.
+
+**Files:**
+- `purchases.py`
+- `ebay_client.get_purchases`
+- `config.EBAY_TRADING_URL`
+- `main.py`: `_start_purchases_pull` and `/internal/purchases`
+- `tests/test_purchases.py` and its runner
+
+**Not verified against live eBay.** The session container can't reach eBay. The
+tests use GetOrders XML written from eBay's documented response shape. The
+operator's first pull is the real check. If a column comes back blank, compare
+the field names in `purchases.parse_page` with a real response.
+
+**Not wired into `price_log` or the Inventory sheet.** What the purchases feed
+(cost per button, inventory counts) is the operator's call; it isn't made yet.
 
 ---
 

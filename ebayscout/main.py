@@ -42,6 +42,7 @@ from . import detect_gate as dgate
 from . import label_harvest as lharv
 from . import normalize
 from . import price_log
+from . import purchases
 from . import scan_log
 from . import seen_items
 from . import seller_listings
@@ -578,6 +579,10 @@ def handle_crawl_command(ack, body):
     """
     raw = (body.get("text") or "").strip()
     cap = config.CRAWL_MAX_LOTS_CAP
+    is_purchases, days, purchases_err = purchases.parse_command(raw)
+    if is_purchases:
+        _start_purchases_pull(ack, days, purchases_err)
+        return
     is_seller, seller = seller_listings.parse_command(raw)
     if is_seller:
         _start_seller_pull(ack, seller)
@@ -591,8 +596,10 @@ def handle_crawl_command(ack, body):
     except ValueError:
         ack(f"Usage: `/crawl <N>` — N = how many lots to search (1–{cap}). "
             f"Example: `/crawl 800`.  Or `/crawl seller <username>` to pull one "
-            f"seller's Penn State prices into the Logger sheet, or "
-            f"`/crawl catchup` to count still-listed lots that have no price row.")
+            f"seller's Penn State prices into the Logger sheet, "
+            f"`/crawl purchases` to pull your own last 90 days of eBay purchases "
+            f"into it, or `/crawl catchup` to count still-listed lots that have no "
+            f"price row.")
         return
     if n < 1 or n > cap:
         ack(f"`/crawl {raw}` is out of range — pick N between 1 and {cap}. "
@@ -648,6 +655,36 @@ def _start_seller_pull(ack, seller) -> None:
             try:
                 notifier.send_warning(_slack_token, _channel_id,
                                       f"seller pull for {seller} failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
+def _start_purchases_pull(ack, days, error) -> None:
+    """`/crawl purchases [days]`: ack now, pull inside /internal/purchases.
+
+    A few Trading API pages and one sheet write, so it needs no cap and no
+    confirmation.  Like the seller pull, it runs inside its own request through
+    the load balancer, so it never depends on CPU after the ack.
+    """
+    if error:
+        ack(error)
+        return
+    ack(f"🧾 Pulling your eBay purchases from the last {days} days into the "
+        f"`{purchases.TAB}` tab of the Logger sheet (merged with what's there).")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            requests.post(f"{base}/internal/purchases", params={"days": days},
+                          headers=headers, timeout=600)
+        except Exception as exc:
+            print(f"!!! PURCHASES: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"purchases pull failed to start: {exc}")
             except Exception:
                 pass
 
@@ -725,6 +762,45 @@ def internal_seller():
     if error:
         return jsonify({"status": "failed", "seller": seller, "error": error}), 500
     return jsonify({"status": "ok", "seller": seller, "listings": len(rows), "tab": tab}), 200
+
+
+@flask_app.route("/internal/purchases", methods=["POST"])
+def internal_purchases():
+    """Pull the operator's own eBay purchases into the `purchases` tab of the
+    Logger workbook (purchases.py), synchronously in this request.
+    Auth: per-startup X-Internal-Secret header."""
+    if not _internal_request_ok(request):
+        return jsonify({"status": "forbidden"}), 403
+    _, days, bad = purchases.parse_command("purchases " + (request.args.get("days") or ""))
+    if bad:
+        return jsonify({"status": "bad days"}), 400
+
+    from . import ebay_client
+    pulled, added, total, error = 0, 0, 0, None
+    try:
+        try:
+            token = _get_secret("EBAY_USER_TOKEN")
+        except Exception as exc:
+            raise RuntimeError("the EBAY_USER_TOKEN secret is not set up yet "
+                               "(DEPLOY.md, \"EBAY_USER_TOKEN\")") from exc
+        lines = ebay_client.get_purchases(token, days)
+        pulled_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        rows = [purchases.row(line, pulled_at) for line in lines]
+        pulled = len(rows)
+        gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
+        _, added, total = purchases.write_tab(gclient, _get_secret("LOGGER_ID"), rows)
+    except Exception as exc:
+        traceback.print_exc()
+        error = f"{type(exc).__name__}: {exc}"
+    try:
+        notifier.send_text(_slack_token, _channel_id,
+                           purchases.summary_text(days, pulled, added, total, error))
+    except Exception as exc:
+        print(f"!!! PURCHASES: Slack summary failed: {exc}", flush=True)
+    if error:
+        return jsonify({"status": "failed", "error": error}), 500
+    return jsonify({"status": "ok", "line_items": pulled, "added": added,
+                    "total": total}), 200
 
 
 @flask_app.route("/internal/catchup", methods=["POST"])

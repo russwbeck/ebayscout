@@ -391,6 +391,36 @@ def find_seller_listings(
     return list(items.values())
 
 
+def get_purchases(user_token: str, days: int, now=None) -> list[dict]:
+    """
+    The operator's own purchases from the last ``days`` days, one dict per line
+    item (purchases.parse_page), via Trading API GetOrders with OrderRole=Buyer.
+
+    ``user_token`` is the operator's user token (EBAY_USER_TOKEN), not the app
+    token: purchases are private.  It is sent to eBay and nowhere else, and never
+    printed.  Raises on an HTTP error or an Ack=Failure page: a partial pull
+    would read as the whole history.
+    """
+    import datetime
+    from . import purchases as pu
+
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    headers = pu.request_headers(user_token)
+    lines: list[dict] = []
+    for page in range(1, pu.MAX_PAGES + 1):
+        resp = requests.post(config.EBAY_TRADING_URL,
+                             data=pu.request_xml(user_token, days, page, now).encode("utf-8"),
+                             headers=headers, timeout=30)
+        resp.raise_for_status()
+        batch, more = pu.parse_page(resp.text)
+        lines.extend(batch)
+        if not more:
+            break
+    print(f">>> EBAY PURCHASES: {len(lines)} line items over the last {days} days.",
+          flush=True)
+    return lines
+
+
 def get_item_pictures(client_id: str, client_secret: str, item_id: str) -> list[str]:
     """
     Fetch the primary + additional image URLs for a listing via Browse getItem.
