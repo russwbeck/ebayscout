@@ -9,6 +9,36 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-10-04 (later) — purchases tab: the shipping and tax each order charged
+
+**The first live pull worked** (10:07 ET): 24 line items from 15 orders, the
+full 90 days, posted in `#ebay-checker`. The token and the call are fine.
+
+**It got shipping wrong on combined orders, so the columns changed:**
+- Each line's `shipping` was eBay's `ActualShippingCost`: the listing's own
+  shipping before a combined-shipping discount. One order showed $8.75 shipping
+  on a $12.84 total (a $12 item plus 7% tax: no shipping was charged).
+- `order_total` repeated on every line of an order, so summing it overcounted.
+- **Now:** `order_subtotal`, `order_shipping`, `order_tax`, `order_total`, from
+  the order-level figures (`Subtotal`, `ShippingServiceSelected/ShippingServiceCost`,
+  each line's `eBayCollectAndRemitTaxes` or `Taxes` `TotalTaxAmount`, else the
+  order's `SalesTax`), on the order's **first line only**. `item_price` stays
+  on every line.
+- **The old tab is relaid** by its own header row: `shipping` is dropped, the
+  repeated total kept once. Kept rows are now read unformatted; before, a
+  re-written price went back as text and would not sum.
+
+**Not verified live yet.** The order-level field names come from eBay's
+documented response. Check after the first pull on this code: each order's
+subtotal + shipping + tax should equal its total, and the $12.84 order should
+show $0 shipping.
+
+**Run `/crawl purchases` once after this deploys, before Monday's scan.**
+Monday's 90-day window no longer reaches the 2026-07-07 order. Its rows would
+keep the old figures: the total once, no shipping or tax.
+
+---
+
 ## 2026-10-04 — `/crawl purchases`: the operator's own eBay purchases
 
 **What it does:** `/crawl purchases [days]` pulls the operator's eBay purchases
