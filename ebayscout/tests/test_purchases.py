@@ -262,16 +262,48 @@ def test_the_pull_runs_inside_its_own_authenticated_request_with_the_user_token(
     kick = _fn("_start_purchases_pull")
     assert "/internal/purchases" in kick and "X-Internal-Secret" in kick
     route = _fn("internal_purchases")
-    assert route.index("_internal_request_ok(request)") < route.index("get_purchases")
-    assert '_get_secret("EBAY_USER_TOKEN")' in route
-    assert "purchases.write_tab(" in route and '_get_secret("LOGGER_ID")' in route
+    assert route.index("_internal_request_ok(request)") < route.index("_pull_purchases(days)")
+    pull = _fn("_pull_purchases")
+    assert '_get_secret("EBAY_USER_TOKEN")' in pull and "get_purchases(" in pull
+    assert "purchases.write_tab(" in pull and '_get_secret("LOGGER_ID")' in pull
 
 
-def test_nothing_but_the_command_pulls_purchases():
-    """No schedule, no daily-scan hook: the operator asked for no extra checks."""
-    callers = [n.name for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)
-               and "get_purchases" in (ast.get_source_segment(_MAIN, n) or "")]
-    assert callers == ["internal_purchases"]
+def test_only_the_command_and_the_monday_scan_pull_purchases():
+    """The operator asked for Mondays with the 9 AM scan, and no other schedule."""
+    def callers(needle, skip=()):
+        return sorted(n.name for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)
+                      and n.name not in skip
+                      and needle in (ast.get_source_segment(_MAIN, n) or ""))
+    assert callers("get_purchases(") == ["_pull_purchases"]
+    assert callers("_pull_purchases(", skip=("_pull_purchases",)) == ["internal_purchases",
+                                                                     "run_scan"]
+
+
+def test_the_scan_pulls_only_on_a_plain_live_monday_run():
+    scan = _fn("run_scan")
+    day = scan.index("purchases.is_pull_day(")
+    assert day < scan.index("_scan_lock.acquire(")          # read before the scan runs
+    call = scan.index("_pull_purchases(purchases.MAX_DAYS, scheduled=True)")
+    guard = scan.rindex("if purchases_day and plain_run and not dry:", 0, call)
+    assert scan.index("_run_crawl(") < guard                 # after the scan itself
+    assert "plain_run = not (year_crawl or era_crawl or hunt_ids or ignore_seen or limit)" in scan
+    assert call < scan.index("_scan_lock.release()")          # still inside the request
+
+
+def test_monday_is_the_pull_day():
+    monday_9am_et = datetime.datetime(2026, 10, 5, 13, 0, tzinfo=datetime.timezone.utc)
+    assert pu.is_pull_day(monday_9am_et)
+    assert not pu.is_pull_day(monday_9am_et - datetime.timedelta(days=1))   # Sunday
+    assert not pu.is_pull_day(monday_9am_et + datetime.timedelta(days=1))   # Tuesday
+    winter = datetime.datetime(2026, 12, 7, 14, 0, tzinfo=datetime.timezone.utc)  # EST
+    assert pu.is_pull_day(winter)
+
+
+def test_the_monday_run_is_quiet_until_the_token_exists():
+    pull = _fn("_pull_purchases")
+    quiet = pull.index("if scheduled:")
+    assert quiet < pull.index("return {\"status\": \"skipped\"") < pull.index("notifier.send_text(")
+    assert "raise RuntimeError" in pull                     # the command still says why
 
 
 def test_the_token_is_never_printed():
@@ -281,7 +313,7 @@ def test_the_token_is_never_printed():
     fns = [n for n in ast.walk(client_tree) if isinstance(n, ast.FunctionDef)
            and n.name == "get_purchases"]
     fns += [n for n in ast.walk(_TREE) if isinstance(n, ast.FunctionDef)
-            and n.name == "internal_purchases"]
+            and n.name == "_pull_purchases"]
     assert len(fns) == 2
     for fn in fns:
         for call in (c for c in ast.walk(fn) if isinstance(c, ast.Call)

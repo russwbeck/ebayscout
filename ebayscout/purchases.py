@@ -23,9 +23,12 @@ never logged.
 Pull at least once every 90 days and the tab is a complete history from the
 first pull.
 
-Cheap and manual, like ``/crawl seller``: a few API pages and one sheet write.
-No photos, nothing scheduled — the operator asked for no checks beyond the 9 AM
-scan.
+Cheap, like ``/crawl seller``: a few API pages and one sheet write, no photos.
+It runs two ways:
+- **On demand:** ``/crawl purchases``.
+- **Mondays:** by itself at the end of the 9 AM daily scan, at the operator's
+  request (2026-10-04: "I don't need it daily").
+It adds no schedule of its own.
 
 Pure apart from ``write_tab``, which takes the gspread client from the caller.
 The HTTP call lives in ``ebay_client.get_purchases``.
@@ -42,6 +45,7 @@ MAX_DAYS = 90            # GetOrders' limit: nothing created earlier comes back
 ENTRIES_PER_PAGE = 100   # GetOrders' page maximum
 MAX_PAGES = 20           # up to 2,000 orders a pull
 COMPATIBILITY_LEVEL = "1451"
+PULL_WEEKDAY = 0         # Monday: the daily scan pulls purchases on this day
 
 TAB = "purchases"
 HEADER = ["purchased_at", "seller", "ebay_id", "title", "quantity", "item_price",
@@ -77,6 +81,16 @@ def parse_command(text):
         return True, int(arg), None
     return True, None, (f"Usage: `/crawl purchases [days]` — days 1–{MAX_DAYS} "
                         f"(eBay returns at most the last {MAX_DAYS} days).")
+
+
+def is_pull_day(now):
+    """True on the day the 9 AM scan also pulls purchases (Monday).
+
+    Read in UTC at the start of the scan.  Cloud Scheduler fires at 9 AM
+    America/New_York, which is 13:00 or 14:00 UTC on the same calendar day, so no
+    time-zone data is needed.
+    """
+    return now.astimezone(datetime.timezone.utc).weekday() == PULL_WEEKDAY
 
 
 def is_oauth(token):
@@ -228,5 +242,5 @@ def summary_text(days, pulled, added, total, error=None):
         return f"⚠️ Purchases pull failed: {error}"
     return (f"🧾 Pulled {pulled} purchase line item{'s' if pulled != 1 else ''} from "
             f"the last {days} days into the `{TAB}` tab of the Logger sheet: "
-            f"{added} new, {total} in the tab. eBay only returns {MAX_DAYS} days, "
-            f"so run this at least that often to keep the history complete.")
+            f"{added} new, {total} in the tab. It also runs by itself every "
+            f"Monday with the 9 AM scan.")

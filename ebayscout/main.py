@@ -478,6 +478,8 @@ def run_scan():
     global buy_rules
     if not _run_scan_authorized(request):
         return jsonify({"status": "forbidden"}), 403
+    # Read before the scan runs, so a long scan can't carry it past midnight UTC.
+    purchases_day = purchases.is_pull_day(datetime.datetime.now(datetime.timezone.utc))
 
     def _truthy(v: str | None) -> bool:
         return (v or "").strip().lower() in ("1", "true", "yes", "on")
@@ -525,6 +527,13 @@ def run_scan():
             remaining = _run_daily_scan(ignore_seen=ignore_seen, dry_run=dry_run_param,
                                         year_crawl=year_crawl, era_crawl=era_crawl,
                                         limit=limit, hunt_ids=hunt_ids)
+        # Mondays, the plain scheduled scan also pulls the operator's purchases
+        # (operator, 2026-10-04): still inside this request, so it keeps the CPU.
+        # A manual variant (?year_crawl, ?limit, …) or a dry run never does.
+        plain_run = not (year_crawl or era_crawl or hunt_ids or ignore_seen or limit)
+        dry = config.DRY_RUN if dry_run_param is None else dry_run_param
+        if purchases_day and plain_run and not dry:
+            _pull_purchases(purchases.MAX_DAYS, scheduled=True)
     finally:
         _scan_lock.release()
 
@@ -774,13 +783,30 @@ def internal_purchases():
     _, days, bad = purchases.parse_command("purchases " + (request.args.get("days") or ""))
     if bad:
         return jsonify({"status": "bad days"}), 400
+    result = _pull_purchases(days)
+    return jsonify(result), (500 if result["status"] == "failed" else 200)
 
+
+def _pull_purchases(days, scheduled=False) -> dict:
+    """Pull ``days`` of purchases, merge them into the Logger tab, and post the
+    Slack line.  Never raises: a failed pull must not fail the scan that calls
+    it on Mondays.
+
+    ``scheduled`` is the Monday run inside /run-scan.  Before EBAY_USER_TOKEN
+    exists it stays quiet (a log line, no Slack), so the weekly scan doesn't
+    nag about a feature that isn't set up yet.  Any other failure, such as an
+    expired token, still posts.
+    """
     from . import ebay_client
     pulled, added, total, error = 0, 0, 0, None
     try:
         try:
             token = _get_secret("EBAY_USER_TOKEN")
         except Exception as exc:
+            if scheduled:
+                print(">>> PURCHASES: EBAY_USER_TOKEN not set — Monday pull skipped.",
+                      flush=True)
+                return {"status": "skipped", "reason": "no EBAY_USER_TOKEN"}
             raise RuntimeError("the EBAY_USER_TOKEN secret is not set up yet "
                                "(DEPLOY.md, \"EBAY_USER_TOKEN\")") from exc
         lines = ebay_client.get_purchases(token, days)
@@ -798,9 +824,8 @@ def internal_purchases():
     except Exception as exc:
         print(f"!!! PURCHASES: Slack summary failed: {exc}", flush=True)
     if error:
-        return jsonify({"status": "failed", "error": error}), 500
-    return jsonify({"status": "ok", "line_items": pulled, "added": added,
-                    "total": total}), 200
+        return {"status": "failed", "error": error}
+    return {"status": "ok", "line_items": pulled, "added": added, "total": total}
 
 
 @flask_app.route("/internal/catchup", methods=["POST"])

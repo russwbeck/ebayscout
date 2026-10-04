@@ -18,8 +18,19 @@ seller, item number, title, quantity, price, shipping, order total and status.
 - **90-day limit:** eBay returns at most the last **90 days**. So the tab is
   **merged** by line-item id rather than replaced: rows eBay no longer returns
   stay. Pull at least every 90 days and the history stays complete.
-- **Manual only:** like `/crawl seller`, a few API pages and one sheet write. No
-  schedule, no photos, no Gemini.
+- **When it runs:**
+  - **On demand:** `/crawl purchases`.
+  - **Mondays:** by itself at the end of the 9 AM daily scan, pulling the full
+    90 days. The operator asked for this on 2026-10-04 ("I don't need it
+    daily").
+  - It adds no schedule of its own.
+- **Monday run details:**
+  - It is checked in UTC at the start of `/run-scan`.
+  - It runs only on a plain, live scheduled scan: a dry run or a manual variant
+    (`?year_crawl`, `?limit`, …) skips it.
+  - Until the token exists it stays quiet: a log line, no Slack.
+- **Cost:** like `/crawl seller`, a few API pages and one sheet write. No
+  photos, no Gemini.
 
 **Needs a new secret, `EBAY_USER_TOKEN`:** a user token for the buying account
 (DEPLOY.md §3b), because purchases are private and the app token can't read
@@ -30,7 +41,8 @@ and nothing else changes.
 - `purchases.py`
 - `ebay_client.get_purchases`
 - `config.EBAY_TRADING_URL`
-- `main.py`: `_start_purchases_pull` and `/internal/purchases`
+- `main.py`: `_start_purchases_pull`, `/internal/purchases`, `_pull_purchases`
+  (shared by the command and the Monday run), and the Monday hook in `run_scan`
 - `tests/test_purchases.py` and its runner
 
 **Not verified against live eBay.** The session container can't reach eBay. The
