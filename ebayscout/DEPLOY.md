@@ -98,6 +98,45 @@ echo -n "YOUR_EBAY_CERT_ID" | gcloud secrets create EBAY_CERT_ID --data-file=-
 > needed for a Slack server that receives and verifies incoming events).
 > It's safe to leave it in Secret Manager for future use.
 
+### 3b. `EBAY_USER_TOKEN` (only for `/crawl purchases`)
+
+`/crawl purchases` reads the operator's own eBay purchases. The app token above
+can't see them, because purchases are private. It needs a **user token** for the
+eBay account that does the buying.
+
+1. developer.ebay.com → **Application Keys** → the **Production** keyset →
+   **User Tokens** (the link next to the App ID).
+2. Under **Get a Token from eBay via Your Application**, choose
+   **Auth'n'Auth**. If the page asks, create an RuName first.
+3. **Sign in to Production** with the buying account, agree, and copy the
+   token it shows. An Auth'n'Auth token lasts **18 months**.
+4. Store it without leaving it in shell history, and let the service read it:
+
+```bash
+read -rs TOKEN   # paste, then Enter
+printf %s "$TOKEN" | gcloud secrets create EBAY_USER_TOKEN --data-file=-
+unset TOKEN
+
+# The Cloud Run runtime account. If this prints nothing, the service runs as the
+# default compute account, PROJECT_NUMBER-compute@developer.gserviceaccount.com.
+SA=$(gcloud run services describe ebay-scout --region=us-east1 \
+      --format='value(spec.template.spec.serviceAccountName)')
+gcloud secrets add-iam-policy-binding EBAY_USER_TOKEN \
+  --member="serviceAccount:${SA}" --role="roles/secretmanager.secretAccessor"
+```
+
+**No redeploy is needed.** `_get_secret` reads the latest version on every
+pull.
+
+**Renewing:** when the token expires, the pull fails with eBay's auth error
+(931/932). Make a new token the same way and
+`gcloud secrets versions add EBAY_USER_TOKEN --data-file=-`.
+
+**Keep it only in Secret Manager.** The token can act on the eBay account, so
+never put it in Slack or this repo. An OAuth user access token (`v^1.1#…`) also
+works, since `purchases.py` sends that kind in the `X-EBAY-API-IAF-TOKEN`
+header, but it expires in two hours.
+
 ### 4. Service Account
 ```bash
 PROJECT_ID="your-project-id"

@@ -111,6 +111,9 @@ EBAY_OAUTH_URL         = "https://api.ebay.com/identity/v1/oauth2/token"
 EBAY_OAUTH_SCOPE       = "https://api.ebay.com/oauth/api_scope"
 EBAY_BROWSE_SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 EBAY_BROWSE_ITEM_URL   = "https://api.ebay.com/buy/browse/v1/item"
+# Trading API (XML): only `/crawl purchases` uses it, for GetOrders as the buyer.
+# It needs a user token (EBAY_USER_TOKEN), not the app token above.
+EBAY_TRADING_URL       = "https://api.ebay.com/ws/api.dll"
 EBAY_MAX_RESULTS  = 100          # per query; Browse page size limit is 200
 MAX_PHOTOS_PER_LISTING = 4       # photos scored per listing (was 1); presence
                                  # detection benefits from per-button photos
