@@ -28,8 +28,9 @@ newest is at the top, as in buttonmatcher's copy.
 **The 2026-07-07 order was not re-pulled** before Monday's window passed it, as
 warned below. Its 3 rows keep the total once, with no shipping or tax. The old
 per-line shipping added up for that order ($106.96 + $6.00, ×1.07 = $120.87).
-So filling $106.96 / $6.00 / $7.91 into its first line by hand would be exact.
-eBay won't return it again, so a hand edit stays.
+So $106.96 / $6.00 / $7.91 were filled into its first line (row 23) by hand on
+2026-10-06, at the operator's OK. eBay won't return it again, and a pull keeps
+rows it doesn't return, so the hand edit stays.
 
 ---
 
