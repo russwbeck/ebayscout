@@ -22,8 +22,10 @@ what was spent:
 - ``order_subtotal`` (the items), ``order_shipping`` and ``order_tax`` are eBay's
   order-level figures, and ``order_total`` is what was paid, tax included.
 - A line item's own ``ActualShippingCost`` is not used: it is the listing's
-  shipping before a combined-shipping discount, so it overstated those orders
-  (one showed $8.75 shipping on a $12.84 total: a $12 item plus tax).
+  shipping before a combined-shipping discount.
+- eBay's order-level shipping and tax can miss that discount too (2026-10-06):
+  one order showed $8.75 shipping and $1.45 tax on a $12.84 total, which is a
+  $12 item plus 7% tax.  ``_paid`` re-solves those two so the four add up.
 - ``item_price`` stays on every line: it is that item's own price, per unit.
 
 ``GetOrders`` reaches back 90 days at most.  So the tab is merged, not replaced:
@@ -183,12 +185,40 @@ def _order_tax(order, txs):
     return _money(order, "e:ShippingDetails/e:SalesTax/e:SalesTaxAmount")
 
 
+def _paid(money):
+    """The shipping and tax an order actually charged.
+
+    In the first live pull, 12 of 14 orders added up: subtotal + shipping + tax
+    == total.  The other two were each placed within two minutes of another
+    order from the same seller.  Their totals were lower by exactly the shipping plus its
+    tax, while eBay's shipping and tax still showed the listing's figures.
+
+    So when the parts come to more than the total, by no more than the shipping
+    and its tax, the shortfall came off the shipping.  Shipping and tax are
+    re-solved at the order's own tax rate so the four add up to what was paid.
+    Any other mismatch is left as eBay gave it; the total is right either way.
+    """
+    sub, ship, tax, total = (money[k] for k in
+                             ("order_subtotal", "order_shipping", "order_tax", "order_total"))
+    if "" in (sub, ship, total) or not ship:
+        return money
+    taxed = tax or 0.0
+    if round(sub + ship + taxed - total, 2) <= 0.01:
+        return money
+    paid_ship = round(total / (1 + taxed / (sub + ship)) - sub, 2)
+    if paid_ship < -0.02 or paid_ship >= ship:
+        return money
+    paid_ship = max(paid_ship, 0.0)
+    paid_tax = round(total - sub - paid_ship, 2) if tax != "" else ""
+    return dict(money, order_shipping=paid_ship, order_tax=paid_tax)
+
+
 def _order_money(order, txs):
     """What the order cost, from eBay's order-level figures (module docstring)."""
-    return {"order_subtotal": _money(order, "e:Subtotal"),
-            "order_shipping": _money(order, "e:ShippingServiceSelected/e:ShippingServiceCost"),
-            "order_tax": _order_tax(order, txs),
-            "order_total": _money(order, "e:Total")}
+    return _paid({"order_subtotal": _money(order, "e:Subtotal"),
+                  "order_shipping": _money(order, "e:ShippingServiceSelected/e:ShippingServiceCost"),
+                  "order_tax": _order_tax(order, txs),
+                  "order_total": _money(order, "e:Total")})
 
 
 def parse_page(xml_text):

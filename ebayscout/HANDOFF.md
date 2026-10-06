@@ -9,6 +9,30 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-10-06 — purchases tab checked live; combined-shipping orders re-solved
+
+**Monday's 9 AM scan pulled purchases on the new columns** (2026-10-05,
+13:00 UTC). For each order I checked subtotal + shipping + tax against the total.
+- **12 of 14 added up exactly.**
+- **2 didn't.** Each was placed within two minutes of another order from the
+  same seller. Their totals were lower by exactly the shipping plus its tax, but
+  eBay's order-level shipping and tax still showed the listing's figures.
+  - $12 + $8.75 + $1.45 listed, $12.84 paid.
+  - $14.88 + $15.10 + $2.10 listed, $21.38 paid.
+- **Fix:** `purchases._paid`. When the parts exceed the total by no more than
+  the shipping and its tax, shipping and tax are re-solved at the order's own
+  tax rate. That gives $0.00 + $0.84 and $5.10 + $1.40. Any other mismatch is
+  left as eBay gave it. Replaying all 14 live orders changes only those two.
+  The next pull rewrites them; both are inside the 90 days until December.
+
+**The 2026-07-07 order was not re-pulled** before Monday's window passed it, as
+warned below. Its 3 rows keep the total once, with no shipping or tax. The old
+per-line shipping added up for that order ($106.96 + $6.00, ×1.07 = $120.87).
+So filling $106.96 / $6.00 / $7.91 into its first line by hand would be exact.
+eBay won't return it again, so a hand edit stays.
+
+---
+
 ## 2026-10-04 (later) — purchases tab: the shipping and tax each order charged
 
 **The first live pull worked** (10:07 ET): 24 line items from 15 orders, the

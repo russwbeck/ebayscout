@@ -144,6 +144,29 @@ def test_the_shipping_is_what_the_order_charged_not_each_listings_own():
     assert round(d["order_subtotal"] + d["order_shipping"] + d["order_tax"], 2) == d["order_total"]
 
 
+def _money_of(subtotal, shipping, tax, total):
+    lines, _ = pu.parse_page(_response(_order(
+        "9", "2026-09-24T20:15:33.000Z", "s", total,
+        _tx("318900000009", "t", subtotal, ship=shipping, tax=tax),
+        subtotal=subtotal, shipping=shipping)))
+    d = lines[0]
+    return d["order_shipping"], d["order_tax"], d["order_total"]
+
+
+def test_a_combined_shipping_discount_eBay_left_out_is_taken_off_the_shipping():
+    # The two live orders (2026-10-06) whose parts came to more than the total:
+    # shipping and tax are re-solved at the order's own tax rate.
+    assert _money_of("12.00", "8.75", "1.45", "12.84") == (0.0, 0.84, 12.84)
+    assert _money_of("14.88", "15.10", "2.10", "21.38") == (5.1, 1.4, 21.38)
+
+
+def test_parts_that_add_up_or_a_mismatch_that_isnt_shipping_are_left_alone():
+    assert _money_of("68.00", "10.00", "5.46", "83.46") == (10.0, 5.46, 83.46)
+    assert _money_of("20.00", "8.75", "1.45", "20.21") == (8.75, 1.45, 20.21)   # over shipping
+    assert _money_of("20.00", "8.75", "1.45", "35.00") == (8.75, 1.45, 35.0)    # total higher
+    assert _money_of("29.00", "0.00", "", "25.00") == (0.0, "", 25.0)           # no shipping
+
+
 def test_the_tax_is_counted_once_per_line_and_falls_back_to_the_orders_own():
     both = ('<eBayCollectAndRemitTaxes><TotalTaxAmount currencyID="USD">0.84</TotalTaxAmount>'
             '</eBayCollectAndRemitTaxes><Taxes><TotalTaxAmount currencyID="USD">0.84'
