@@ -705,8 +705,9 @@ def test_gem_unmatched_columns_are_the_header_tail():
     # match shadow (Logger_19 A/B) → text-variant match shadow → within-year
     # scoring, the final appended column.
     # Still one contiguous run in this order, now with the FIVE columns
-    # appended 2026-09-12 behind it (hence [-13:-5], not [-8:]).
-    assert ml.MATCH_HEADER[-13:-5] == ["det_gem_unmatched", "det_gem_unmatched_json",
+    # appended 2026-09-12 behind it and the FOUR learned-detector columns of
+    # 2026-10-07 behind those (hence [-17:-9], not [-8:]).
+    assert ml.MATCH_HEADER[-17:-9] == ["det_gem_unmatched", "det_gem_unmatched_json",
                                        "det_n_swapped", "det_reconcile_swaps_json",
                                        "det_gemini_anchored_json", "fullres_top_json",
                                        "variant_top_json", "within_year_json"]
@@ -751,7 +752,7 @@ def test_within_year_column_is_final_and_flattens():
     )
     flat = ml.flatten_match_record(rec)
     assert len(flat) == len(ml.MATCH_HEADER)
-    assert ml.MATCH_HEADER[-6] == "within_year_json"   # five appended behind it
+    assert ml.MATCH_HEADER[-10] == "within_year_json"  # nine appended behind it
     got = json.loads(flat[ml.MATCH_HEADER.index("within_year_json")])
     # The losing same-year sibling is recorded even though no leaderboard
     # column can hold it — that is the point of this column.
@@ -1000,7 +1001,7 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     # with fullres_top_json still exactly where it has always been — an append
     # must never shift a position, which is what these three indices pin.
     # (The workbook's pasted tab pads two helper cells after the header.)
-    assert len(ml.MATCH_HEADER) == 92, len(ml.MATCH_HEADER)
+    assert len(ml.MATCH_HEADER) == 96, len(ml.MATCH_HEADER)
     assert ml.MATCH_HEADER.index("fullres_top_json") == 84   # column CG
     assert ml.MATCH_HEADER.index("variant_top_json") == 85   # column CH
     assert ml.MATCH_HEADER.index("within_year_json") == 86   # column CI
@@ -1051,13 +1052,14 @@ def test_stuck_front_columns_are_appended_and_flatten():
                 "det_satfb_blue_cov", "det_satfb_bright_cov"):
         assert col in ml.MATCH_HEADER, col
 
-    # Appended, in the order hand-added to the Logger's header row (CJ..CM),
-    # and nothing was inserted ahead of them.
-    assert ml.MATCH_HEADER[-5:] == [
+    # Appended, in the order hand-added to the Logger's header row (CJ..CN),
+    # and nothing was inserted ahead of them; the four learned-detector
+    # columns of 2026-10-07 (CO..CR) follow.
+    assert ml.MATCH_HEADER[-9:-4] == [
         "det_unguided_band_removed", "det_unguided_concentric_removed",
         "det_satfb_blue_cov", "det_satfb_bright_cov", "det_db_direct"]
-    assert ml.MATCH_HEADER.index("within_year_json") == len(ml.MATCH_HEADER) - 6
-    assert len(ml.MATCH_HEADER) == 92, len(ml.MATCH_HEADER)
+    assert ml.MATCH_HEADER.index("within_year_json") == len(ml.MATCH_HEADER) - 10
+    assert len(ml.MATCH_HEADER) == 96, len(ml.MATCH_HEADER)
 
     diag = ml.build_detection_diag(
         h=600, w=800, bg_brightness=170.0, bg_is_white=True,
@@ -1126,7 +1128,9 @@ def test_dedup_zero_is_a_reading_and_unreached_fork_is_blank():
     )
     brow = ml.flatten_match_record(brec)
     assert len(brow) == len(ml.MATCH_HEADER)
-    assert brow[-5:] == ["", "", "", "", ""]
+    assert brow[-9:-4] == ["", "", "", "", ""]
+    # no model reading: blank count and box score, empty JSON blobs
+    assert brow[-4:] == ["", "{}", "", "{}"]
 
 
 def test_db_direct_is_per_crop_and_blank_off_the_pipeline(self=None):
@@ -1158,7 +1162,41 @@ def test_db_direct_is_per_crop_and_blank_off_the_pipeline(self=None):
     assert _rec(db_direct=True)[i] == 1,  "rescued must read 1, not TRUE"
     assert _rec(db_direct=False)[i] == 0, "not-rescued is a reading, not a blank"
     assert _rec()[i] == "", "off the pipeline the tier does not exist — blank"
-    # and it is the last column, so nothing shifted when it was appended
-    assert i == len(ml.MATCH_HEADER) - 1
+    # and only the four learned-detector columns (2026-10-07) follow it, so
+    # nothing shifted when either was appended
+    assert i == len(ml.MATCH_HEADER) - 5
     for row in (_rec(db_direct=True), _rec()):
         assert len(row) == len(ml.MATCH_HEADER)
+
+
+def test_learned_detector_columns_flatten_per_lot_and_per_crop():
+    lot = {"gen": "g", "conf": 0.4, "count": 3, "layout": "hough",
+           "extra": [[500.0, 300.0, 40.0, 0.55, 1.0]]}
+    diag = ml.build_detection_diag(
+        h=10, w=20, bg_brightness=170.4, bg_is_white=True, mask_path="blue_only",
+        hough_pass1_count=8, hough_retry_count=None, final_count_user=7,
+        final_count_noinput=3, user_count=None, detector_used="hough", n_crops=7,
+        learned=lot)
+
+    def _row(box):
+        rec = ml.build_match_record(
+            service="s", command="/pipeline", mode="pipeline", job_id="j",
+            thread_ts="t", channel_id="ch", user_id="", crop_num=1, check_id=None,
+            detection=diag, bank="b", restricted_top=[], shadow_top=[],
+            shadow_enabled=False, learned_box=box)
+        row = ml.flatten_match_record(rec)
+        assert len(row) == len(ml.MATCH_HEADER)
+        return lambda col: row[ml.MATCH_HEADER.index(col)]
+
+    on = _row({"conf": 0.91, "dist": 0.1, "in_frame": 1.0})
+    assert on("det_learned_count") == 3
+    assert json.loads(on("det_learned_json"))["extra"][0][3] == 0.55
+    assert on("det_learned_box_conf") == 0.91
+    assert json.loads(on("det_learned_box_json"))["dist"] == 0.1
+    assert _row({})("det_learned_box_conf") == 0          # no box on the crop
+    blank = _row(None)                                    # no model reading
+    assert blank("det_learned_box_conf") == ""
+    assert blank("det_learned_box_json") == "{}"
+    # The four columns are the tail, in header order.
+    assert ml.MATCH_HEADER[-4:] == ["det_learned_count", "det_learned_json",
+                                    "det_learned_box_conf", "det_learned_box_json"]
