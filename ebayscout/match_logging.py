@@ -492,6 +492,11 @@ def build_detection_diag(
     n_swapped=None,
     reconcile_swaps=None,
     gemini_anchored=None,
+    # Learned (YOLO) detector against the crops, per lot (rollout step 4):
+    #   learned  dict|None  learned_detector.lot_record -- model generation, live
+    #                       threshold, its count, the layout that cut the crops,
+    #                       and the boxes no crop covered.  None = no reading.
+    learned=None,
 ):
     """Detection diagnostics block.
 
@@ -627,6 +632,7 @@ def build_detection_diag(
         "n_swapped": _i(n_swapped),
         "reconcile_swaps": reconcile_swaps or None,
         "gemini_anchored": gemini_anchored or None,
+        "learned": learned or None,
     }
 
 
@@ -651,6 +657,7 @@ def build_match_record(
     variant_top=None,
     within_year=None,
     db_direct=None,
+    learned_box=None,
 ):
     """One record per crop, written at detection/match time.
 
@@ -673,6 +680,10 @@ def build_match_record(
     that stratum at all: every leaderboard column here is one-row-per-year, so a
     same-year rival is absent from all of them by construction.  ``{}`` when the
     crop produced no results.
+
+    ``learned_box`` (optional) is the learned detector's box on this crop
+    (learned_detector.crop_placement): ``{conf, dist, in_frame}``, ``{}`` when
+    the model put no box on it, None when there was no model reading.
     """
     return {
         "schema": SCHEMA_MATCH,
@@ -699,6 +710,7 @@ def build_match_record(
         # the whole lot, which cannot say WHICH crops needed the rescue.  None
         # on every non-pipeline path, where the tier does not exist.
         "db_direct": (None if db_direct is None else int(bool(db_direct))),
+        "learned_box": learned_box,
     }
 
 
@@ -905,6 +917,17 @@ MATCH_HEADER = [
     # case.  1 = this crop needed the rescue, 0 = it did not, blank = not a
     # pipeline crop (the tier exists only there). ---
     "det_db_direct",
+    # --- appended 2026-10-07: the learned (YOLO) detector against the crops
+    # (rollout step 4: may its boxes replace Hough's circles on small lots?).
+    # Its count alone was print-only and could not say whether a box sat on a
+    # real button or a phantom.  Per lot: the model's count at the live rule,
+    # and a blob {gen, conf, layout, extra:[[cx,cy,r,score,in_frame]]} -- the
+    # boxes no crop covered.  Per crop: the score of the model box on it (0 =
+    # the model put none there; blank = no reading) and {dist, in_frame}.
+    # Joined to confirm_log by job_id + crop_num, every threshold can be
+    # graded: tools/detector/grade_placement.py. ---
+    "det_learned_count", "det_learned_json",
+    "det_learned_box_conf", "det_learned_box_json",
 ]
 
 CONFIRM_HEADER = [
@@ -1038,7 +1061,20 @@ def flatten_match_record(rec):
         # match MATCH_HEADER: this cell was briefly emitted ahead of the four
         # B4/B2 columns, which silently shifted all five by one. ---
         _cell(rec.get("db_direct")),
+        # --- appended 2026-10-07: learned detector vs the crops (step 4) ---
+        _cell((d.get("learned") or {}).get("count")),
+        json.dumps(d.get("learned") or {}, default=str),
+        _learned_box_conf(rec.get("learned_box")),
+        json.dumps(rec.get("learned_box") or {}, default=str),
     ]
+
+
+def _learned_box_conf(box):
+    """The model box's score on a crop: blank with no reading, 0 when the
+    model put no box on the crop."""
+    if box is None:
+        return ""
+    return _cell(box.get("conf", 0) if isinstance(box, dict) else 0)
 
 
 def flatten_confirm_record(rec):
