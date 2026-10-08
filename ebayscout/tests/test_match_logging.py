@@ -1022,9 +1022,11 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     # the live board is untouched by the retirement
     assert "Hoo's Sorry Now" in flat[ml.MATCH_HEADER.index("restricted_top_json")]
 
-    # confirm_log stays 23 columns, rank_centered last and blank when off
-    assert len(ml.CONFIRM_HEADER) == 23, len(ml.CONFIRM_HEADER)
-    assert ml.CONFIRM_HEADER.index("rank_centered") == len(ml.CONFIRM_HEADER) - 1
+    # confirm_log is 24 columns: rank_centered, blank when off, then the
+    # audit sample's auto_rule (2026-10-08)
+    assert len(ml.CONFIRM_HEADER) == 24, len(ml.CONFIRM_HEADER)
+    assert ml.CONFIRM_HEADER.index("rank_centered") == len(ml.CONFIRM_HEADER) - 2
+    assert ml.CONFIRM_HEADER[-1] == "auto_rule"
     crec = ml.build_confirm_record(
         service="buttonmatcher", command="/sort", job_id="j", thread_ts="t",
         crop_num=1, check_id="", user_id="u", chosen_year="1995",
@@ -1037,6 +1039,20 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     assert len(cflat) == len(ml.CONFIRM_HEADER)
     assert cflat[ml.CONFIRM_HEADER.index("rank_centered")] == ""
     assert cflat[ml.CONFIRM_HEADER.index("rank_restricted")] == 1
+    assert cflat[-1] == ""                       # auto_rule: not an audit row
+
+
+def test_audit_rows_name_the_rule_they_held():
+    rec = ml.build_confirm_record(
+        service="buttonmatcher", command="/sort", job_id="j", thread_ts="t",
+        crop_num=3, check_id=None, user_id="", chosen_year="2004",
+        chosen_phrase="Lions Are Ice Breakers", chosen_type="Hockey",
+        source="audit_shadow", rank_restricted=1, rank_shadow=1,
+        shadow_leaderboard_size=133, auto_rule="auto_ocr")
+    row = ml.flatten_confirm_record(rec)
+    assert len(row) == len(ml.CONFIRM_HEADER)
+    assert row[ml.CONFIRM_HEADER.index("auto_rule")] == "auto_ocr"
+    assert row[ml.CONFIRM_HEADER.index("source")] == "audit_shadow"
 
 
 def test_stuck_front_columns_are_appended_and_flatten():
