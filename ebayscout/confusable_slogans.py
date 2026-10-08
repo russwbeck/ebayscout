@@ -83,6 +83,13 @@ CONFUSABLE_GROUPS = [
     # (Logger_18), both caught by gemini_auto. Same year (1992), same sport,
     # both read "Penn State" as their most legible text.
     ["Eers to Penn State", "Penn State and Proud of it"],
+    # 2026-10-08, buttonmatcher /sort lot 62747567 (#inventory-bot thread
+    # 1791487179.420369), button 4: a 1975 "Temple Hoo?" ranked 1978 "Temple
+    # Whoo?" #1 (overall 0.777 vs 0.769, a 0.007 lead). OCR read "Temple Hoo?"
+    # and disagreed, so it went to a card; with no OCR reading a score rule
+    # could have taken it. Different years, one letter apart, the same
+    # Central Counties design: operator calls them functionally slogan twins.
+    ["Temple Hoo?", "Temple Whoo?"],
 ]
 
 
