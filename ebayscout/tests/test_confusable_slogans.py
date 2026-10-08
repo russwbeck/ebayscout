@@ -168,3 +168,15 @@ def test_picker_labels_tolerates_empty_and_missing_fields():
     # No slogan to fall back on → year+type, never a crash.
     assert edt.picker_labels([{"year": 1992}, {"year": 1992}]) == [
         "1. 1992 Football", "2. 1992 Football"]
+
+
+def test_temple_hoo_and_whoo_are_one_group():
+    """Operator, 2026-10-08: one letter apart, same design, CLIP ranked the
+    wrong one #1 on a live /sort lot."""
+    hoo = _entry("t1", "Temple Hoo?", 1975)
+    whoo = _entry("t2", "Temple Whoo?", 1978)
+    reg = cfs.build_confusable_registry(cfs.CONFUSABLE_GROUPS, [hoo, whoo], _norm)
+    for slogan in ("Temple Hoo?", "Temple Whoo?"):
+        fam = cfs.confusable_family(reg, slogan, _norm)
+        assert fam and {e["slogan"] for e in fam} == {"Temple Hoo?", "Temple Whoo?"}
+        assert cfs.should_demote(reg, slogan, _norm)
