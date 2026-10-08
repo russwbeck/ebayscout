@@ -745,6 +745,7 @@ def build_confirm_record(
     rank_rerank=None,
     edition_shadow=None,
     rank_centered=None,
+    auto_rule=None,
 ):
     """One record per user confirmation, written when the human picks an answer.
 
@@ -775,6 +776,13 @@ def build_confirm_record(
     "Basketball", "sims": {...}}. Measurement only (never influenced the
     ranking/auto-confirm); lets confirm_log compare the human's pick to the
     shadow's pick. None for every non-twin confirmation.
+
+    ``auto_rule`` (appended column, 2026-10-08): on the audit sample's rows
+    (``audit_shadow`` / ``audit_hit`` / ``audit_miss``), the auto source the
+    held crop would have confirmed under -- ``auto_ocr``, ``auto_sort``,
+    ``gemini_auto``, ``auto_pipeline_*`` ... -- so each rule's precision can be
+    graded on its own.  Blank on every other row (an auto row's ``source``
+    already names its rule).
     """
     return {
         "schema": SCHEMA_CONFIRM,
@@ -813,6 +821,7 @@ def build_confirm_record(
         "edition_shadow": edition_shadow or {},
         # per-slogan baseline-centered shadow rank (see CONFIRM_HEADER note)
         "rank_centered": rank_centered,
+        "auto_rule": auto_rule,
     }
 
 
@@ -967,6 +976,10 @@ CONFIRM_HEADER = [
     # centered on that slogan's own background baseline.  Blank when the
     # baseline bank wasn't available at match time.
     "rank_centered",
+    # --- appended 2026-10-08: on audit-sample rows, the auto rule the held
+    # crop would have confirmed under (auto_ocr, auto_sort, gemini_auto, ...),
+    # so the audit grades each rule separately.  Blank elsewhere. ---
+    "auto_rule",
 ]
 
 
@@ -1125,6 +1138,7 @@ def flatten_confirm_record(rec):
         _cell(rec.get("rank_rerank")),
         json.dumps(rec.get("edition_shadow") or {}, default=str),
         _cell(rec.get("rank_centered")),
+        _cell(rec.get("auto_rule")),
     ]
 
 
