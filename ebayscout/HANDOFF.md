@@ -365,6 +365,14 @@ never in this repo (it is public). buttonmatcher does the same for its five.
   multi-region `US` bucket, which pays $0.01 per 1,000 and gets no free tier.
   The data itself is 1.4 GB. Neither service polls the bucket; the Chromebook
   watcher's `pipeline/input/` poll is the likely source.
+  **Done (checked 2026-10-08):** the bucket is now single-region `US-EAST1`
+  (`gcloud storage buckets describe` → `US-EAST1 region`; the operator moved it
+  in late September, keeping the name). Class A there is $0.005 per 1,000, and
+  Standard storage in us-east1 gets 5,000 free a month, so the poll now costs
+  about $0.70 a month. The operator declined a code change for it (an idle-poll
+  backoff or a Pub/Sub notification feed): not worth it at ~$9 a year, and the
+  watcher goes when Gemini does. October's bill is the first clean month to
+  confirm against.
 - Artifact Registry grew 117% in September: every merge stores a full image and
   nothing appears to delete old ones (a keep-3-newest cleanup policy was
   recommended).
