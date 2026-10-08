@@ -658,6 +658,7 @@ def build_match_record(
     within_year=None,
     db_direct=None,
     learned_box=None,
+    ocr=None,
 ):
     """One record per crop, written at detection/match time.
 
@@ -684,6 +685,10 @@ def build_match_record(
     ``learned_box`` (optional) is the learned detector's box on this crop
     (learned_detector.crop_placement): ``{conf, dist, in_frame}``, ``{}`` when
     the model put no box on it, None when there was no model reading.
+
+    ``ocr`` (optional) is the scene-text reading of this crop (buttonmatcher's
+    ocr_reader.py): ``{text, slogan, score, agree}``, ``agree`` meaning OCR's
+    best slogan is CLIP's #1 slogan at any score.  None when OCR did not run.
     """
     return {
         "schema": SCHEMA_MATCH,
@@ -711,6 +716,7 @@ def build_match_record(
         # on every non-pipeline path, where the tier does not exist.
         "db_direct": (None if db_direct is None else int(bool(db_direct))),
         "learned_box": learned_box,
+        "ocr": ocr,
     }
 
 
@@ -928,6 +934,13 @@ MATCH_HEADER = [
     # graded: tools/detector/grade_placement.py. ---
     "det_learned_count", "det_learned_json",
     "det_learned_box_conf", "det_learned_box_json",
+    # --- appended 2026-10-08: scene-text OCR of the crop (rollout step 5: can
+    # CLIP + OCR identify without Gemini?).  What OCR read, the slogan it
+    # matched and its match score (0-100), and whether that slogan is CLIP's
+    # #1 (1/0; blank = OCR did not run).  The auto rule is agree AND score >=
+    # BUTTONMATCHER_OCR_AUTO_MIN, so any threshold can be graded against
+    # confirm_log by job_id + crop_num. ---
+    "ocr_text", "ocr_slogan", "ocr_score", "ocr_agree",
 ]
 
 CONFIRM_HEADER = [
@@ -1066,7 +1079,19 @@ def flatten_match_record(rec):
         json.dumps(d.get("learned") or {}, default=str),
         _learned_box_conf(rec.get("learned_box")),
         json.dumps(rec.get("learned_box") or {}, default=str),
+        # --- appended 2026-10-08: OCR of the crop ---
+        *_ocr_cells(rec.get("ocr")),
     ]
+
+
+def _ocr_cells(ocr):
+    """[text, slogan, score, agree] -- all blank when OCR did not run."""
+    if not ocr:
+        return ["", "", "", ""]
+    agree = ocr.get("agree")
+    return [str(ocr.get("text") or ""), str(ocr.get("slogan") or ""),
+            _cell(ocr.get("score")),
+            "" if agree is None else int(bool(agree))]
 
 
 def _learned_box_conf(box):
