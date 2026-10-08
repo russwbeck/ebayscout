@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-04)
+# eBay Scout — Session Handoff (latest entry 2026-10-08)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,20 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-08 — PROPOSED: Gemini reads only the crops YOLO + CLIP did not settle
+
+**A plan, nothing built, nothing changes here yet.** The operator proposed
+dropping the whole-photo Gem read. The learned detector and CLIP would settle
+what they can, and Gemini would read only the leftover crops, from one
+numbered sheet. The full plan is buttonmatcher's `HANDOFF.md`, "2026-10-08
+(later)". This service is its Phase 3, after buttonmatcher has proved it and
+after the learned detector is ported here. The part specific to ebayscout:
+only leftovers at or above `RED_THRESHOLD` go on a sheet, so a lot with
+nothing worth reading makes no Gem call at all, which is where this service's
+Gem load drops.
 
 ---
 
