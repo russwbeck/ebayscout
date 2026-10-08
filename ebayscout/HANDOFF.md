@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-04)
+# eBay Scout — Session Handoff (latest entry 2026-10-08)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,28 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-08 — shared logging: OCR columns and the audit's auto_rule (no behaviour change)
+
+buttonmatcher went Gemini-free on its slash commands (its HANDOFF,
+2026-10-08): the learned detector cuts the crops and scene-text OCR
+(`ocr_reader.py`, buttonmatcher-only) is a second reader beside CLIP; a crop
+confirms when OCR's slogan is CLIP's #1. Its Gemini pipeline is unchanged and
+logs the OCR reading beside Gemini's.
+
+Here only the shared `match_logging.py` changed (PRs #119, #120),
+byte-identical with buttonmatcher's:
+- **match_log CS..CW** (`ocr_text`, `ocr_slogan`, `ocr_score`, `ocr_agree`,
+  `ocr_year`), now 101 columns.
+- **confirm_log X** `auto_rule` (the rule an audit-held crop would have
+  confirmed under), now 24 columns.
+
+ebayscout passes no OCR reading and writes no audit rows, so every one of
+these cells is blank on its rows. Following the strategic goal, OCR comes here
+only after buttonmatcher's week of live grading proves the rule (no human lane
+here, so precision has to be higher before it can stand alone).
 
 ---
 
