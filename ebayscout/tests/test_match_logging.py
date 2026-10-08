@@ -707,8 +707,8 @@ def test_gem_unmatched_columns_are_the_header_tail():
     # Still one contiguous run in this order, now with the FIVE columns
     # appended 2026-09-12 behind it and the FOUR learned-detector columns of
     # 2026-10-07 behind those and the FOUR OCR columns of 2026-10-08 behind
-    # them (hence [-21:-13], not [-8:]).
-    assert ml.MATCH_HEADER[-21:-13] == ["det_gem_unmatched", "det_gem_unmatched_json",
+    # them, then ocr_year (hence [-22:-14], not [-8:]).
+    assert ml.MATCH_HEADER[-22:-14] == ["det_gem_unmatched", "det_gem_unmatched_json",
                                        "det_n_swapped", "det_reconcile_swaps_json",
                                        "det_gemini_anchored_json", "fullres_top_json",
                                        "variant_top_json", "within_year_json"]
@@ -753,7 +753,7 @@ def test_within_year_column_is_final_and_flattens():
     )
     flat = ml.flatten_match_record(rec)
     assert len(flat) == len(ml.MATCH_HEADER)
-    assert ml.MATCH_HEADER[-14] == "within_year_json"  # thirteen appended behind it
+    assert ml.MATCH_HEADER[-15] == "within_year_json"  # fourteen appended behind it
     got = json.loads(flat[ml.MATCH_HEADER.index("within_year_json")])
     # The losing same-year sibling is recorded even though no leaderboard
     # column can hold it — that is the point of this column.
@@ -1002,7 +1002,7 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     # with fullres_top_json still exactly where it has always been — an append
     # must never shift a position, which is what these three indices pin.
     # (The workbook's pasted tab pads two helper cells after the header.)
-    assert len(ml.MATCH_HEADER) == 100, len(ml.MATCH_HEADER)
+    assert len(ml.MATCH_HEADER) == 101, len(ml.MATCH_HEADER)
     assert ml.MATCH_HEADER.index("fullres_top_json") == 84   # column CG
     assert ml.MATCH_HEADER.index("variant_top_json") == 85   # column CH
     assert ml.MATCH_HEADER.index("within_year_json") == 86   # column CI
@@ -1057,11 +1057,11 @@ def test_stuck_front_columns_are_appended_and_flatten():
     # and nothing was inserted ahead of them; the four learned-detector
     # columns of 2026-10-07 (CO..CR) and the four OCR columns of 2026-10-08
     # (CS..CV) follow.
-    assert ml.MATCH_HEADER[-13:-8] == [
+    assert ml.MATCH_HEADER[-14:-9] == [
         "det_unguided_band_removed", "det_unguided_concentric_removed",
         "det_satfb_blue_cov", "det_satfb_bright_cov", "det_db_direct"]
-    assert ml.MATCH_HEADER.index("within_year_json") == len(ml.MATCH_HEADER) - 14
-    assert len(ml.MATCH_HEADER) == 100, len(ml.MATCH_HEADER)
+    assert ml.MATCH_HEADER.index("within_year_json") == len(ml.MATCH_HEADER) - 15
+    assert len(ml.MATCH_HEADER) == 101, len(ml.MATCH_HEADER)
 
     diag = ml.build_detection_diag(
         h=600, w=800, bg_brightness=170.0, bg_is_white=True,
@@ -1130,11 +1130,11 @@ def test_dedup_zero_is_a_reading_and_unreached_fork_is_blank():
     )
     brow = ml.flatten_match_record(brec)
     assert len(brow) == len(ml.MATCH_HEADER)
-    assert brow[-13:-8] == ["", "", "", "", ""]
+    assert brow[-14:-9] == ["", "", "", "", ""]
     # no model reading: blank count and box score, empty JSON blobs
-    assert brow[-8:-4] == ["", "{}", "", "{}"]
-    # no OCR: four blanks
-    assert brow[-4:] == ["", "", "", ""]
+    assert brow[-9:-5] == ["", "{}", "", "{}"]
+    # no OCR: five blanks
+    assert brow[-5:] == ["", "", "", "", ""]
 
 
 def test_db_direct_is_per_crop_and_blank_off_the_pipeline(self=None):
@@ -1168,7 +1168,7 @@ def test_db_direct_is_per_crop_and_blank_off_the_pipeline(self=None):
     assert _rec()[i] == "", "off the pipeline the tier does not exist — blank"
     # and only the four learned-detector columns (2026-10-07) and the four OCR
     # columns (2026-10-08) follow it, so nothing shifted on an append
-    assert i == len(ml.MATCH_HEADER) - 9
+    assert i == len(ml.MATCH_HEADER) - 10
     for row in (_rec(db_direct=True), _rec()):
         assert len(row) == len(ml.MATCH_HEADER)
 
@@ -1202,7 +1202,7 @@ def test_learned_detector_columns_flatten_per_lot_and_per_crop():
     assert blank("det_learned_box_conf") == ""
     assert blank("det_learned_box_json") == "{}"
     # The four columns come just ahead of the OCR four, in header order.
-    assert ml.MATCH_HEADER[-8:-4] == ["det_learned_count", "det_learned_json",
+    assert ml.MATCH_HEADER[-9:-5] == ["det_learned_count", "det_learned_json",
                                       "det_learned_box_conf", "det_learned_box_json"]
 
 
@@ -1217,14 +1217,16 @@ def test_ocr_columns_are_the_tail_and_flatten():
         assert len(row) == len(ml.MATCH_HEADER)
         return lambda col: row[ml.MATCH_HEADER.index(col)]
 
-    on = _row({"text": "Trojan Hearse", "slogan": "trojanhearse",
-               "score": 97.5, "agree": True})
-    assert on("ocr_text") == "Trojan Hearse"
+    on = _row({"text": "'26 Trojan Hearse", "slogan": "trojanhearse",
+               "score": 97.5, "agree": True, "year": "2026"})
+    assert on("ocr_text") == "'26 Trojan Hearse"
     assert on("ocr_slogan") == "trojanhearse"
     assert on("ocr_score") == 97.5
     assert on("ocr_agree") == 1
+    assert on("ocr_year") == "2026"
     assert _row({"text": "", "slogan": "", "score": 0.0, "agree": False})("ocr_agree") == 0
     off = _row(None)
-    assert [off(c) for c in ("ocr_text", "ocr_slogan", "ocr_score", "ocr_agree")] == [
-        "", "", "", ""]
-    assert ml.MATCH_HEADER[-4:] == ["ocr_text", "ocr_slogan", "ocr_score", "ocr_agree"]
+    assert [off(c) for c in ("ocr_text", "ocr_slogan", "ocr_score", "ocr_agree",
+                             "ocr_year")] == ["", "", "", "", ""]
+    assert ml.MATCH_HEADER[-5:] == ["ocr_text", "ocr_slogan", "ocr_score", "ocr_agree",
+                                    "ocr_year"]

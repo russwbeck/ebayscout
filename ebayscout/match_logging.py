@@ -687,8 +687,9 @@ def build_match_record(
     the model put no box on it, None when there was no model reading.
 
     ``ocr`` (optional) is the scene-text reading of this crop (buttonmatcher's
-    ocr_reader.py): ``{text, slogan, score, agree}``, ``agree`` meaning OCR's
-    best slogan is CLIP's #1 slogan at any score.  None when OCR did not run.
+    ocr_reader.py): ``{text, slogan, score, agree, year}``, ``agree`` meaning
+    OCR's best slogan is CLIP's #1 slogan at any score and ``year`` the printed
+    year(s) read, comma-joined.  None when OCR did not run.
     """
     return {
         "schema": SCHEMA_MATCH,
@@ -941,6 +942,11 @@ MATCH_HEADER = [
     # BUTTONMATCHER_OCR_AUTO_MIN, so any threshold can be graded against
     # confirm_log by job_id + crop_num. ---
     "ocr_text", "ocr_slogan", "ocr_score", "ocr_agree",
+    # --- appended 2026-10-08: the year(s) printed on the button as OCR read
+    # them ('99 -> 1999; marker-era rules of the Gem's printed_year), comma-
+    # joined in reading order, blank when none.  Measurement only: can OCR's
+    # year settle an edition twin?  Grade against confirm_log's chosen_year. ---
+    "ocr_year",
 ]
 
 CONFIRM_HEADER = [
@@ -1085,13 +1091,14 @@ def flatten_match_record(rec):
 
 
 def _ocr_cells(ocr):
-    """[text, slogan, score, agree] -- all blank when OCR did not run."""
+    """[text, slogan, score, agree, year] -- all blank when OCR did not run."""
     if not ocr:
-        return ["", "", "", ""]
+        return ["", "", "", "", ""]
     agree = ocr.get("agree")
     return [str(ocr.get("text") or ""), str(ocr.get("slogan") or ""),
             _cell(ocr.get("score")),
-            "" if agree is None else int(bool(agree))]
+            "" if agree is None else int(bool(agree)),
+            str(ocr.get("year") or "")]
 
 
 def _learned_box_conf(box):
