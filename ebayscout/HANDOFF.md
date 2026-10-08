@@ -9,17 +9,25 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
-## 2026-10-08 — PROPOSED: Gemini reads only the crops YOLO + CLIP did not settle
+## 2026-10-08 — Gemini reads only the crops YOLO + CLIP did not settle (buttonmatcher first)
 
-**A plan, nothing built, nothing changes here yet.** The operator proposed
-dropping the whole-photo Gem read. The learned detector and CLIP would settle
-what they can, and Gemini would read only the leftover crops, from one
-numbered sheet. The full plan is buttonmatcher's `HANDOFF.md`, "2026-10-08
-(later)". This service is its Phase 3, after buttonmatcher has proved it and
-after the learned detector is ported here. The part specific to ebayscout:
-only leftovers at or above `RED_THRESHOLD` go on a sheet, so a lot with
-nothing worth reading makes no Gem call at all, which is where this service's
-Gem load drops.
+**Nothing changes here yet.** The operator approved a plan to drop the
+whole-photo Gem read. The learned detector and CLIP would settle what they
+can, and Gemini would read only the leftover crops, from one numbered sheet.
+The full plan, and what is built, is in buttonmatcher's `HANDOFF.md`,
+"2026-10-08 (later)". Buttonmatcher has the offline replay and the Phase 1
+shadow, which is off. The operator's decisions: this is a step toward no
+Gemini at all, the crop reader reports the printed year, and a lot waits for
+its read.
+
+This service is Phase 3, after buttonmatcher has proved it and after the
+learned detector is ported here. Two parts are specific to ebayscout:
+- Only leftovers at or above `RED_THRESHOLD` go on a sheet, so a lot with
+  nothing worth reading makes no Gem call at all. That is where this
+  service's Gem load drops.
+- Keep the manifests under an ebayscout-only GCS prefix. The bucket is
+  shared, and buttonmatcher deletes the `pipeline/crop_read/` manifests it
+  finishes.
 
 ---
 
