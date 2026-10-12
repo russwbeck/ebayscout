@@ -129,6 +129,60 @@ def test_each_line_item_of_a_combined_order_is_its_own_row():
         assert (line["order_subtotal"], line["order_shipping"], line["order_tax"],
                 line["order_total"]) == (54.0, 4.5, 4.16, 62.66)
     assert "shipping" not in first
+    assert [l["line_shipping"] for l in lines] == [1.67, 2.83, ""]   # $4.50 by 20 : 34
+
+
+def test_each_line_gets_its_share_of_the_orders_shipping_as_eBays_export_splits_it():
+    # greek4sale, order 26-14837-28425: eBay's own data export split the $6.00
+    # into $3.76 / $0.84 / $1.40.
+    lines, _ = pu.parse_page(_response(_order(
+        "26-14837-28425", "2026-07-07T00:09:27.000Z", "greek4sale", "120.87",
+        _tx("117261226188", "a", "25.00", ship="6.00", tid="1")
+        + _tx("117261234267", "b", "15.00", ship="6.00", tid="2")
+        + _tx("206381920192", "c", "66.96", ship="6.00", tid="3"),
+        subtotal="106.96", shipping="6.00", sales_tax="7.91")))
+    assert [l["line_shipping"] for l in lines] == [1.40, 0.84, 3.76]
+    assert lines[0]["order_adjustment"] == 0.0
+
+
+def test_line_shipping_adds_back_up_to_the_order_and_weighs_quantity():
+    lines, _ = pu.parse_page(_response(_order(
+        "1", "2026-09-01T00:00:00.000Z", "s", "40.00",
+        _tx("267000000011", "a", "10.00", tid="1") + _tx("267000000012", "b", "10.00", tid="2")
+        + _tx("267000000013", "c", "10.00", tid="3"),
+        subtotal="30.00", shipping="10.00")))
+    assert [l["line_shipping"] for l in lines] == [3.33, 3.33, 3.34]
+    lines, _ = pu.parse_page(_response(_order(
+        "2", "2026-09-01T00:00:00.000Z", "s", "36.00",
+        _tx("267000000014", "a", "5.00", qty="3", tid="1") + _tx("267000000015", "b", "15.00", tid="2"),
+        subtotal="30.00", shipping="6.00")))
+    assert [l["line_shipping"] for l in lines] == [3.0, 3.0]
+
+
+def test_an_order_without_shipping_gives_its_lines_none():
+    lines, _ = pu.parse_page(_response(_order(
+        "4", "2026-09-01T00:00:00.000Z", "s", "10.00", _tx("267000000006", "t", "10.00"),
+        subtotal="10.00")))
+    assert lines[0]["line_shipping"] == "" and lines[0]["order_adjustment"] == 0.0
+
+
+def test_a_shipping_refund_after_checkout_shows_as_the_orders_adjustment():
+    # zoidbergfan01, order 16-15199-09268: combined with the buyer's other order
+    # and its shipping refunded; eBay kept checkout's shipping and tax.
+    lines, _ = pu.parse_page(_response(_order(
+        "16-15199-09268", "2026-09-24T20:15:33.000Z", "zoidbergfan01", "12.84",
+        _tx("318913568586", "Blood Drive 3 Button Lot", "12.00", ship="8.75", tax="1.45"),
+        subtotal="12.00", shipping="8.75")))
+    d = lines[0]
+    assert d["order_adjustment"] == -9.36
+    assert round(d["order_subtotal"] + d["order_shipping"] + d["order_tax"]
+                 + d["order_adjustment"], 2) == d["order_total"]
+
+
+def test_no_adjustment_without_a_total_and_a_subtotal():
+    lines, _ = pu.parse_page(_response(_order(
+        "5", "2026-09-01T00:00:00.000Z", "s", "10.00", _tx("267000000007", "t", "10.00"))))
+    assert lines[0]["order_adjustment"] == ""
 
 
 def test_the_shipping_is_what_the_order_charged_not_each_listings_own():
@@ -194,8 +248,9 @@ def test_a_warning_is_not_a_failure():
 def _line(line_id, when, price=8.0, order=None):
     item = line_id.split("-")[0]
     return {"purchased_at": when, "seller": "s", "ebay_id": item, "title": "t",
-            "quantity": 1, "item_price": price, "order_subtotal": price,
-            "order_shipping": 1.0, "order_tax": 0.5, "order_total": price + 1.5,
+            "quantity": 1, "item_price": price, "line_shipping": 1.0,
+            "order_subtotal": price, "order_shipping": 1.0, "order_tax": 0.5,
+            "order_adjustment": 0.0, "order_total": price + 1.5,
             "order_status": "Completed", "order_id": order or f"o-{line_id}",
             "line_item_id": line_id}
 
@@ -227,10 +282,11 @@ def test_an_orders_money_is_on_its_first_line_only():
     single = pu.row(_line("267000000009-1", "2026-09-26T00:00:00.000Z"), "P")
     merged = pu.merge([], combined + [single])
     money = [[r[i] for i in pu.ORDER_MONEY] for r in merged]
-    assert merged[0][pu.KEY] == "267000000009-1" and money[0] == [8.0, 1.0, 0.5, 9.5]
+    assert merged[0][pu.KEY] == "267000000009-1" and money[0] == [8.0, 1.0, 0.5, 0.0, 9.5]
     assert [r[pu.ORDER] for r in merged[1:]] == ["06-1"] * 3          # kept together
-    assert money[1] == [8.0, 1.0, 0.5, 9.5] and money[2] == money[3] == [""] * 4
+    assert money[1] == [8.0, 1.0, 0.5, 0.0, 9.5] and money[2] == money[3] == [""] * 5
     assert [r[pu.HEADER.index("item_price")] for r in merged] == [8.0] * 4
+    assert [r[pu.HEADER.index("line_shipping")] for r in merged] == [1.0] * 4   # every line
     assert combined[1][pu.ORDER_MONEY[-1]] == 9.5                     # caller's rows untouched
 
 

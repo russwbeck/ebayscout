@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-08)
+# eBay Scout — Session Handoff (latest entry 2026-10-12)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,41 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-12 — purchases tab: each line's shipping, and refunds after checkout
+
+The operator pulled eBay's data export of the account (Purchase History,
+2025-10-02 to 2026-10-03, 87 line items) and it was reconciled with the
+`purchases` tab. Two columns came out of it (`purchases.py`):
+- **`line_shipping`**, every line: the line's share of the order's shipping by
+  price × quantity, the split eBay's export uses (greek4sale's $6.00 →
+  $3.76 / $0.84 / $1.40, matched to the cent). It is what a lot's cost needs
+  when one order holds several lots. Lines add back up to the order's shipping.
+- **`order_adjustment`**, first line only like the rest of the order money:
+  total − (subtotal + shipping + tax). 0 on 13 of the 15 live orders; −9.36 on
+  zoidbergfan01's and −10.70 on redma_5081's, both combined-shipping refunds.
+
+**The 2026-10-04 check answered:** the $12.84 order did NOT show $0 shipping on
+the order-level figure. `ShippingServiceCost` and the tax stay as charged at
+checkout; only `Total` moves when a seller refunds shipping. `order_total` is
+what was paid; `order_adjustment` says how much the parts overstate it.
+
+**Backfill (done by hand in the sheet, 2026-10-12):** the tab only reached back
+to 2026-07-07 (GetOrders' 90 days). The export's 63 older line items were added,
+`order_status` = `eBay data export`, `line_item_id` = `<item>-export-<UTC time>`
+(unique, so a merge keeps them), no order id or tax. Their shipping is the
+export's per-line split, in `order_shipping`; with no order id each line keeps
+its own. 23 `sold` rows with source `purchase` went into `price_log` for the 22
+purchases whose title names one inventory slogan. A later `/scout sold` of the
+same item supersedes them (the supersede rule matches kind + ebay_id, not
+source).
+
+The next pull (Monday, or `/crawl purchases`) relays the tab under the new
+header; rows older than 90 days get both new columns blank. **After that pull,**
+copy each `eBay data export` row's `order_shipping` into its `line_shipping`
+(it is already the per-line split), so the backfill reads like the live rows.
 
 ---
 
