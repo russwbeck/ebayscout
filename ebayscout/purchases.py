@@ -26,6 +26,23 @@ what was spent:
   (one showed $8.75 shipping on a $12.84 total: a $12 item plus tax).
 - ``item_price`` stays on every line: it is that item's own price, per unit.
 
+Two columns added on 2026-10-12, after reconciling the tab with eBay's own data
+export of the account:
+- ``line_shipping``, on every line: the line's share of the order's shipping,
+  split by price × quantity — the split eBay's export uses (greek4sale's $6.00
+  across $66.96 / $15 / $25 came out $3.76 / $0.84 / $1.40).  A combined order
+  holding several lots then gives each lot its own shipping, so what a lot cost
+  is its price plus its line_shipping.  An order's lines add up to its shipping
+  exactly: the rounding remainder goes on its last line.
+- ``order_adjustment``, order money like the rest: ``order_total`` minus
+  subtotal, shipping and tax.  0 when the order adds up.  Negative when the
+  seller gave money back after checkout — a combined-shipping refund:
+  zoidbergfan01's $12 item showed $8.75 shipping and $1.45 tax on a $12.84
+  total (-9.36), redma_5081's lot $15.10 shipping on $21.38 (-10.70).  eBay
+  keeps the shipping and tax as charged at checkout and only the total moves,
+  so the total stays what was paid and this column says by how much the rest
+  overstates it.
+
 ``GetOrders`` reaches back 90 days at most.  So the tab is merged, not replaced:
 - A pull adds new line items and refreshes the ones it sees again.
 - It keeps rows older than eBay still returns.
@@ -58,13 +75,15 @@ PULL_WEEKDAY = 0         # Monday: the daily scan pulls purchases on this day
 
 TAB = "purchases"
 HEADER = ["purchased_at", "seller", "ebay_id", "title", "quantity", "item_price",
-          "order_subtotal", "order_shipping", "order_tax", "order_total",
+          "line_shipping", "order_subtotal", "order_shipping", "order_tax",
+          "order_adjustment", "order_total",
           "order_status", "order_id", "line_item_id", "listing_url", "pulled_at"]
 KEY = HEADER.index("line_item_id")
 WHEN = HEADER.index("purchased_at")
 ORDER = HEADER.index("order_id")
 ORDER_MONEY = [HEADER.index(c) for c in
-               ("order_subtotal", "order_shipping", "order_tax", "order_total")]
+               ("order_subtotal", "order_shipping", "order_tax", "order_adjustment",
+                "order_total")]
 
 # Sales tax eBay collects is reported per line item; the first path found counts.
 _TAX_PATHS = ("e:eBayCollectAndRemitTaxes/e:TotalTaxAmount", "e:Taxes/e:TotalTaxAmount")
@@ -185,10 +204,41 @@ def _order_tax(order, txs):
 
 def _order_money(order, txs):
     """What the order cost, from eBay's order-level figures (module docstring)."""
-    return {"order_subtotal": _money(order, "e:Subtotal"),
-            "order_shipping": _money(order, "e:ShippingServiceSelected/e:ShippingServiceCost"),
-            "order_tax": _order_tax(order, txs),
-            "order_total": _money(order, "e:Total")}
+    money = {"order_subtotal": _money(order, "e:Subtotal"),
+             "order_shipping": _money(order, "e:ShippingServiceSelected/e:ShippingServiceCost"),
+             "order_tax": _order_tax(order, txs),
+             "order_total": _money(order, "e:Total")}
+    money["order_adjustment"] = _adjustment(money)
+    return money
+
+
+def _adjustment(money):
+    """``order_total`` minus what it is made of; "" without a total and subtotal.
+
+    A missing shipping or tax counts as none: eBay leaves the element out when
+    nothing was charged.
+    """
+    total, subtotal = money["order_total"], money["order_subtotal"]
+    if total == "" or subtotal == "":
+        return ""
+    parts = subtotal + (money["order_shipping"] or 0) + (money["order_tax"] or 0)
+    return round(total - parts, 2) + 0.0       # + 0.0: no "-0.0" in the sheet
+
+
+def _line_shipping(shipping, amounts):
+    """Each line's share of the order's ``shipping``, by its ``amounts`` (price ×
+    quantity), in cents that add back up to the order's figure.
+
+    "" for every line when the order states no shipping or a line has no price.
+    """
+    if shipping == "" or not amounts or any(a == "" for a in amounts):
+        return [""] * len(amounts)
+    weight = sum(amounts)
+    if weight <= 0:
+        return [""] * len(amounts)
+    shares = [round(shipping * a / weight, 2) for a in amounts]
+    shares[-1] = round(shipping - sum(shares[:-1]), 2)
+    return [s + 0.0 for s in shares]
 
 
 def parse_page(xml_text):
@@ -210,7 +260,17 @@ def parse_page(xml_text):
     for order in root.findall("e:OrderArray/e:Order", _NS):
         txs = order.findall("e:TransactionArray/e:Transaction", _NS)
         money = _order_money(order, txs)
+        amounts = []
         for tx in txs:
+            price = _money(tx, "e:TransactionPrice")
+            try:
+                amounts.append(price * int(_text(tx, "e:QuantityPurchased") or 1)
+                               if price != "" else "")
+            except ValueError:
+                amounts.append(price)
+        line_ship = iter(_line_shipping(money["order_shipping"], amounts))
+        for tx in txs:
+            share = next(line_ship)
             item_id = _text(tx, "e:Item/e:ItemID")
             line_id = _text(tx, "e:OrderLineItemID") or (
                 f"{item_id}-{_text(tx, 'e:TransactionID')}" if item_id else "")
@@ -227,6 +287,7 @@ def parse_page(xml_text):
                 "title": _text(tx, "e:Item/e:Title"),
                 "quantity": qty,
                 "item_price": _money(tx, "e:TransactionPrice"),
+                "line_shipping": share,
                 **money,
                 "order_status": _text(order, "e:OrderStatus"),
                 "order_id": _text(order, "e:OrderID"),
