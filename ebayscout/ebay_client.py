@@ -207,7 +207,26 @@ def _listing_from_summary(item, excluded_lower, excluded_cats, excluded_keywords
         "buying_options": item.get("buyingOptions") or [],
         "condition":      item.get("condition", "") or "",
         "bid_count":      item.get("bidCount"),
+        # What shipping costs, so a sale of this item can carry it once the
+        # listing has ended and its page no longer shows it (price_log).
+        "shipping_cost":  shipping_cost(item),
     }
+
+
+def shipping_cost(item) -> float | None:
+    """The cheapest shipping a Browse item summary quotes, or None.
+
+    0.0 for free shipping.  None when eBay gives no figure — calculated
+    shipping quotes nothing without the buyer's location.
+    """
+    costs = []
+    for opt in item.get("shippingOptions") or []:
+        value = ((opt or {}).get("shippingCost") or {}).get("value")
+        try:
+            costs.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return min(costs) if costs else None
 
 
 def find_all_listings(
@@ -419,6 +438,22 @@ def get_purchases(user_token: str, days: int, now=None) -> list[dict]:
     print(f">>> EBAY PURCHASES: {len(lines)} line items over the last {days} days.",
           flush=True)
     return lines
+
+
+def get_item_shipping(user_token: str, item_id: str):
+    """The cheapest domestic shipping eBay quotes for ``item_id``, live or ended
+    (Trading API GetItem; shipping_backfill.parse_item), or None.
+
+    Raises on an HTTP error, and ``shipping_backfill.ItemUnavailable`` when eBay
+    answers with Ack=Failure.  The user token goes to eBay only, never printed.
+    """
+    from . import shipping_backfill as sb
+
+    resp = requests.post(config.EBAY_TRADING_URL,
+                         data=sb.request_xml(user_token, item_id).encode("utf-8"),
+                         headers=sb.request_headers(user_token), timeout=30)
+    resp.raise_for_status()
+    return sb.parse_item(resp.text)
 
 
 def get_item_pictures(client_id: str, client_secret: str, item_id: str) -> list[str]:

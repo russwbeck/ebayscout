@@ -53,3 +53,11 @@ def test_no_sold_price_checks_run_here():
                  "get_auction_state", "AUCTION_WATCH_BLOB"):
         assert gone not in _MAIN, gone
     assert not os.path.exists(os.path.join(PKG, "auction_watch.py"))
+
+
+def test_the_listing_row_carries_the_shipping_eBays_search_quoted():
+    """Search summary -> pending context -> pipeline listing -> scan_log record,
+    which price_log.listing_rows writes as the row's shipping (2026-10-13)."""
+    assert '"shipping":       listing.get("shipping_cost")' in _fn("_feed_lot_to_pipeline")
+    assert '"shipping_cost": ctx.get("shipping")' in _fn("process_pipeline_lot")
+    assert '"shipping":      listing.get("shipping_cost")' in _fn("_scan_log_record")

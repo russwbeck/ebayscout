@@ -22,6 +22,13 @@ n_in_lot = 3, so a lot is one observation whatever its duplicates.
 ``ebay_id`` is the eBay item number (the digits in ``.../itm/<number>``), so a
 listing and its sale join on one value however each writer first saw it.
 
+Shipping
+--------
+A listing row carries the shipping eBay's search showed for it (the cheapest
+option; 0 for free shipping, blank when eBay gave no figure, as for calculated
+shipping).  A sold listing's page stops showing it, so a sale logged with no
+shipping takes its listing row's, joined on ``ebay_id`` (2026-10-13).
+
 One sale counts once
 --------------------
 Logging a sale again — after a correction, or with other prices — marks the
@@ -231,6 +238,7 @@ def listing_rows(record: dict) -> list[list]:
         buttons_in_lot=record.get("buttons_detected"), lot_price=record.get("asking"),
         sale_format=listing_format(record.get("buying_options")),
         bids=record.get("bid_count"), price_basis=BASIS_ASKING,
+        shipping=record.get("shipping"),
         title=record.get("title"), listing_url=record.get("listing_url"),
         run_id=record.get("run_id"), ts=record.get("ts"),
     )
@@ -258,6 +266,30 @@ def live_sales(bd_rows, q_rows, ebay_id) -> list[tuple[int, str]]:
         if kind == KIND_SOLD and eid == ebay_id and sup != "yes":
             out.append((i + 1, source))
     return out
+
+
+def listing_shipping(bd_rows, ship_rows, ebay_id):
+    """The shipping the latest listing row for ``ebay_id`` carries, or None.
+
+    A listing's shipping is on its scan row (2026-10-13); a sale of the same
+    item logged without one takes it, because a sold listing's page no longer
+    shows what shipping cost.  Columns as ``live_sales`` reads them.
+    """
+    if not ebay_id:
+        return None
+    found = None
+    for i, r in enumerate(bd_rows or []):
+        if i == 0:
+            continue
+        kind = r[0] if len(r) > 0 else ""
+        eid = str(r[2]).strip() if len(r) > 2 else ""
+        ship = ship_rows[i][0] if i < len(ship_rows or []) and ship_rows[i] else ""
+        if kind == KIND_LISTING and eid == ebay_id and str(ship).strip() != "":
+            try:
+                found = float(ship)
+            except ValueError:
+                continue
+    return found
 
 
 class PriceLogger:
@@ -312,20 +344,32 @@ class PriceLogger:
         Returns {"status": "written" | "empty" | "failed", "replaced": n}, where
         ``replaced`` counts the earlier sold rows for ``ebay_id`` now marked
         superseded — so a sale logged again counts once, at its latest entry.
+
+        A sale entered without shipping takes the shipping its listing row
+        carries, from the same lookup; the result then also holds
+        ``"shipping_from_listing"``.
         """
         if not rows:
             return {"status": "empty", "replaced": 0}
         if self._ws is None:
             return {"status": "failed", "replaced": 0}
         with self._lock:
-            live = []
+            live, listed_ship = [], None
             if ebay_id:
                 ok, got = self._call(
                     lambda: self._ws.batch_get([f"{col('kind')}:{col('ebay_id')}",
-                                                f"{col('superseded')}:{col('superseded')}"]),
+                                                f"{col('superseded')}:{col('superseded')}",
+                                                f"{col('shipping')}:{col('shipping')}"]),
                     f"sale lookup for {ebay_id}")
-                if ok and got and len(got) == 2:
+                if ok and got and len(got) >= 2:
                     live = live_sales(got[0], got[1], ebay_id)
+                if ok and got and len(got) == 3:
+                    listed_ship = listing_shipping(got[0], got[2], ebay_id)
+            ship_i = PRICE_HEADER.index("shipping")
+            fill = listed_ship is not None and all(
+                len(r) <= ship_i or str(r[ship_i]).strip() == "" for r in rows)
+            if fill:
+                rows = [list(r[:ship_i]) + [listed_ship] + list(r[ship_i + 1:]) for r in rows]
             if not self._append(rows, f"sale write for {ebay_id or '(no item number)'}"):
                 return {"status": "failed", "replaced": 0}
             replaced = 0
@@ -336,7 +380,10 @@ class PriceLogger:
                     lambda: self._ws.batch_update(cells, value_input_option="RAW"),
                     f"superseding {len(cells)} earlier row(s) for {ebay_id}")
                 replaced = len(cells) if ok else 0
-            return {"status": "written", "replaced": replaced}
+            out = {"status": "written", "replaced": replaced}
+            if fill:
+                out["shipping_from_listing"] = listed_ship
+            return out
 
 
 # --- the workbook ------------------------------------------------------------------

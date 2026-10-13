@@ -46,6 +46,7 @@ from . import purchases
 from . import scan_log
 from . import seen_items
 from . import seller_listings
+from . import shipping_backfill
 from . import confusable_slogans as cfs
 from . import edition_twins as edt
 from .utils import (
@@ -592,6 +593,9 @@ def handle_crawl_command(ack, body):
     if is_purchases:
         _start_purchases_pull(ack, days, purchases_err)
         return
+    if shipping_backfill.parse_command(raw):
+        _start_shipping_backfill(ack)
+        return
     is_seller, seller = seller_listings.parse_command(raw)
     if is_seller:
         _start_seller_pull(ack, seller)
@@ -700,6 +704,31 @@ def _start_purchases_pull(ack, days, error) -> None:
     threading.Thread(target=_kick, daemon=True).start()
 
 
+def _start_shipping_backfill(ack) -> None:
+    """`/crawl shipping`: ack now, fill inside /internal/shipping.
+
+    One Trading API GetItem per item number whose price_log listing rows have
+    no shipping, then one batch of cell writes (shipping_backfill.py).
+    """
+    ack("🚚 Filling in shipping for `price_log` listing rows that have none — one "
+        "eBay lookup per item, a few minutes. A summary posts here when it's done.")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            requests.post(f"{base}/internal/shipping", headers=headers, timeout=3500)
+        except Exception as exc:
+            print(f"!!! SHIPPING: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"/crawl shipping failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
 def _start_catchup(ack, n, error) -> None:
     """`/crawl catchup [N]`: ack now, run inside /internal/catchup.
 
@@ -771,6 +800,74 @@ def internal_seller():
     if error:
         return jsonify({"status": "failed", "seller": seller, "error": error}), 500
     return jsonify({"status": "ok", "seller": seller, "listings": len(rows), "tab": tab}), 200
+
+
+@flask_app.route("/internal/shipping", methods=["POST"])
+def internal_shipping():
+    """Fill the blank shipping of price_log listing rows from eBay
+    (shipping_backfill.py), synchronously in this request.
+    Auth: per-startup X-Internal-Secret header."""
+    if not _internal_request_ok(request):
+        return jsonify({"status": "forbidden"}), 403
+    result = _backfill_shipping()
+    return jsonify(result), (500 if result["status"] == "failed" else 200)
+
+
+def _backfill_shipping() -> dict:
+    """Ask eBay for each blank item's shipping, write it, post the Slack line.
+    Never raises."""
+    from . import ebay_client
+    sb = shipping_backfill
+    items = filled_items = filled_rows = no_quote = unavailable = 0
+    error = None
+    try:
+        token = _get_secret("EBAY_USER_TOKEN")
+        gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
+        ws = price_log.open_price_sheet(gclient, _get_secret("LOGGER_ID"))
+        if ws is None:
+            raise RuntimeError("price_log could not be opened")
+        c = price_log.col
+        bd, ship = ws.batch_get([f"{c('kind')}:{c('ebay_id')}",
+                                 f"{c('shipping')}:{c('shipping')}"])
+        blanks = sb.blank_listing_rows(bd, ship)
+        items = len(blanks)
+        costs = {}
+        for n, eid in enumerate(blanks, 1):
+            try:
+                cost = ebay_client.get_item_shipping(token, eid)
+            except sb.ItemUnavailable as exc:
+                if "token" in str(exc).lower():
+                    raise                     # a bad token fails every item: stop
+                unavailable += 1
+                continue
+            except Exception as exc:
+                print(f"!!! SHIPPING: {eid}: {type(exc).__name__}: {exc}", flush=True)
+                unavailable += 1
+                continue
+            if cost is None:
+                no_quote += 1
+            else:
+                costs[eid] = cost
+            if n % 100 == 0:
+                print(f">>> SHIPPING: {n}/{items} items asked", flush=True)
+        updates = sb.cells(blanks, costs)
+        for i in range(0, len(updates), sb.WRITE_CHUNK):
+            ws.batch_update(updates[i:i + sb.WRITE_CHUNK], value_input_option="RAW")
+        filled_items, filled_rows = len(costs), len(updates)
+    except Exception as exc:
+        traceback.print_exc()
+        error = f"{type(exc).__name__}: {exc}"
+    print(f">>> SHIPPING: items={items} filled_items={filled_items} rows={filled_rows} "
+          f"no_quote={no_quote} unavailable={unavailable} error={error}", flush=True)
+    try:
+        notifier.send_text(_slack_token, _channel_id, sb.summary_text(
+            items, filled_items, filled_rows, no_quote, unavailable, error))
+    except Exception as exc:
+        print(f"!!! SHIPPING: Slack summary failed: {exc}", flush=True)
+    if error:
+        return {"status": "failed", "error": error}
+    return {"status": "ok", "items": items, "filled_items": filled_items,
+            "filled_rows": filled_rows, "no_quote": no_quote, "unavailable": unavailable}
 
 
 @flask_app.route("/internal/purchases", methods=["POST"])
@@ -1595,6 +1692,7 @@ def process_pipeline_lot(job_id: str) -> None:
     #    yellow-review crops are not surfaced at scale.
     listing = {"item_id": item_id, "title": title, "url": url, "listing_url": url,
                "current_price": asking, "seller": ctx.get("seller", ""),
+               "shipping_cost": ctx.get("shipping"),
                "gallery_url": ctx.get("gallery_url"),
                # shown on the alert (notifier._trace_text) to join it to watcher.log
                "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id,
@@ -2012,6 +2110,7 @@ def _scan_log_record(
         "buying_options": listing.get("buying_options", []),
         "condition":     listing.get("condition", ""),
         "bid_count":     listing.get("bid_count"),
+        "shipping":      listing.get("shipping_cost"),
         "photos_scored": photos_processed,
         "crops_scored":  len(top_matches),          # matched buttons (pipeline: confirmed only)
         "title_count":   extract_lot_count(title),  # stated lot size, if any
@@ -2861,6 +2960,7 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
         # an auction's price when scanned is a bid, not an asking price.
         "buying_options": listing.get("buying_options") or [],
         "bid_count":      listing.get("bid_count"),
+        "shipping":       listing.get("shipping_cost"),
         "command":      command,
         "created":      datetime.datetime.utcnow().isoformat() + "Z",
     }
