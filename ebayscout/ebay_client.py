@@ -207,7 +207,26 @@ def _listing_from_summary(item, excluded_lower, excluded_cats, excluded_keywords
         "buying_options": item.get("buyingOptions") or [],
         "condition":      item.get("condition", "") or "",
         "bid_count":      item.get("bidCount"),
+        # What shipping costs, so a sale of this item can carry it once the
+        # listing has ended and its page no longer shows it (price_log).
+        "shipping_cost":  shipping_cost(item),
     }
+
+
+def shipping_cost(item) -> float | None:
+    """The cheapest shipping a Browse item summary quotes, or None.
+
+    0.0 for free shipping.  None when eBay gives no figure — calculated
+    shipping quotes nothing without the buyer's location.
+    """
+    costs = []
+    for opt in item.get("shippingOptions") or []:
+        value = ((opt or {}).get("shippingCost") or {}).get("value")
+        try:
+            costs.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return min(costs) if costs else None
 
 
 def find_all_listings(

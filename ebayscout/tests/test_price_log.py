@@ -282,6 +282,55 @@ def test_a_failed_lookup_still_records_the_sale():
     assert res["status"] == "written" and len(ws.sold()) == 1
 
 
+def _listed(ebay_id="256123456789", shipping=5.5):
+    return pl.lot_rows(kind="listing", source="scan", ebay_id=ebay_id,
+                       counts={(1975, "Temple Hoo?"): 1}, prices={(1975, "Temple Hoo?"): 30.0},
+                       buttons_in_lot=1, lot_price=30.0, shipping=shipping)
+
+
+def test_a_scanned_lot_carries_its_listings_shipping():
+    rows = pl.listing_rows(_scan_record(shipping=4.25))
+    assert {_col(r, "shipping") for r in rows} == {4.25}
+    assert {_col(r, "shipping") for r in pl.listing_rows(_scan_record())} == {""}
+
+
+def test_a_sale_without_shipping_takes_its_listings():
+    ws = _Sheet(_listed(shipping=4.0) + _listed(shipping=5.5) + _listed("111111111111", 9.0))
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789")
+    assert res == {"status": "written", "replaced": 0, "shipping_from_listing": 5.5}
+    assert [_col(r, "shipping") for r in ws.sold()] == [5.5]          # the latest listing
+
+
+def test_free_shipping_on_the_listing_is_carried_as_zero():
+    ws = _Sheet(_listed(shipping=0.0))
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789")
+    assert res["shipping_from_listing"] == 0.0 and _col(ws.sold()[0], "shipping") == 0.0
+
+
+def test_shipping_entered_with_the_sale_is_kept():
+    ws = _Sheet(_listed(shipping=5.5))
+    sale = pl.lot_rows(kind="sold", source="scout_sold", ebay_id="256123456789",
+                       counts={(1975, "Temple Hoo?"): 1}, prices={(1975, "Temple Hoo?"): 39.0},
+                       buttons_in_lot=1, lot_price=39.0, shipping=7.0)
+    res = pl.PriceLogger(ws).log_sale(sale, "256123456789")
+    assert "shipping_from_listing" not in res and _col(ws.sold()[0], "shipping") == 7.0
+
+
+def test_no_listing_shipping_leaves_the_sale_as_entered():
+    ws = _Sheet(_listed(shipping=None))
+    res = pl.PriceLogger(ws).log_sale(_sale("scout_sold"), "256123456789")
+    assert "shipping_from_listing" not in res and _col(ws.sold()[0], "shipping") == ""
+
+
+def test_listing_shipping_reads_the_trimmed_columns_the_api_returns():
+    bd = [["kind", "source", "ebay_id"], ["listing", "scan", "9"], ["listing", "scan", "256123456789"],
+          ["sold", "scout_sold", "256123456789"], ["listing", "scan", "256123456789"]]
+    ship = [["shipping"], ["3"], ["4.5"], ["8"]]                      # row 5 trimmed away
+    assert pl.listing_shipping(bd, ship, "256123456789") == 4.5
+    assert pl.listing_shipping(bd, ship, "") is None
+    assert pl.listing_shipping(bd, [["shipping"]], "256123456789") is None
+
+
 def test_live_sales_reads_the_trimmed_columns_the_api_returns():
     bd = [["kind", "source", "ebay_id"], ["sold", "scout_sold", "9"], ["sold", "scout_sold", "256123456789"],
           [], ["listing", "scan", "256123456789"], ["sold", "scout_sold", "256123456789"]]

@@ -1595,6 +1595,7 @@ def process_pipeline_lot(job_id: str) -> None:
     #    yellow-review crops are not surfaced at scale.
     listing = {"item_id": item_id, "title": title, "url": url, "listing_url": url,
                "current_price": asking, "seller": ctx.get("seller", ""),
+               "shipping_cost": ctx.get("shipping"),
                "gallery_url": ctx.get("gallery_url"),
                # shown on the alert (notifier._trace_text) to join it to watcher.log
                "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id,
@@ -2012,6 +2013,7 @@ def _scan_log_record(
         "buying_options": listing.get("buying_options", []),
         "condition":     listing.get("condition", ""),
         "bid_count":     listing.get("bid_count"),
+        "shipping":      listing.get("shipping_cost"),
         "photos_scored": photos_processed,
         "crops_scored":  len(top_matches),          # matched buttons (pipeline: confirmed only)
         "title_count":   extract_lot_count(title),  # stated lot size, if any
@@ -2861,6 +2863,7 @@ def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
         # an auction's price when scanned is a bid, not an asking price.
         "buying_options": listing.get("buying_options") or [],
         "bid_count":      listing.get("bid_count"),
+        "shipping":       listing.get("shipping_cost"),
         "command":      command,
         "created":      datetime.datetime.utcnow().isoformat() + "Z",
     }

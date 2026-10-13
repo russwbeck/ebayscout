@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-12)
+# eBay Scout — Session Handoff (latest entry 2026-10-13)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,20 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-13 — price_log listing rows carry the listing's shipping
+
+The search summary's `shippingOptions` was dropped at `_listing_from_summary`,
+so every `price_log` listing row had a blank `shipping`. Now
+`ebay_client.shipping_cost` keeps the cheapest quoted option (0.0 for free,
+None for calculated shipping, which eBay doesn't price without a buyer
+location), and it rides summary → pending ctx (`shipping`) → pipeline listing
+(`shipping_cost`) → scan_log record (`shipping`) → `price_log.listing_rows`.
+Why: buttonmatcher's `/scout sold` fills a sale's blank shipping from the
+item's listing row (shared `price_log.log_sale`), because a sold item's page
+no longer shows it. Older listing rows stay blank; new scans fill in.
 
 ---
 

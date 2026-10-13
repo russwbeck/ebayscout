@@ -306,3 +306,28 @@ class TestFindListingsByIds:
             out = ebay_client.find_listings_by_ids("id", "sec", ["a", "a", "dead", "b"])
         ids = [r["item_id"] for r in out]
         assert ids == ["a", "b"]   # deduped input, dead one skipped
+
+
+# --- shipping (2026-10-13): carried to price_log so a sale can take it -------
+
+def test_shipping_cost_is_the_cheapest_option_quoted():
+    item = {"shippingOptions": [
+        {"shippingCostType": "FIXED", "shippingCost": {"value": "5.75", "currency": "USD"}},
+        {"shippingCostType": "FIXED", "shippingCost": {"value": "4.50", "currency": "USD"}}]}
+    assert ebay_client.shipping_cost(item) == 4.5
+
+
+def test_free_shipping_is_zero_and_no_quote_is_none():
+    assert ebay_client.shipping_cost(
+        {"shippingOptions": [{"shippingCost": {"value": "0.00"}}]}) == 0.0
+    assert ebay_client.shipping_cost(
+        {"shippingOptions": [{"shippingCostType": "CALCULATED"}]}) is None
+    assert ebay_client.shipping_cost({}) is None
+
+
+def test_a_listing_carries_its_shipping():
+    item = {"itemId": "v1|256123456789|0", "title": "1985 Beat Pitt",
+            "seller": {"username": "s"}, "price": {"value": "10.00"},
+            "shippingOptions": [{"shippingCost": {"value": "3.95"}}]}
+    listing = ebay_client._listing_from_summary(item, set(), set(), [], None, None)
+    assert listing["shipping_cost"] == 3.95
