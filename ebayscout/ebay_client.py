@@ -440,6 +440,22 @@ def get_purchases(user_token: str, days: int, now=None) -> list[dict]:
     return lines
 
 
+def get_item_shipping(user_token: str, item_id: str):
+    """The cheapest domestic shipping eBay quotes for ``item_id``, live or ended
+    (Trading API GetItem; shipping_backfill.parse_item), or None.
+
+    Raises on an HTTP error, and ``shipping_backfill.ItemUnavailable`` when eBay
+    answers with Ack=Failure.  The user token goes to eBay only, never printed.
+    """
+    from . import shipping_backfill as sb
+
+    resp = requests.post(config.EBAY_TRADING_URL,
+                         data=sb.request_xml(user_token, item_id).encode("utf-8"),
+                         headers=sb.request_headers(user_token), timeout=30)
+    resp.raise_for_status()
+    return sb.parse_item(resp.text)
+
+
 def get_item_pictures(client_id: str, client_secret: str, item_id: str) -> list[str]:
     """
     Fetch the primary + additional image URLs for a listing via Browse getItem.

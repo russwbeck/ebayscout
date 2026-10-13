@@ -19,7 +19,16 @@ location), and it rides summary → pending ctx (`shipping`) → pipeline listin
 (`shipping_cost`) → scan_log record (`shipping`) → `price_log.listing_rows`.
 Why: buttonmatcher's `/scout sold` fills a sale's blank shipping from the
 item's listing row (shared `price_log.log_sale`), because a sold item's page
-no longer shows it. Older listing rows stay blank; new scans fill in.
+no longer shows it.
+
+**`/crawl shipping`, once after this deploys** (`shipping_backfill.py`): fills
+the rows written before. One Trading API `GetItem` per item number whose
+listing rows have blank shipping (~900 the first time, of 5,000 calls a day; a
+few minutes, no photos, no Gemini), since Browse returns only live listings and
+GetItem still answers for items ended up to ~90 days ago (price_log began
+2026-09-30). Only listing rows, only blank cells; calculated shipping and items
+eBay no longer returns stay blank and are counted in the Slack line. Rerunnable:
+filled cells are skipped. An error mentioning the token stops the run.
 
 ---
 
