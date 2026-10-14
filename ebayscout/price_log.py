@@ -18,6 +18,11 @@ n_in_lot = 3, so a lot is one observation whatever its duplicates.
                        price it was listed at when scanned
   sold     scout_sold  buttonmatcher: /scout sold, a sale the operator reported
                        and confirmed button by button
+  listing  seller      ebayscout: /crawl seller <username>, every Penn State
+                       listing one seller has up, one row per lot with no
+                       year or slogan (it is not identified), so it never
+                       enters an average; each pull appends, run_id
+                       seller-<username>-<pulled_at> (2026-10-14)
 
 ``ebay_id`` is the eBay item number (the digits in ``.../itm/<number>``), so a
 listing and its sale join on one value however each writer first saw it.
@@ -40,13 +45,17 @@ logs sales by hand.)
 
 Tabs
 ----
-price_log      the rows.
-price_avg      per year + slogan, listing vs sold: average price per button and
-               the number of lots.  Auction LISTINGS are left out of the listing
-               average — an auction's price when scanned is its opening or
-               current bid, not what anyone is asking.
-price_by_item  per eBay item: the lot's listing price beside its sold price.
-Each formula tab is written once, when it is created; edits to it survive.
+price_log       the rows.
+price_analysis  two formula tables side by side (one tab since 2026-10-14; they
+                were the price_avg and price_by_item tabs before):
+                A1  per year + slogan, listing vs sold: average price per
+                    button and the number of lots.  Auction LISTINGS are left
+                    out of the listing average — an auction's price when
+                    scanned is its opening or current bid, not what anyone is
+                    asking.
+                M1  per eBay item: the lot's listing price beside its sold
+                    price.
+The formula tab is written once, when it is created; edits to it survive.
 """
 
 from __future__ import annotations
@@ -63,14 +72,16 @@ except ImportError:                     # buttonmatcher: ./price_log.py
     import sheet_retry
 
 PRICE_TAB = "price_log"
-AVG_TAB = "price_avg"
-ITEM_TAB = "price_by_item"
+ANALYSIS_TAB = "price_analysis"
+AVG_CELL = "A1"          # avg_formula; pivots to 2 + 2 columns per kind
+ITEM_CELL = "M1"         # item_formula, clear of the average's pivot
 
 KIND_LISTING = "listing"
 KIND_SOLD = "sold"
 
 SOURCE_SCAN = "scan"
 SOURCE_SCOUT_SOLD = "scout_sold"
+SOURCE_SELLER = "seller"
 
 FORMAT_AUCTION = "auction"
 FORMAT_BUY_IT_NOW = "buy_it_now"
@@ -389,7 +400,7 @@ class PriceLogger:
 # --- the workbook ------------------------------------------------------------------
 
 def avg_formula() -> str:
-    """price_avg: average price per button and lot count, per year + slogan,
+    """price_analysis!A1: average price per button and lot count, per year + slogan,
     listing beside sold.  Built from PRICE_HEADER so a reordered column cannot
     silently average the wrong one."""
     y, s, p, k = col("year"), col("slogan"), col("price_per_button"), col("kind")
@@ -403,7 +414,7 @@ def avg_formula() -> str:
 
 
 def item_formula() -> str:
-    """price_by_item: each eBay item's lot price as listed and as sold."""
+    """price_analysis!M1: each eBay item's lot price as listed and as sold."""
     i, p, k, sup = col("ebay_id"), col("lot_price"), col("kind"), col("superseded")
     return (f"=QUERY({PRICE_TAB}!A:{col(PRICE_HEADER[-1])}, "
             f"\"select {i}, max({p}) where {i} != '' and {sup} = 'no' "
@@ -418,13 +429,13 @@ def _spreadsheet_key(raw) -> str:
 
 
 def open_price_sheet(gspread_client, spreadsheet_id):
-    """Open (creating if needed) price_log and its two formula tabs; return
+    """Open (creating if needed) price_log and its price_analysis tab; return
     price_log's worksheet.
 
     None on any failure, so the caller's PriceLogger is disabled — never fatal.
     Also None when price_log exists with a different header: appending under
     the wrong columns would corrupt every average without an error anywhere.
-    The formula tabs are a convenience: failing to create one leaves the log
+    The formula tab is a convenience: failing to create it leaves the log
     working.
     """
     key = _spreadsheet_key(spreadsheet_id)
@@ -452,15 +463,14 @@ def open_price_sheet(gspread_client, spreadsheet_id):
               f"{type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
         return None
-    for title, formula in ((AVG_TAB, avg_formula()), (ITEM_TAB, item_formula())):
-        if title in existing:
-            continue
+    if ANALYSIS_TAB not in existing:
         try:
-            tab = ss.add_worksheet(title=title, rows=1000, cols=8)
-            tab.update(values=[[formula]], range_name="A1",
-                       value_input_option="USER_ENTERED")
+            tab = ss.add_worksheet(title=ANALYSIS_TAB, rows=1000, cols=20)
+            for cell, formula in ((AVG_CELL, avg_formula()), (ITEM_CELL, item_formula())):
+                tab.update(values=[[formula]], range_name=cell,
+                           value_input_option="USER_ENTERED")
         except Exception as e:
-            print(f">>> PRICE_LOG: '{title}' tab not created ({type(e).__name__}: "
+            print(f">>> PRICE_LOG: '{ANALYSIS_TAB}' tab not created ({type(e).__name__}: "
                   f"{e}); '{PRICE_TAB}' still logs.", flush=True)
     print(f">>> PRICE_LOG: '{PRICE_TAB}' ready in '{ss.title}'.", flush=True)
     return ws

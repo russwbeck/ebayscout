@@ -444,20 +444,23 @@ class _Client:
         return self.book
 
 
-def test_first_open_creates_the_log_and_both_formula_tabs():
+def test_first_open_creates_the_log_and_the_analysis_tab():
     book = _Book()
     ws = pl.open_price_sheet(_Client(book), "abc123")
     assert ws is book.tabs["price_log"] and ws.values[0] == pl.PRICE_HEADER
-    assert book.tabs["price_avg"].updates == [("A1", [[pl.avg_formula()]], "USER_ENTERED")]
-    assert book.tabs["price_by_item"].updates == [("A1", [[pl.item_formula()]], "USER_ENTERED")]
+    assert book.tabs["price_analysis"].updates == [
+        ("A1", [[pl.avg_formula()]], "USER_ENTERED"),
+        ("M1", [[pl.item_formula()]], "USER_ENTERED"),
+    ]
+    assert set(book.tabs) == {"price_log", "price_analysis"}   # no price_avg / price_by_item
 
 
-def test_existing_formula_tabs_are_left_alone():
-    """Whatever the operator did to them survives every restart."""
-    avg, item = _Tab("price_avg"), _Tab("price_by_item")
-    book = _Book([_Tab("price_log", list(pl.PRICE_HEADER)), avg, item])
+def test_an_existing_analysis_tab_is_left_alone():
+    """Whatever the operator did to it survives every restart."""
+    analysis = _Tab("price_analysis")
+    book = _Book([_Tab("price_log", list(pl.PRICE_HEADER)), analysis])
     assert pl.open_price_sheet(_Client(book), "abc123") is book.tabs["price_log"]
-    assert avg.updates == [] and item.updates == []
+    assert analysis.updates == []
     assert book.tabs["price_log"].values == [pl.PRICE_HEADER]   # no second header
 
 
@@ -477,7 +480,6 @@ def test_an_unopenable_workbook_disables_price_logging_quietly():
     assert pl.open_price_sheet(_Client(_Book()), "") is None
 
 
-def test_a_formula_tab_that_cannot_be_made_leaves_the_log_working():
-    book = _Book(fail_add={"price_avg"})
+def test_an_analysis_tab_that_cannot_be_made_leaves_the_log_working():
+    book = _Book(fail_add={"price_analysis"})
     assert pl.open_price_sheet(_Client(book), "abc") is book.tabs["price_log"]
-    assert "price_by_item" in book.tabs

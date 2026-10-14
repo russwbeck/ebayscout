@@ -327,6 +327,40 @@ def test_a_later_pull_merges_into_the_tab():
     tabs[pu.TAB].resize.assert_not_called()
 
 
+def test_a_refreshed_row_keeps_the_photo_and_the_reading():
+    """The operator's columns survive a pull that sees the line again."""
+    url = "https://i.ebayimg.com/images/g/ABC/s-l1600.jpg"
+    kept = pu.row(_line("267000000001-1", "2026-09-01T00:00:00.000Z"), "old")
+    kept[pu.HEADER.index("photo")] = "=IMAGE(...) read back as nothing"
+    kept[pu.HEADER.index("photo_url")] = url
+    kept[pu.HEADER.index("identified_buttons")] = "CCB Tumble Temple"
+    kept[pu.HEADER.index("photo_check")] = "matches"
+    gc, ss, tabs = _gc(existing_values=[pu.HEADER, kept])
+    again = [pu.row(_line("267000000001-1", "2026-09-01T00:00:00.000Z"), "new")]
+    assert pu.write_tab(gc, "KEY", again) == ("purchases", 0, 1)
+    first, photos = tabs[pu.TAB].update.call_args_list
+    row = dict(zip(pu.HEADER, first.kwargs["values"][1]))
+    assert row["pulled_at"] == "new"
+    assert (row["photo_url"], row["identified_buttons"], row["photo_check"]) == (
+        url, "CCB Tumble Temple", "matches")
+    assert row["photo"] == ""                         # never written as text
+    letter = chr(ord("A") + pu.HEADER.index("photo"))
+    assert photos.kwargs == {"values": [[f'=IMAGE("{url}")']],
+                             "range_name": f"{letter}2:{letter}2",
+                             "value_input_option": "USER_ENTERED"}
+
+
+def test_a_pull_never_fills_the_operator_columns():
+    r = pu.row(_line("267000000001-1", "2026-09-01T00:00:00.000Z"), "P")
+    assert [r[i] for i in pu.KEPT + [pu.PHOTO]] == ["", "", "", ""]
+
+
+def test_only_an_https_photo_url_becomes_an_image():
+    assert pu.photo_formula("https://i.ebayimg.com/x.jpg") == '=IMAGE("https://i.ebayimg.com/x.jpg")'
+    for bad in ("", None, "http://x/y.jpg", 'https://x/"y.jpg', "=HYPERLINK(1)"):
+        assert pu.photo_formula(bad) == "", bad
+
+
 def test_a_tab_from_before_the_order_columns_is_relaid():
     # The first pull (2026-10-04) wrote one `shipping` per line and the order's
     # total on every line.  Read back unformatted, its numbers stay numbers.
