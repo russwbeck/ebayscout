@@ -23,7 +23,7 @@ matchers' logs and stay).
   instead of replacing a `seller_<username>` tab: kind `listing`, source
   `seller`, one row per lot with the lot price and shipping, no year or slogan
   (so never in an average), run_id `seller-<username>-<pulled_at>`.
-  Calculated shipping goes in blank, as on a scan row. The 147 kling24toys rows
+  Calculated shipping goes in blank, as on a scan row. The 139 kling24toys rows
   of 2026-10-03 were moved into `price_log` the same way.
 - **`purchases`** (`purchases.py`) gained `photo`, `photo_url`,
   `identified_buttons` and `photo_check`, folded in from the `purchase_photos`
