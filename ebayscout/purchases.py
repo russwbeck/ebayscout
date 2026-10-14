@@ -36,12 +36,25 @@ export of the account:
   exactly: the rounding remainder goes on its last line.
 - ``order_adjustment``, order money like the rest: ``order_total`` minus
   subtotal, shipping and tax.  0 when the order adds up.  Negative when the
-  seller gave money back after checkout — a combined-shipping refund:
-  zoidbergfan01's $12 item showed $8.75 shipping and $1.45 tax on a $12.84
-  total (-9.36), redma_5081's lot $15.10 shipping on $21.38 (-10.70).  eBay
+  seller gave money back after checkout: a combined-shipping refund
+  (zoidbergfan01's $12 item showed $8.75 shipping and $1.45 tax on a $12.84
+  total, -9.36), or a partial refund of the order (redma_5081's lot, $15.10
+  shipping on $21.38, -10.70, refunded across items, shipping and tax — called
+  a shipping refund here until 2026-10-14).  eBay
   keeps the shipping and tax as charged at checkout and only the total moves,
   so the total stays what was paid and this column says by how much the rest
   overstates it.
+
+Four columns the operator keeps, added on 2026-10-14 when the separate
+``purchase_photos`` tab was folded into this one:
+- ``photo_url``: the lot's photo (``i.ebayimg.com/images/g/<id>/s-l1600.jpg``),
+  filled from the order emails for the backfilled rows.
+- ``identified_buttons`` and ``photo_check``: what the photo shows, read button
+  by button, and how that compares with the listing's title.
+- ``photo``: ``=IMAGE(photo_url)``, rewritten on every pull from photo_url.
+A pull never fills them, and it never blanks them: a row it refreshes keeps
+what the tab had in those columns.  (Before, a pull dropped any column it did
+not know.)
 
 ``GetOrders`` reaches back 90 days at most.  So the tab is merged, not replaced:
 - A pull adds new line items and refreshes the ones it sees again.
@@ -77,7 +90,13 @@ TAB = "purchases"
 HEADER = ["purchased_at", "seller", "ebay_id", "title", "quantity", "item_price",
           "line_shipping", "order_subtotal", "order_shipping", "order_tax",
           "order_adjustment", "order_total",
-          "order_status", "order_id", "line_item_id", "listing_url", "pulled_at"]
+          "order_status", "order_id", "line_item_id", "listing_url", "pulled_at",
+          "photo", "photo_url", "identified_buttons", "photo_check"]
+# Filled by hand (or by a one-off backfill), never by a pull: a refreshed row
+# keeps what the tab had.  ``photo`` is rewritten from photo_url on every write.
+KEPT = [HEADER.index(c) for c in ("photo_url", "identified_buttons", "photo_check")]
+PHOTO = HEADER.index("photo")
+PHOTO_URL = HEADER.index("photo_url")
 KEY = HEADER.index("line_item_id")
 WHEN = HEADER.index("purchased_at")
 ORDER = HEADER.index("order_id")
@@ -309,14 +328,21 @@ def merge(existing, new):
     rest of ``existing`` stays.
 
     Newest purchase first, an order's lines together, and the order's money on
-    its first line only, so summing a column counts each order once.
+    its first line only, so summing a column counts each order once.  A row
+    ``new`` refreshes keeps the old row's KEPT columns where ``new`` has none.
     """
     by_key = {}
     for r in existing:
         if len(r) > KEY and r[KEY]:
             by_key[r[KEY]] = list(r) + [""] * (len(HEADER) - len(r))
     for r in new:
-        by_key[r[KEY]] = list(r)
+        r = list(r) + [""] * (len(HEADER) - len(r))
+        old = by_key.get(r[KEY])
+        if old:
+            for i in KEPT:
+                if r[i] == "":
+                    r[i] = old[i]
+        by_key[r[KEY]] = r
     rows = sorted(by_key.values(), key=lambda r: (str(r[WHEN]), str(r[ORDER])), reverse=True)
     seen = set()
     for r in rows:
@@ -335,13 +361,23 @@ def _relaid(r, header):
     return [by_col.get(c, "") for c in HEADER]
 
 
+def photo_formula(url):
+    """``=IMAGE(url)`` for an https photo URL, else "" (a URL never carries a
+    quote, but one would end the formula's string, so it is refused)."""
+    url = str(url or "").strip()
+    if not url.startswith("https://") or '"' in url:
+        return ""
+    return f'=IMAGE("{url}")'
+
+
 def write_tab(gspread_client, spreadsheet_id, new_rows):
     """Merge ``new_rows`` into the ``purchases`` tab.
 
     Returns ``(title, added, total)``: the tab's title, how many line items
     were new to it, and how many it now holds.  RAW, so an item or order number
     stays text.  The kept rows are read unformatted, so a price goes back as a
-    number and still sums.  Raises on failure; the caller reports it.
+    number and still sums.  Then the photo column alone is written as
+    ``=IMAGE`` formulas.  Raises on failure; the caller reports it.
     """
     ss = gspread_client.open_by_key(price_log._spreadsheet_key(spreadsheet_id))
     ws = {w.title: w for w in ss.worksheets()}.get(TAB)
@@ -357,7 +393,14 @@ def write_tab(gspread_client, spreadsheet_id, new_rows):
     if not made and (ws.row_count < len(merged) + 1 or ws.col_count < len(HEADER)):
         ws.resize(rows=max(ws.row_count, len(merged) + 1), cols=max(ws.col_count, len(HEADER)))
     ws.clear()
+    for r in merged:
+        r[PHOTO] = ""                    # written below as a formula, not as text
     ws.update(values=[HEADER] + merged, range_name="A1", value_input_option="RAW")
+    photos = [[photo_formula(r[PHOTO_URL])] for r in merged]
+    if any(p[0] for p in photos):
+        letter = chr(ord("A") + PHOTO)
+        ws.update(values=photos, range_name=f"{letter}2:{letter}{len(merged) + 1}",
+                  value_input_option="USER_ENTERED")
     return TAB, sum(1 for r in new_rows if r[KEY] not in known), len(merged)
 
 

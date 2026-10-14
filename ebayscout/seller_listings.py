@@ -6,9 +6,17 @@ One seller's Penn State listings, pulled on demand for price comparison
 
 The operator lists their own buttons and wants to price against another seller
 (kling24toys first).  ``/crawl seller <username>`` asks the Browse API for that
-seller's listings and writes title, price and shipping to a ``seller_<username>``
-tab in the Logger workbook, replacing the previous pull.  The comparison itself
-is done from the sheet.
+seller's listings and appends them to ``price_log`` in the Logger workbook, one
+row per lot: kind ``listing``, source ``seller``, the lot's price and shipping,
+no year or slogan (nothing is identified), and run_id
+``seller-<username>-<pulled_at>`` so one pull can be filtered out.  Each pull
+appends, so a later pull is a later price for the same item; price_analysis's
+per-item table shows the highest.  The comparison itself is done from the sheet.
+
+Until 2026-10-14 each pull replaced a ``seller_<username>`` tab of its own; the
+operator wanted fewer tabs.  The rows carry no price per button, so they never
+enter the per-slogan averages.  A ``/scout sold`` of one of these items takes
+its shipping from the row, as from a scan row.
 
 It is cheap on purpose: a few Browse API pages and one sheet write.  No photo is
 downloaded, nothing goes to Gemini or CLIP, nothing is marked seen, and nothing
@@ -33,11 +41,6 @@ SELLER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 QUERIES = ("penn state", "psu", "nittany")
 PAGE_SIZE = 200          # the Browse page maximum
 MAX_PAGES = 5            # per query: up to 1,000 listings, far more than one seller lists
-
-TAB_PREFIX = "seller_"
-HEADER = ["pulled_at", "seller", "ebay_id", "title", "price", "shipping",
-          "format", "bids", "condition", "listing_url"]
-
 
 def parse_command(text):
     """Read the text after ``/crawl``.
@@ -80,7 +83,12 @@ def shipping_cost(item):
 
 
 def summary_row(item, pulled_at, seller):
-    """One sheet row from a Browse item summary, or None without an item number."""
+    """One price_log row (PRICE_HEADER order) from a Browse item summary, or
+    None without an item number.
+
+    Calculated shipping goes in blank, as on a scan row: it has no price
+    without a buyer's location.
+    """
     number = price_log.ebay_item_number(item.get("itemId"))
     if not number:
         return None
@@ -88,42 +96,41 @@ def summary_row(item, pulled_at, seller):
         price = float((item.get("price") or {}).get("value"))
     except (TypeError, ValueError):
         price = ""
+    ship = shipping_cost(item)
     bids = item.get("bidCount")
+    seller = seller.lower()
     return [
-        pulled_at,
-        seller,
-        number,
-        item.get("title") or "",
-        price,
-        shipping_cost(item),
+        pulled_at, price_log.KIND_LISTING, price_log.SOURCE_SELLER, number,
+        "", "", "", "",                     # year, slogan, n_in_lot, buttons_detected
+        price, "" if ship == "calculated" else ship,
+        "", "",                             # price_per_button, allocation
         price_log.listing_format(item.get("buyingOptions")),
         bids if isinstance(bids, int) else "",
-        item.get("condition") or "",
-        item.get("itemWebUrl") or "",
+        "", price_log.BASIS_ASKING, "no",   # sale_date, price_basis, superseded
+        item.get("title") or "", item.get("itemWebUrl") or "",
+        f"seller-{seller}-{pulled_at}",
     ]
 
 
 def tab_name(seller):
-    return TAB_PREFIX + seller.lower()
+    """Where a pull goes: price_log, whoever the seller."""
+    return price_log.PRICE_TAB
 
 
 def write_tab(gspread_client, spreadsheet_id, seller, rows):
-    """Replace the seller's tab with HEADER + rows; return the tab's title.
+    """Append ``rows`` to price_log; return the tab's title.
 
-    RAW, so an item number stays text and a slogan that starts with "=" is not a
-    formula.  Raises on failure: the caller reports it, since a pull that wrote
-    nothing should say so.
+    RAW, so an item number stays text and a title that starts with "=" is not
+    a formula.  Raises on failure, including a price_log with another header:
+    the caller reports it, since a pull that wrote nothing should say so.
     """
-    ss = gspread_client.open_by_key(price_log._spreadsheet_key(spreadsheet_id))
-    title = tab_name(seller)
-    existing = {w.title: w for w in ss.worksheets()}
-    ws = existing.get(title)
+    ws = price_log.open_price_sheet(gspread_client, spreadsheet_id)
     if ws is None:
-        ws = ss.add_worksheet(title=title, rows=max(100, len(rows) + 10), cols=len(HEADER))
-    else:
-        ws.clear()
-    ws.update(values=[HEADER] + rows, range_name="A1", value_input_option="RAW")
-    return title
+        raise RuntimeError(f"the {price_log.PRICE_TAB} tab could not be opened "
+                           f"(see the PRICE_LOG line in the service log)")
+    if rows:
+        ws.append_rows(rows, value_input_option="RAW")
+    return price_log.PRICE_TAB
 
 
 def summary_text(seller, n, tab, error=None):
@@ -134,4 +141,5 @@ def summary_text(seller, n, tab, error=None):
         return (f"Seller pull for *{seller}*: no Penn State listings found "
                 f"(check the username).")
     return (f"📋 Pulled {n} Penn State listing{'s' if n != 1 else ''} from *{seller}* "
-            f"into the `{tab}` tab of the Logger sheet (title, price, shipping).")
+            f"into the `{tab}` tab of the Logger sheet (price and shipping, source "
+            f"`seller`).")

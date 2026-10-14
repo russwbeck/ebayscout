@@ -654,8 +654,8 @@ def _start_seller_pull(ack, seller) -> None:
         ack("Usage: `/crawl seller <username>` — e.g. `/crawl seller kling24toys`.")
         return
     ack(f"📋 Pulling *{seller}*'s Penn State listings into the "
-        f"`{seller_listings.tab_name(seller)}` tab of the Logger sheet "
-        f"(prices only: no photos, no Gemini).")
+        f"`{seller_listings.tab_name(seller)}` tab of the Logger sheet, source "
+        f"`seller` (prices only: no photos, no Gemini).")
 
     def _kick():
         base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
@@ -771,8 +771,8 @@ def _start_catchup(ack, n, error) -> None:
 
 @flask_app.route("/internal/seller", methods=["POST"])
 def internal_seller():
-    """Pull one seller's Penn State listings into seller_<username> in the
-    Logger workbook (seller_listings.py), synchronously in this request.
+    """Pull one seller's Penn State listings into price_log in the Logger
+    workbook (seller_listings.py), synchronously in this request.
     Auth: per-startup X-Internal-Secret header."""
     if not _internal_request_ok(request):
         return jsonify({"status": "forbidden"}), 403

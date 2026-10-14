@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-13)
+# eBay Scout — Session Handoff (latest entry 2026-10-14)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,31 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-14 — Logger down to four eBay tabs
+
+The operator asked for four eBay tabs in the Logger workbook: `price_log`,
+`price_analysis`, `purchases`, `sales` (`match_log` / `confirm_log` are the
+matchers' logs and stay).
+- **`price_analysis`** (shared `price_log.py`, ported to buttonmatcher): one
+  tab holds both formula tables, the per-year + slogan average at A1 and the
+  per-item listed-vs-sold price at M1. `open_price_sheet` creates it if it is
+  missing and no longer recreates `price_avg` / `price_by_item`, which were
+  deleted from the sheet after this deployed.
+- **`/crawl seller <username>`** (`seller_listings.py`) appends to `price_log`
+  instead of replacing a `seller_<username>` tab: kind `listing`, source
+  `seller`, one row per lot with the lot price and shipping, no year or slogan
+  (so never in an average), run_id `seller-<username>-<pulled_at>`.
+  Calculated shipping goes in blank, as on a scan row. The 139 kling24toys rows
+  of 2026-10-03 were moved into `price_log` the same way.
+- **`purchases`** (`purchases.py`) gained `photo`, `photo_url`,
+  `identified_buttons` and `photo_check`, folded in from the `purchase_photos`
+  tab. A pull never fills them and never blanks them: a refreshed row keeps
+  the tab's values (before, a pull dropped every column it did not know), and
+  `photo` is rewritten as `=IMAGE(photo_url)` on each write.
+- `sales` is filled by hand and unchanged.
 
 ---
 

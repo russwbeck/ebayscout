@@ -1,5 +1,6 @@
 """`/crawl seller <username>` (2026-10-03): one seller's Penn State listings,
-pulled on demand into a seller_<username> tab for price comparison.
+pulled on demand into price_log (its own seller_<username> tab until
+2026-10-14) for price comparison.
 
 seller_listings.py and ebay_client.find_seller_listings are tested directly;
 main.py imports the heavy stack, so its wiring is read via ast.
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from ebayscout import config, ebay_client, seller_listings as sl   # noqa: E402
+from ebayscout import config, ebay_client, price_log as pl, seller_listings as sl   # noqa: E402
 
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MAIN = open(os.path.join(PKG, "main.py")).read()
@@ -69,20 +70,38 @@ def test_each_page_is_filtered_to_the_seller():
 
 # --- rows --------------------------------------------------------------------------
 
-def test_a_row_carries_the_item_number_price_shipping_and_format():
+def _at(row, name):
+    return row[pl.PRICE_HEADER.index(name)]
+
+
+def test_a_row_is_a_price_log_listing_row_from_the_seller():
     row = sl.summary_row(_item(shipping={"shippingCostType": "FIXED",
                                          "shippingCost": {"value": "4.50"}}),
-                         "2026-10-03T12:00:00+00:00", "kling24toys")
-    assert row == ["2026-10-03T12:00:00+00:00", "kling24toys", "267770621737",
-                   "2008 Penn State Citizens Bank Buttons Season Set", 12.0, 4.5,
-                   "buy_it_now", "", "Used", "https://www.ebay.com/itm/267770621737"]
-    assert len(row) == len(sl.HEADER)
+                         "2026-10-03T12:00:00+00:00", "Kling24Toys")
+    assert len(row) == len(pl.PRICE_HEADER)
+    assert row == ["2026-10-03T12:00:00+00:00", "listing", "seller", "267770621737",
+                   "", "", "", "", 12.0, 4.5, "", "", "buy_it_now", "", "", "asking", "no",
+                   "2008 Penn State Citizens Bank Buttons Season Set",
+                   "https://www.ebay.com/itm/267770621737",
+                   "seller-kling24toys-2026-10-03T12:00:00+00:00"]
+
+
+def test_a_seller_row_never_enters_the_per_slogan_average():
+    """No price per button: the average's QUERY reads only rows that have one."""
+    row = sl.summary_row(_item(), "t", "s")
+    assert _at(row, "price_per_button") == "" and _at(row, "year") == "" and _at(row, "slogan") == ""
+    assert "is not null" in pl.avg_formula()
 
 
 def test_an_auction_row_keeps_its_bid_count():
     row = sl.summary_row(_item(buying=("AUCTION",), bids=3), "t", "s")
-    assert row[sl.HEADER.index("format")] == "auction"
-    assert row[sl.HEADER.index("bids")] == 3
+    assert _at(row, "sale_format") == "auction"
+    assert _at(row, "bids") == 3
+
+
+def test_calculated_shipping_goes_in_blank_as_on_a_scan_row():
+    row = sl.summary_row(_item(shipping={"shippingCostType": "CALCULATED"}), "t", "s")
+    assert _at(row, "shipping") == ""
 
 
 def test_shipping_is_a_number_calculated_or_blank():
@@ -99,40 +118,58 @@ def test_a_summary_without_an_item_number_is_skipped():
 
 # --- the sheet ---------------------------------------------------------------------
 
-def _gc(existing_titles=()):
-    ss = MagicMock()
-    tabs = {t: MagicMock(title=t) for t in existing_titles}
-    ss.worksheets.return_value = list(tabs.values())
-    ss.add_worksheet.side_effect = lambda title, rows, cols: tabs.setdefault(title, MagicMock(title=title))
+class _PriceTab:
+    title = "price_log"
+
+    def __init__(self, header):
+        self.header, self.appended = header, []
+
+    def row_values(self, i):
+        return list(self.header) if i == 1 else []
+
+    def append_rows(self, rows, value_input_option=None):
+        self.appended.append((rows, value_input_option))
+
+
+def _gc(header=None, others=("price_analysis",)):
+    log = _PriceTab(pl.PRICE_HEADER if header is None else header)
+    ss = MagicMock(title="Logger")
+    ss.worksheets.return_value = [log] + [MagicMock(title=t) for t in others]
     gc = MagicMock()
     gc.open_by_key.return_value = ss
-    return gc, ss, tabs
+    return gc, ss, log
 
 
-def test_a_first_pull_creates_the_tab_and_writes_raw():
-    gc, ss, tabs = _gc()
+def test_a_pull_appends_to_price_log_raw_and_makes_no_tab_of_its_own():
+    gc, ss, log = _gc()
     rows = [sl.summary_row(_item(), "t", "kling24toys")]
     title = sl.write_tab(gc, "https://docs.google.com/spreadsheets/d/KEY123/edit", "Kling24Toys", rows)
-    assert title == "seller_kling24toys"
+    assert title == "price_log" == sl.tab_name("Kling24Toys")
     gc.open_by_key.assert_called_once_with("KEY123")
-    ws = tabs["seller_kling24toys"]
-    ws.update.assert_called_once_with(values=[sl.HEADER] + rows, range_name="A1",
-                                      value_input_option="RAW")
-
-
-def test_a_later_pull_replaces_the_tab_rather_than_appending():
-    """Prices change and listings end: the tab is the seller's stock as of now."""
-    gc, ss, tabs = _gc(existing_titles=("seller_kling24toys",))
-    sl.write_tab(gc, "KEY", "kling24toys", [])
-    ws = tabs["seller_kling24toys"]
-    ws.clear.assert_called_once()
+    assert log.appended == [(rows, "RAW")]
     ss.add_worksheet.assert_not_called()
-    ws.update.assert_called_once()
+
+
+def test_an_empty_pull_writes_nothing():
+    gc, ss, log = _gc()
+    sl.write_tab(gc, "KEY", "kling24toys", [])
+    assert log.appended == []
+
+
+def test_a_price_log_with_another_header_fails_the_pull_loudly():
+    gc, ss, log = _gc(header=["ts", "item_id"])
+    try:
+        sl.write_tab(gc, "KEY", "kling24toys", [["x"]])
+    except RuntimeError as e:
+        assert "price_log" in str(e)
+    else:
+        raise AssertionError("expected a failure")
+    assert log.appended == []
 
 
 def test_the_slack_line_says_what_happened():
-    assert "Pulled 2 Penn State listings from *kling24toys*" in sl.summary_text("kling24toys", 2, "seller_kling24toys")
-    assert "no Penn State listings" in sl.summary_text("kling24toys", 0, "seller_kling24toys")
+    assert "Pulled 2 Penn State listings from *kling24toys*" in sl.summary_text("kling24toys", 2, "price_log")
+    assert "no Penn State listings" in sl.summary_text("kling24toys", 0, "price_log")
     assert "failed: boom" in sl.summary_text("kling24toys", 0, "t", error="boom")
 
 
