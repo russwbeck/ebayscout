@@ -16,10 +16,10 @@ learned detector instead of the Gem, every lot posted to `#ebay-checker`
 behind a gate. **Off until switched on** (`EBAYSCOUT_YOLO_TEST=1`, config-only):
 
 ```
-gcloud run services update ebayscout --region us-east1 --update-env-vars EBAYSCOUT_YOLO_TEST=1
-gcloud run services update ebayscout --region us-east1 --remove-env-vars EBAYSCOUT_YOLO_TEST
+gcloud run services update ebay-scout --region=us-east1 --update-env-vars EBAYSCOUT_YOLO_TEST=1
+gcloud run services update ebay-scout --region=us-east1 --remove-env-vars EBAYSCOUT_YOLO_TEST
 ```
-(the service name and region as deployed; `gcloud run services list` if unsure.)
+(service `ebay-scout`, us-east1, as in DEPLOY.md.)
 
 - **What changes when on:** the daily feed and `/crawl` stop uploading photos
   for the Gem. Each lot is read in `_yolo_test_lot`, inside the scan's own
