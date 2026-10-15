@@ -9,49 +9,35 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
-## 2026-10-15 — The YOLO week: lots read without Gemini, every lot carded
+## 2026-10-15 — The YOLO week: eBay lots through buttonmatcher, no Gemini
 
-The operator: a one-week test of ebayscout with every photo through the
-learned detector instead of the Gem, every lot posted to `#ebay-checker`
-behind a gate. **Off until switched on** (`EBAYSCOUT_YOLO_TEST=1`, config-only):
+The operator: a one-week test of ebayscout with every photo through the full
+buttonmatcher process (learned detector, CLIP + OCR, confirm cards) instead
+of the Gem. **On with `EBAYSCOUT_YOLO_TEST=1`** (config-only):
 
 ```
 gcloud run services update ebay-scout --region=us-east1 --update-env-vars EBAYSCOUT_YOLO_TEST=1
 gcloud run services update ebay-scout --region=us-east1 --remove-env-vars EBAYSCOUT_YOLO_TEST
 ```
-(service `ebay-scout`, us-east1, as in DEPLOY.md.)
 
-- **What changes when on:** the daily feed and `/crawl` stop uploading photos
-  for the Gem. Each lot is read in `_yolo_test_lot`, inside the scan's own
-  request: buttonmatcher's `learned_detector.py` (now byte-shared, the same
-  ONNX model from the same bucket; `onnxruntime==1.19.2` added) cuts the
-  crops on the <=800 px frame buttonmatcher uses, CLIP matches them,
-  `pipeline_classify.classify_crops` confirms with the CLIP-only rules (no
-  Gemini reading), and the needed / undervalued rules call the deal.
-- **The card** (`yolo_test.py`): the listing's own photo, unannotated, so the
-  operator counts before seeing the model's count; a deal says "🔥 Possible
-  deal". ✅ Button opens one question, "How many buttons do you see?", and the
-  result goes in the card's thread: your count against the model's, the photo
-  with the model's numbered circles, the buttons CLIP confirmed (with needs),
-  the unconfirmed crops' best guesses, the deal call. ⏭️ Button, skip and 🚫 Not
-  a button, reject just record.
-- **State in GCS, not memory:** `ebay_scout/yolo_test/<key>.json` holds what a
-  click needs (written before the card posts), so a card answered after a
-  scale-to-zero still works. The answer is stored there too.
-- **Training data:** each lot writes its label sidecar
-  (`pipeline/labels/yolo-<key>.json` + `.jpg`, command `yolo-test`): the
-  model's full reading and the photo it read. The answer lands in
-  `detection.operator` (`{verdict, count, user_id, ts}`): a counted lot is the
-  operator's count of the photo, a reject is a negative photo.
-  `prepare_dataset` does not read `detection.operator` yet; teaching it to is
-  the step that turns these into YOLO training examples.
-- **Kept:** scan_log row (with `yolo_test: <key>`), price_log rows from the
-  CLIP-confirmed buttons, seen marking. **Not written:** match_log rows, crop
-  vectors, reference staging (no Gemini confirmation to stage on).
-- **Needs:** Slack Interactivity on (DEPLOY.md step 8) for the buttons and
-  the modal.
-- **Grading at week's end:** the state JSONs hold model count, operator
-  count and verdict per lot.
+- **When on**, the daily feed and `/crawl` hand each lot to buttonmatcher
+  (`_handoff_lot_to_buttonmatcher` → `POST <BUTTONMATCHER_URL>/internal/ebay_scout_lot`,
+  header `X-Pipeline-Secret` = `PIPELINE_SHARED_SECRET`, the secret the watcher
+  already uses with both services; body: picture URL + listing). buttonmatcher
+  posts the photo with the title, price and link to #inventory-bot and runs
+  it as an automatic Scout lot: count prompt (asking price filled in), the
+  learned detector, CLIP + OCR, confirm cards, Scout valuation. See
+  buttonmatcher's `ebay_handoff.py`. A lot is marked seen here only on 200.
+- `BUTTONMATCHER_URL` defaults to
+  `https://button-inventory-404960106109.us-east1.run.app` (`yolo_test.py`).
+- **Not written here while on:** scan_log rows, price_log listing rows,
+  reference staging. buttonmatcher's logs (match_log, confirm_log, label
+  sidecars) hold the lots instead.
+- **First version, same day:** ebayscout ran the detector + CLIP itself and
+  posted gated cards in #ebay-checker. It had no OCR, no auto-confirm rules
+  and no confirm cards (CLIP confirmed 3 of 41 buttons on the first three
+  lots), so it was replaced by the handoff. Those three cards' buttons no
+  longer do anything.
 
 ---
 

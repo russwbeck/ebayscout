@@ -40,7 +40,6 @@ from . import gemini_resolve as gres
 from . import pipeline_classify
 from . import detect_gate as dgate
 from . import label_harvest as lharv
-from . import learned_detector as ldet
 from . import yolo_test
 from . import normalize
 from . import price_log
@@ -2981,50 +2980,16 @@ def _lot_ctx(listing: dict, key: str, command: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The YOLO week (yolo_test.py): learned detector + CLIP, no Gemini, every lot
-# carded in #ebay-checker behind ✅ Button / ⏭️ Button, skip / 🚫 Not a button.
+# The YOLO week (yolo_test.py): each lot handed to buttonmatcher, which runs
+# its full Gemini-free process on it as an automatic Scout lot.
 # ---------------------------------------------------------------------------
 
-def _ldet_fetch(dest):
-    """Download the learned detector's ONNX model (buttonmatcher's, same
-    bucket) for learned_detector._load; its generation, or None if absent."""
-    from google.cloud import storage
-    blob = storage.Client().bucket(config.BUCKET_NAME).get_blob(ldet.MODEL_BLOB)
-    if blob is None:
-        return None
-    blob.download_to_filename(dest)
-    return blob.generation
-
-
-def _gcs_put_json(name: str, obj) -> None:
-    from google.cloud import storage
-    storage.Client().bucket(config.BUCKET_NAME).blob(name).upload_from_string(
-        json.dumps(obj, default=str), content_type="application/json")
-
-
-def _gcs_get_json(name: str):
-    """The blob's JSON, or None when it does not exist."""
-    from google.cloud import storage
-    blob = storage.Client().bucket(config.BUCKET_NAME).get_blob(name)
-    return json.loads(blob.download_as_text()) if blob is not None else None
-
-
-def _yolo_test_lot(listing: dict, ebay_app_id: str, ebay_cert_id: str,
-                   command: str) -> bool:
-    """Read one lot with the learned detector + CLIP and post its gated card.
-
-    Runs inside the scan's request (CPU).  Writes the lot's state
-    (yolo_test.state_blob) before the card can be clicked, its label sidecar
-    (the model's reading + photo; the operator's answer is added on click),
-    its scan_log row and price_log rows as the pipeline does, and marks it seen.
-    False when the lot has no photo or the model could not read it (the lot
-    stays unseen and comes back next run)."""
-    import cv2
-    import numpy as np
-    from . import ebay_client, clip_matcher as _cm, image_proc as _ip, detect_pipeline as _dp
-
-    if not vectors_loaded and not _ensure_clip_loaded():
-        raise RuntimeError("CLIP not loaded")
+def _handoff_lot_to_buttonmatcher(listing: dict, ebay_app_id: str,
+                                  ebay_cert_id: str, command: str) -> bool:
+    """POST one lot to buttonmatcher's /internal/ebay_scout_lot; mark it seen
+    once buttonmatcher has accepted it (200).  False when the lot has no photo
+    or buttonmatcher refused it (it stays unseen and comes back next run)."""
+    from . import ebay_client
     item_id = listing["item_id"]
     picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
     if not picture_urls and listing.get("gallery_url"):
@@ -3032,263 +2997,19 @@ def _yolo_test_lot(listing: dict, ebay_app_id: str, ebay_cert_id: str,
     if not picture_urls:
         print(f">>> YOLO_TEST: {item_id} has no photos — skipping.", flush=True)
         return False
-    image_bytes = _ip.download_image(picture_urls[0])     # PRIMARY photo only
-    img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-    if img is None:
-        print(f">>> YOLO_TEST: {item_id} photo unreadable — skipping.", flush=True)
+    ctx = _lot_ctx(listing, uuid.uuid4().hex[:12], command)
+    resp = requests.post(
+        yolo_test.buttonmatcher_url() + yolo_test.ENDPOINT,
+        json=yolo_test.handoff_payload(ctx, picture_urls[0]),
+        headers={"X-Pipeline-Secret": _PIPELINE_SHARED_SECRET}, timeout=90)
+    if resp.status_code != 200:
+        print(f"!!! YOLO_TEST: buttonmatcher refused {item_id}: "
+              f"{resp.status_code} {resp.text[:200]}", flush=True)
         return False
-    h, w = img.shape[:2]
-    if max(h, w) > 2200:
-        sc = 2200 / max(h, w)
-        img = cv2.resize(img, (int(w * sc), int(h * sc)), interpolation=cv2.INTER_AREA)
-        h, w = img.shape[:2]
-    # The frame buttonmatcher hands the model: <=800 px, INTER_AREA.
-    sc = min(800 / w, 800 / h, 1.0)
-    dw, dh = (int(w * sc), int(h * sc)) if sc < 1.0 else (w, h)
-    det = img if (dw, dh) == (w, h) else cv2.resize(img, (dw, dh), interpolation=cv2.INTER_AREA)
-
-    reading = ldet.shadow_count(det, _ldet_fetch)
-    if not reading or reading.get("error"):
-        print(f"!!! YOLO_TEST: model could not read {item_id}: "
-              f"{(reading or {}).get('error', 'no model')}", flush=True)
-        return False
-    crops, info = ldet.learned_crops(reading, det, dw, dh)
-    order = _dp.reading_order(info) if info else []
-    crops = [crops[i] for i in order]
-    info = [info[i] for i in order]
-
-    key = uuid.uuid4().hex[:12]
-    job_id = f"yolo-{key}"
-    ctx = _lot_ctx(listing, key, command)
-    asking = ctx.get("asking")
-    diagnostics = (_cm.match_crops_with_diagnostics(
-        _ip._bgr_to_pil(crops), restrict_years=_restrict_years_from_ctx(ctx, _cm))
-        if crops else [])
-    auto_confirmed, _ = pipeline_classify.classify_crops(diagnostics, {}, False, job_id)
-    needed_hits: dict = {}
-    for b in auto_confirmed:
-        hit = _check_needed_hit({"year": b["year"], "slogan": b["slogan"],
-                                 "overall": b["overall"] or 0.0}, buy_rules)
-        if hit is not None:
-            needed_hits[(b["year"], b["slogan"])] = hit
-    lot_value, undervalued, margin = pipeline_classify.lot_value_and_deal(
-        auto_confirmed, _price_of, asking)
-    undervalued = undervalued and config.ENABLE_UNDERVALUED_ALERTS
-
-    confirmed = []
-    for b in auto_confirmed:
-        _, _, _, amt = sheets_client.get_buy_decision(b["year"], b["slogan"], buy_rules)
-        confirmed.append({"n": b["crop_idx"] + 1, "year": b["year"],
-                          "slogan": b["slogan"], "overall": b["overall"] or 0.0,
-                          "amount_needed": amt if amt and amt > 0 else 0})
-    done = {b["crop_idx"] for b in auto_confirmed}
-    unconfirmed = []
-    for i, d in enumerate(diagnostics):
-        if i in done:
-            continue
-        top = (d.get("candidates") or [None])[0]
-        unconfirmed.append({"n": i + 1, "year": (top or {}).get("year"),
-                            "slogan": (top or {}).get("slogan"),
-                            "overall": (top or {}).get("overall") or 0.0})
-
-    state = {
-        "key": key, "job_id": job_id, "command": command,
-        "listing": {"item_id": item_id, "title": ctx.get("title"),
-                    "url": ctx.get("url"), "asking": asking,
-                    "shipping": ctx.get("shipping"), "seller": ctx.get("seller")},
-        "picture_url": picture_urls[0],
-        "model_count": len(crops), "model_generation": reading.get("model_generation"),
-        "det_wh": [dw, dh],
-        "boxes": [{"n": i + 1, "x": c.get("x"), "y": c.get("y"), "r": c.get("r"),
-                   "conf": c.get("conf")} for i, c in enumerate(info)],
-        "confirmed": confirmed, "unconfirmed": unconfirmed,
-        "needed": [{"year": k[0], "slogan": k[1]} for k in needed_hits],
-        "lot_value": lot_value, "undervalued": bool(undervalued),
-        "margin": margin, "deal": bool(needed_hits or undervalued),
-        "answer": None,
-        "created": datetime.datetime.utcnow().isoformat() + "Z",
-    }
-
-    # Training label: the model's full reading on the photo it read.  The
-    # operator's answer is added to detection.operator on click.
-    try:
-        rec = lharv.build_label_record(
-            job_id=job_id, service="ebayscout", command=yolo_test.COMMAND,
-            item_id=item_id, img_w=dw, img_h=dh, circle_info=info,
-            circle_sources=[ldet.LAYOUT_SOURCE] * len(info),
-            detector_used=ldet.LAYOUT_SOURCE)
-        rec["learned_detector"] = reading
-        rec["detection"]["layout"] = ldet.LAYOUT_SOURCE
-        rec["detection"]["operator"] = None
-        jname, iname = lharv.label_blob_names(job_id)
-        _gcs_put_json(jname, rec)
-        ok, buf = cv2.imencode(".jpg", det, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-        if ok:
-            from google.cloud import storage
-            storage.Client().bucket(config.BUCKET_NAME).blob(iname).upload_from_string(
-                buf.tobytes(), content_type="image/jpeg")
-    except Exception as exc:
-        print(f"!!! YOLO_TEST: label sidecar failed for {item_id}: {exc}", flush=True)
-
-    _gcs_put_json(yolo_test.state_blob(key), state)
-    try:
-        resp = app.client.chat_postMessage(
-            channel=_channel_id, blocks=yolo_test.card_blocks(state),
-            text=f"YOLO test: {ctx.get('title')}", unfurl_links=False)
-    except Exception as exc:
-        # Slack refuses the card if it cannot fetch the photo: post it without
-        # the image block and put the photo in the thread instead.
-        print(f"!!! YOLO_TEST: card with photo failed for {item_id} ({exc}); "
-              f"posting without it", flush=True)
-        _no_pic = dict(state, picture_url=None)
-        resp = app.client.chat_postMessage(
-            channel=_channel_id, blocks=yolo_test.card_blocks(_no_pic),
-            text=f"YOLO test: {ctx.get('title')}", unfurl_links=False)
-        app.client.files_upload_v2(channel=_channel_id, thread_ts=resp["ts"],
-                                   file=image_bytes, filename=f"{item_id}.jpg",
-                                   title="Listing photo")
-    state["card"] = {"channel": resp["channel"], "ts": resp["ts"]}
-    _gcs_put_json(yolo_test.state_blob(key), state)
-
-    # The research logs the pipeline writes for every lot.
-    try:
-        record = _scan_log_record(
-            listing={"item_id": item_id, "title": ctx.get("title"),
-                     "url": ctx.get("url"), "listing_url": ctx.get("url"),
-                     "current_price": asking, "seller": ctx.get("seller", ""),
-                     "shipping_cost": ctx.get("shipping"),
-                     "buying_options": ctx.get("buying_options") or [],
-                     "bid_count": ctx.get("bid_count")},
-            photos_processed=1,
-            best_score=max((b["overall"] or 0.0 for b in auto_confirmed), default=0.0),
-            top_matches=[{"year": b["year"], "slogan": b["slogan"],
-                          "overall": b["overall"] or 0.0} for b in auto_confirmed],
-            needed_hit=bool(needed_hits), alerted=bool(state["deal"]),
-            best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
-                         if needed_hits else None),
-            buttons_detected=len(crops))
-        record["yolo_test"] = key
-        if price_logger is not None:
-            price_logger.log_listing(record)
-        with _scanlog_lock:
-            seen_items.append_scan_log([record])
-    except Exception as exc:
-        print(f"!!! YOLO_TEST: scan_log append failed for {item_id}: {exc}", flush=True)
-
     _mark_item_seen_now(item_id)
-    print(f">>> YOLO_TEST: {item_id} key={key} model={len(crops)} "
-          f"confirmed={len(confirmed)} deal={state['deal']}", flush=True)
+    print(f">>> YOLO_TEST: {item_id} handed to buttonmatcher "
+          f"({resp.text[:80]})", flush=True)
     return True
-
-
-def _yolo_record_answer(key, verdict, count, user_id):
-    """Store a card's answer in the lot's state and its label sidecar, and
-    turn the card's buttons into the answer.  The state, or None if gone."""
-    state = _gcs_get_json(yolo_test.state_blob(key))
-    if not state:
-        print(f"!!! YOLO_TEST: no state for {key}", flush=True)
-        return None
-    ans = yolo_test.answer_record(verdict, count, user_id,
-                                  datetime.datetime.utcnow().isoformat() + "Z")
-    state["answer"] = ans
-    _gcs_put_json(yolo_test.state_blob(key), state)
-    try:
-        jname, _ = lharv.label_blob_names(state["job_id"])
-        rec = _gcs_get_json(jname)
-        if rec is not None:
-            rec.setdefault("detection", {})["operator"] = ans
-            _gcs_put_json(jname, rec)
-    except Exception as exc:
-        print(f"!!! YOLO_TEST: sidecar answer failed for {key}: {exc}", flush=True)
-    card = state.get("card") or {}
-    if card.get("ts"):
-        try:
-            app.client.chat_update(
-                channel=card["channel"], ts=card["ts"],
-                blocks=yolo_test.answered_blocks(state, verdict, count, user_id),
-                text=f"YOLO test: {verdict}")
-        except Exception as exc:
-            print(f"!!! YOLO_TEST: card update failed for {key}: {exc}", flush=True)
-    print(f">>> YOLO_TEST: answer {key} {verdict} count={count} "
-          f"model={state.get('model_count')}", flush=True)
-    return state
-
-
-def _yolo_annotated_jpeg(state) -> bytes | None:
-    """The photo the model read, with its boxes numbered as the result lists."""
-    import cv2
-    import numpy as np
-    from google.cloud import storage
-    _, iname = lharv.label_blob_names(state["job_id"])
-    blob = storage.Client().bucket(config.BUCKET_NAME).get_blob(iname)
-    if blob is None:
-        return None
-    img = cv2.imdecode(np.frombuffer(blob.download_as_bytes(), np.uint8), cv2.IMREAD_COLOR)
-    if img is None:
-        return None
-    for b in state.get("boxes") or []:
-        x, y, r = int(b["x"]), int(b["y"]), int(b["r"])
-        cv2.circle(img, (x, y), r, (0, 200, 0), 2)
-        cv2.putText(img, str(b["n"]), (x - 8, y + 8), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8, (0, 0, 255), 2)
-    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
-    return buf.tobytes() if ok else None
-
-
-@app.action(yolo_test.ACTION_BUTTON)
-def handle_yolo_button(ack, body, client):
-    """✅ Button: ask for the count (the modal must open within Slack's 3 s)."""
-    ack()
-    try:
-        client.views_open(trigger_id=body["trigger_id"], view=yolo_test.count_modal(
-            body["actions"][0]["value"], body["channel"]["id"], body["message"]["ts"]))
-    except Exception as exc:
-        print(f"!!! YOLO_TEST: count modal failed: {exc}", flush=True)
-
-
-@app.action(yolo_test.ACTION_SKIP)
-def handle_yolo_skip(ack, body):
-    ack()
-    _yolo_record_answer(body["actions"][0]["value"], "button_skip", None,
-                        (body.get("user") or {}).get("id"))
-
-
-@app.action(yolo_test.ACTION_REJECT)
-def handle_yolo_reject(ack, body):
-    ack()
-    _yolo_record_answer(body["actions"][0]["value"], "not_a_button", None,
-                        (body.get("user") or {}).get("id"))
-
-
-@app.view(yolo_test.VIEW_COUNT)
-def handle_yolo_count(ack, body, view):
-    """The count is in: record it, then the result in the card's thread."""
-    n = yolo_test.parse_count(view.get("state") or {})
-    if n is None:
-        ack(response_action="errors",
-            errors={"count_block": "Enter a whole number, 0 or more."})
-        return
-    ack()
-    meta = json.loads(view.get("private_metadata") or "{}")
-    state = _yolo_record_answer(meta.get("key"), "button", n,
-                                (body.get("user") or {}).get("id"))
-    if not state:
-        return
-    text = yolo_test.result_text(state, n)
-    card = state.get("card") or {}
-    channel, ts = card.get("channel") or meta.get("channel"), card.get("ts") or meta.get("ts")
-    try:
-        jpg = _yolo_annotated_jpeg(state)
-        if jpg:
-            app.client.files_upload_v2(channel=channel, thread_ts=ts, file=jpg,
-                                       filename=f"{state['key']}_model.jpg",
-                                       title="The model's buttons",
-                                       initial_comment=text)
-            return
-    except Exception as exc:
-        print(f"!!! YOLO_TEST: annotated photo failed for {state['key']}: {exc}",
-              flush=True)
-    app.client.chat_postMessage(channel=channel, thread_ts=ts, text=text)
 
 
 def _collect_ebay_listings(ebay_app_id, ebay_cert_id, max_pages: int = 1):
@@ -3418,8 +3139,9 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
         seller  = listing.get("seller", "")
         try:
             if yolo_test.enabled():
-                # The YOLO week: read here, post a gated card, no Gem.
-                if _yolo_test_lot(listing, ebay_app_id, ebay_cert_id, source):
+                # The YOLO week: buttonmatcher's full process, no Gem.
+                if _handoff_lot_to_buttonmatcher(listing, ebay_app_id,
+                                                 ebay_cert_id, source):
                     fed += 1
             elif _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, source):
                 fed += 1
@@ -3433,11 +3155,10 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
     if yolo_test.enabled():
         notifier.send_warning(
             _slack_token, _channel_id,
-            f"🔎 `{source}` (YOLO test): posted {fed}/{len(new_listings)} lot "
-            f"card(s) read by the learned detector + CLIP, no Gemini. Answer "
-            f"each: ✅ Button (then your count), ⏭️ Button, skip, or 🚫 Not a "
-            f"button.")
-        print(f">>> FEED[{source}]: YOLO test — carded={fed}/{len(new_listings)}.",
+            f"🔎 `{source}` (YOLO test): handed {fed}/{len(new_listings)} lot(s) "
+            f"to buttonmatcher, no Gemini. Each runs as an automatic Scout lot "
+            f"in #inventory-bot.")
+        print(f">>> FEED[{source}]: YOLO test — handed off={fed}/{len(new_listings)}.",
               flush=True)
         return fed
     notifier.send_warning(
