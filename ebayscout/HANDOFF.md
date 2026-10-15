@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-14)
+# eBay Scout — Session Handoff (latest entry 2026-10-15)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
@@ -6,6 +6,52 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-15 — The YOLO week: lots read without Gemini, every lot carded
+
+The operator: a one-week test of ebayscout with every photo through the
+learned detector instead of the Gem, every lot posted to `#ebay-checker`
+behind a gate. **Off until switched on** (`EBAYSCOUT_YOLO_TEST=1`, config-only):
+
+```
+gcloud run services update ebayscout --region us-east1 --update-env-vars EBAYSCOUT_YOLO_TEST=1
+gcloud run services update ebayscout --region us-east1 --remove-env-vars EBAYSCOUT_YOLO_TEST
+```
+(the service name and region as deployed; `gcloud run services list` if unsure.)
+
+- **What changes when on:** the daily feed and `/crawl` stop uploading photos
+  for the Gem. Each lot is read in `_yolo_test_lot`, inside the scan's own
+  request: buttonmatcher's `learned_detector.py` (now byte-shared, the same
+  ONNX model from the same bucket; `onnxruntime==1.19.2` added) cuts the
+  crops on the <=800 px frame buttonmatcher uses, CLIP matches them,
+  `pipeline_classify.classify_crops` confirms with the CLIP-only rules (no
+  Gemini reading), and the needed / undervalued rules call the deal.
+- **The card** (`yolo_test.py`): the listing's own photo, unannotated, so the
+  operator counts before seeing the model's count; a deal says "🔥 Possible
+  deal". ✅ Button opens one question, "How many buttons do you see?", and the
+  result goes in the card's thread: your count against the model's, the photo
+  with the model's numbered circles, the buttons CLIP confirmed (with needs),
+  the unconfirmed crops' best guesses, the deal call. ⏭️ Button, skip and 🚫 Not
+  a button, reject just record.
+- **State in GCS, not memory:** `ebay_scout/yolo_test/<key>.json` holds what a
+  click needs (written before the card posts), so a card answered after a
+  scale-to-zero still works. The answer is stored there too.
+- **Training data:** each lot writes its label sidecar
+  (`pipeline/labels/yolo-<key>.json` + `.jpg`, command `yolo-test`): the
+  model's full reading and the photo it read. The answer lands in
+  `detection.operator` (`{verdict, count, user_id, ts}`): a counted lot is the
+  operator's count of the photo, a reject is a negative photo.
+  `prepare_dataset` does not read `detection.operator` yet; teaching it to is
+  the step that turns these into YOLO training examples.
+- **Kept:** scan_log row (with `yolo_test: <key>`), price_log rows from the
+  CLIP-confirmed buttons, seen marking. **Not written:** match_log rows, crop
+  vectors, reference staging (no Gemini confirmation to stage on).
+- **Needs:** Slack Interactivity on (DEPLOY.md step 8) for the buttons and
+  the modal.
+- **Grading at week's end:** the state JSONs hold model count, operator
+  count and verdict per lot.
 
 ---
 

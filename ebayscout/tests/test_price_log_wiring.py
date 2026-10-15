@@ -38,7 +38,10 @@ def test_every_priced_lot_logs_its_listing_from_its_scan_log_record():
 def test_the_listing_row_knows_an_auction_from_an_asking_price():
     """An auction's price at scan time is a bid; price_log keeps it out of the
     listing average, which needs the format from the feed."""
-    feed = _fn("_feed_lot_to_pipeline")
+    # The context the feed persists is built by _lot_ctx (2026-10-15, shared
+    # with the YOLO test); the feed must still use it.
+    assert "_lot_ctx(listing, key, command)" in _fn("_feed_lot_to_pipeline")
+    feed = _fn("_lot_ctx")
     assert '"buying_options": listing.get("buying_options")' in feed
     assert '"bid_count":      listing.get("bid_count")' in feed
     assert '"buying_options": ctx.get("buying_options")' in _fn("process_pipeline_lot")
@@ -58,6 +61,6 @@ def test_no_sold_price_checks_run_here():
 def test_the_listing_row_carries_the_shipping_eBays_search_quoted():
     """Search summary -> pending context -> pipeline listing -> scan_log record,
     which price_log.listing_rows writes as the row's shipping (2026-10-13)."""
-    assert '"shipping":       listing.get("shipping_cost")' in _fn("_feed_lot_to_pipeline")
+    assert '"shipping":       listing.get("shipping_cost")' in _fn("_lot_ctx")
     assert '"shipping_cost": ctx.get("shipping")' in _fn("process_pipeline_lot")
     assert '"shipping":      listing.get("shipping_cost")' in _fn("_scan_log_record")
