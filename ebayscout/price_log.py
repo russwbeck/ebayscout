@@ -81,6 +81,7 @@ KIND_SOLD = "sold"
 
 SOURCE_SCAN = "scan"
 SOURCE_SCOUT_SOLD = "scout_sold"
+SOURCE_SCOUT = "scout"          # a /scout lot's asking price (buttonmatcher)
 SOURCE_SELLER = "seller"
 
 FORMAT_AUCTION = "auction"
@@ -230,7 +231,9 @@ def lot_rows(*, kind, source, ebay_id, counts, prices, buttons_in_lot, lot_price
 
 
 def listing_rows(record: dict) -> list[list]:
-    """The listing rows for one lot's scan_log record (ebayscout).
+    """The listing rows for one lot's scan_log record (ebayscout), or for a
+    finished /scout lot in the same shape (buttonmatcher), whose ``source`` is
+    SOURCE_SCOUT unless it is an eBay listing.
 
     No rows when the lot has no price per button (no price, or nothing
     detected): a row without a price would only dilute the average.
@@ -242,7 +245,7 @@ def listing_rows(record: dict) -> list[list]:
     if not counts:
         return []
     return lot_rows(
-        kind=KIND_LISTING, source=SOURCE_SCAN,
+        kind=KIND_LISTING, source=record.get("source") or SOURCE_SCAN,
         ebay_id=(ebay_item_number(record.get("item_id"))
                  or ebay_item_number(record.get("listing_url"))),
         counts=counts, prices={k: per for k in counts},

@@ -157,6 +157,17 @@ def test_an_auction_listing_is_marked_so_the_average_can_leave_it_out():
     assert {_col(r, "bids") for r in rows} == {3}
 
 
+def test_a_scout_lot_is_a_listing_with_its_own_source():
+    """Every /scout lot is the market too (2026-10-16): same rows, its own
+    source, no eBay number when it is not an eBay listing."""
+    rows = pl.listing_rows(_scan_record(source=pl.SOURCE_SCOUT, item_id=None,
+                                        listing_url=None, title="Facebook"))
+    assert {_col(r, "source") for r in rows} == {"scout"}
+    assert {_col(r, "ebay_id") for r in rows} == {""}
+    assert {_col(r, "title") for r in rows} == {"Facebook"}
+    assert {_col(r, "kind") for r in rows} == {"listing"}
+
+
 def test_no_listing_rows_without_a_price_or_a_named_button():
     assert pl.listing_rows(_scan_record(price_per_button=None)) == []
     assert pl.listing_rows(_scan_record(price_per_button=0)) == []
