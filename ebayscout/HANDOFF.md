@@ -30,9 +30,13 @@ gcloud run services update ebay-scout --region=us-east1 --remove-env-vars EBAYSC
   buttonmatcher's `ebay_handoff.py`. A lot is marked seen here only on 200.
 - `BUTTONMATCHER_URL` defaults to
   `https://button-inventory-404960106109.us-east1.run.app` (`yolo_test.py`).
-- **Not written here while on:** scan_log rows, price_log listing rows,
-  reference staging. buttonmatcher's logs (match_log, confirm_log, label
-  sidecars) hold the lots instead.
+- **Logs:** buttonmatcher writes the Logger rows: match_log, confirm_log and
+  label sidecars as for any Scout lot, and, when the lot is finished, the
+  price_log listing rows this service's scan used to write (same shared
+  `price_log.listing_rows`, price per button = asking ÷ the operator's count,
+  auctions kept out of the averages by the `buying_options` / `bid_count`
+  passed in the handoff). Not written while on: the GCS `scan_log` rows and
+  reference staging.
 - **First version, same day:** ebayscout ran the detector + CLIP itself and
   posted gated cards in #ebay-checker. It had no OCR, no auto-confirm rules
   and no confirm cards (CLIP confirmed 3 of 41 buttons on the first three

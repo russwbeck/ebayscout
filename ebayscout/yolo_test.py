@@ -44,4 +44,7 @@ def handoff_payload(ctx: dict, picture_url: str) -> dict:
         "asking":    ctx.get("asking"),
         "shipping":  ctx.get("shipping"),
         "seller":    ctx.get("seller"),
+        # price_log keeps auctions out of the averages by these
+        "buying_options": ctx.get("buying_options") or [],
+        "bid_count": ctx.get("bid_count"),
     }

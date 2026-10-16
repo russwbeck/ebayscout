@@ -42,11 +42,13 @@ def test_buttonmatcher_url_default_and_override(monkeypatch):
 
 def test_the_payload_is_what_buttonmatcher_takes():
     ctx = {"item_id": "v1|1|0", "title": "T", "url": "https://ebay.com/itm/1",
-           "asking": 16.14, "shipping": 0.0, "seller": "s", "command": "/crawl"}
+           "asking": 16.14, "shipping": 0.0, "seller": "s", "command": "/crawl",
+           "buying_options": ["AUCTION"], "bid_count": 3}
     p = yt.handoff_payload(ctx, "https://i.ebayimg.com/x.jpg")
     assert p == {"image_url": "https://i.ebayimg.com/x.jpg", "item_id": "v1|1|0",
                  "title": "T", "url": "https://ebay.com/itm/1", "asking": 16.14,
-                 "shipping": 0.0, "seller": "s"}
+                 "shipping": 0.0, "seller": "s",
+                 "buying_options": ["AUCTION"], "bid_count": 3}
 
 
 def test_the_feed_hands_lots_off_instead_of_feeding_the_gem_when_on():
