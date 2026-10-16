@@ -84,9 +84,7 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
   listing rows, buttonmatcher's `/scout sold` the sales the operator
   enters — keyed by the eBay item number, and one file has
   to define the columns and the one-sale-counts-once rule. It imports
-  `sheet_retry` relative-first, plain-second, like `match_logging.py`. `learned_detector.py` joined on 2026-10-15 for the YOLO
-  test (`yolo_test.py`): the same ONNX model from the same bucket, its one
-  import relative-first, flat-second, so the file is byte-identical. `diff`
+  `sheet_retry` relative-first, plain-second, like `match_logging.py`. `diff`
   before and after touching any of them.
 - **`rerank.py` weights are calibrated, not guessed.** `YEAR_WEIGHT` and
   `SID_WEIGHT` must stay equal across both repos —
