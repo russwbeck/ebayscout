@@ -494,3 +494,43 @@ def test_an_unopenable_workbook_disables_price_logging_quietly():
 def test_an_analysis_tab_that_cannot_be_made_leaves_the_log_working():
     book = _Book(fail_add={"price_analysis"})
     assert pl.open_price_sheet(_Client(book), "abc") is book.tabs["price_log"]
+
+
+# --- a Scout lot that changed after its rows were written (2026-10-16) ------------
+
+def _listings(ws):
+    k = pl.PRICE_HEADER.index("kind")
+    return [r for r in ws.rows[1:] if r[k] == "listing"]
+
+
+def test_a_changed_lot_is_written_again_and_its_old_rows_superseded():
+    ws = _Sheet()
+    lg = pl.PriceLogger(ws)
+    other = _scan_record(run_id="r8", item_id="v1|999999999999|0")
+    assert lg.log_listing(other)
+    assert lg.log_listing(_scan_record())
+    added = _scan_record(buttons=_scan_record()["buttons"]
+                         + [{"year": 1984, "slogan": "I-Oh-Was"}])
+    assert lg.log_listing(added, replace=True)
+    rows = _listings(ws)
+    run = pl.PRICE_HEADER.index("run_id")
+    live = [r for r in rows if _sup(r) == "no"]
+    assert len(rows) == 2 + 2 + 3
+    assert sorted(_col(r, "slogan") for r in live if r[run] == "r7") == [
+        "Beat Pitt", "I-Oh-Was", "Whip Miami"]
+    assert [_sup(r) for r in rows if r[run] == "r8"] == ["no", "no"]
+
+
+def test_a_first_write_or_no_run_id_supersedes_nothing():
+    ws = _Sheet()
+    assert pl.PriceLogger(ws).log_listing(_scan_record(), replace=True)
+    assert pl.PriceLogger(ws).log_listing(_scan_record(run_id=""), replace=True)
+    assert all(_sup(r) == "no" for r in _listings(ws))
+
+
+def test_live_listings_reads_the_trimmed_columns_the_api_returns():
+    kind = [["kind"], ["listing"], ["sold"], ["listing"], [], ["listing"]]
+    q = [["superseded"], ["no"], ["no"], ["yes"]]
+    t = [["run_id"], ["r7"], ["r7"], ["r7"], [], ["r7"]]
+    assert pl.live_listings(kind, q, t, "r7") == [2, 6]
+    assert pl.live_listings(kind, q, t, "") == []

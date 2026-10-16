@@ -282,6 +282,30 @@ def live_sales(bd_rows, q_rows, ebay_id) -> list[tuple[int, str]]:
     return out
 
 
+def live_listings(kind_rows, q_rows, run_rows, run_id) -> list[int]:
+    """Sheet rows of the listing rows ``run_id`` wrote that are not superseded.
+
+    A buttonmatcher Scout lot can change after its rows are written (a missed
+    button added, a wrong one corrected); its rows are then written again and
+    these marked superseded, so the lot counts once, as it ended (2026-10-16).
+    Columns kind (B), superseded (Q) and run_id (T), read as ``live_sales``
+    reads its columns.
+    """
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        return []
+    out = []
+    for i, r in enumerate(kind_rows or []):
+        if i == 0:
+            continue
+        kind = r[0] if r else ""
+        sup = q_rows[i][0] if i < len(q_rows or []) and q_rows[i] else ""
+        rid = run_rows[i][0] if i < len(run_rows or []) and run_rows[i] else ""
+        if kind == KIND_LISTING and str(rid).strip() == run_id and sup != "yes":
+            out.append(i + 1)
+    return out
+
+
 def listing_shipping(bd_rows, ship_rows, ebay_id):
     """The shipping the latest listing row for ``ebay_id`` carries, or None.
 
@@ -344,13 +368,35 @@ class PriceLogger:
         ok, _ = self._call(lambda: self._ws.append_rows(rows, value_input_option="RAW"), what)
         return ok
 
-    def log_listing(self, record: dict) -> bool:
-        """A scanned lot's listing rows.  True when they landed."""
+    def log_listing(self, record: dict, replace: bool = False) -> bool:
+        """A scanned lot's listing rows.  True when they landed.
+
+        ``replace``: this lot's rows were written before and have changed, so
+        the earlier rows with the same ``run_id`` are marked superseded once
+        the new ones land (``live_listings``)."""
         rows = listing_rows(record)
         if not rows or self._ws is None:
             return False
         with self._lock:
-            return self._append(rows, f"listing write for {record.get('item_id')}")
+            old = []
+            run_id = record.get("run_id")
+            if replace and run_id:
+                ok, got = self._call(
+                    lambda: self._ws.batch_get([f"{col('kind')}:{col('kind')}",
+                                                f"{col('superseded')}:{col('superseded')}",
+                                                f"{col('run_id')}:{col('run_id')}"]),
+                    f"listing lookup for run {run_id}")
+                if ok and got and len(got) == 3:
+                    old = live_listings(got[0], got[1], got[2], run_id)
+            if not self._append(rows, f"listing write for {record.get('item_id')}"):
+                return False
+            if old:
+                cells = [{"range": f"{col('superseded')}{r}", "values": [["yes"]]}
+                         for r in old]
+                self._call(
+                    lambda: self._ws.batch_update(cells, value_input_option="RAW"),
+                    f"superseding {len(cells)} earlier listing row(s) of run {run_id}")
+            return True
 
     def log_sale(self, rows, ebay_id) -> dict:
         """Write one sale's rows, replacing any earlier entry for the same item.
