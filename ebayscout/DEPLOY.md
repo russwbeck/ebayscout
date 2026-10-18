@@ -164,13 +164,11 @@ done
 
 ## Artifact Registry
 
-If the `buttons` repository doesn't exist yet:
-```bash
-gcloud artifacts repositories create buttons \
-  --repository-format=docker \
-  --location=us-east1 \
-  --description="Penn State button bot images"
-```
+The image goes to the `gcr.io` repository (multi-region `us`), next to
+buttonmatcher's images and the shared base image both services start FROM
+(`button-base:<tag>`, built by hand from buttonmatcher's `base/Dockerfile`).
+The base has to exist before this service builds (DECISIONS.md #34). The
+`buttons` repository in us-east1 held this service's images until 2026-10-18.
 
 ---
 
@@ -183,12 +181,12 @@ cd /path/to/ebayscout   # repo root (doc originally said buybot — that repo is
 
 docker build \
   -f ebayscout/Dockerfile \
-  -t us-east1-docker.pkg.dev/${PROJECT_ID}/buttons/ebayscout:latest \
+  -t us-docker.pkg.dev/${PROJECT_ID}/gcr.io/ebayscout:latest \
   .
 
-gcloud auth configure-docker us-east1-docker.pkg.dev
+gcloud auth configure-docker us-docker.pkg.dev
 
-docker push us-east1-docker.pkg.dev/${PROJECT_ID}/buttons/ebayscout:latest
+docker push us-docker.pkg.dev/${PROJECT_ID}/gcr.io/ebayscout:latest
 ```
 
 ---
@@ -196,7 +194,7 @@ docker push us-east1-docker.pkg.dev/${PROJECT_ID}/buttons/ebayscout:latest
 ## Create the Cloud Run Service
 ```bash
 gcloud run deploy ebay-scout \
-  --image=us-east1-docker.pkg.dev/${PROJECT_ID}/buttons/ebayscout:latest \
+  --image=us-docker.pkg.dev/${PROJECT_ID}/gcr.io/ebayscout:latest \
   --region=us-east1 \
   --memory=4Gi \
   --cpu=2 \

@@ -1,27 +1,20 @@
 # eBay Button Scout — Cloud Run Service
-# Build context: repo root (buybot/)
-
-FROM python:3.11-slim
+# Build context: repo root.
+#
+# Starts from the shared base image that buttonmatcher builds (its
+# base/Dockerfile): Python, the system libraries, every package either service
+# pins, and the CLIP ViT-B/32 weights clip.load() reads from the model cache
+# (DECISIONS.md #2, #34). Only the app code is added here, so each new version
+# stores a few MB in Artifact Registry instead of the whole stack.
+FROM us-docker.pkg.dev/project-60d488c5-9c8e-4acc-aac/gcr.io/button-base:20261018
 
 WORKDIR /app
 
-# System deps (same as buybot/buttonmatcher)
-RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir --upgrade pip
-
-COPY ebayscout/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Pre-download CLIP ViT-B/32 weights (~338 MB) into the image so cold
-# starts never hit OpenAI's CDN at runtime.  This layer is cached by
-# Docker and only re-runs when requirements.txt changes.
-RUN python -c "import clip; clip.load('ViT-B/32', device='cpu'); print('CLIP ViT-B/32 cached.')"
-
 COPY ebayscout/ ./ebayscout/
+
+# Nothing is installed here: the base must already have every pin in
+# requirements.txt. If one changed, build a new base in buttonmatcher and put
+# its tag in FROM above; the check prints what differs.
+RUN python -I ebayscout/check_base_pins.py ebayscout/requirements.txt
 
 CMD ["gunicorn", "--config", "ebayscout/gunicorn.conf.py", "ebayscout.main:flask_app"]

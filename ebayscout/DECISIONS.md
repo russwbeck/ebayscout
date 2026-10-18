@@ -36,6 +36,10 @@ RUN python -c "import clip; clip.load('ViT-B/32', device='cpu'); print('CLIP ViT
 The layer is rebuilt only when `requirements.txt` changes (which forces a new
 `pip install` layer upstream).  All other builds skip it entirely.
 
+**Superseded in part (2026-10-18, #34):** Cloud Build never kept that cache;
+each build starts on a fresh machine. The weights now come baked into
+buttonmatcher's shared base image, where `clip.load()` still finds them.
+
 ---
 
 ## 3. Gunicorn preload_app + lazy ML imports
@@ -1020,3 +1024,35 @@ to make on a reading.
 Frozen means: it keeps working, its defects get fixed (SR-02's seen-file
 clobber was one of them), and nothing new is built on it. If a future change
 needs to touch both feed paths, that is the signal to do SR-22 instead.
+
+---
+
+## 34. The image starts FROM buttonmatcher's shared base
+
+Artifact Registry held 7.8 GB on 2026-10-18 (buttonmatcher's `gcr.io`
+repository 5.4 GB, this service's `buttons` 2.4 GB), about $0.73 a month and
+the largest steady cost left. The app code is a few MB. The weight was the
+stack every build reinstalled and stored again (PyTorch, OpenCV, CLIP's
+weights), once per kept version: #2's "cached by Cloud Build" was never true.
+
+buttonmatcher now builds one base image, `button-base:<date>` (its
+`base/Dockerfile`, by hand, a new tag each time): Python, the system libraries,
+buttonmatcher's lockfile plus this service's one extra package
+(`google-api-python-client`, in its `base/requirements-ebayscout.txt`), and the
+CLIP ViT-B/32 weights in the model cache, where `clip.load()` here finds them,
+so #2's guarantee holds. `ebayscout/Dockerfile` starts FROM it and adds only
+`ebayscout/`. The image goes to the `gcr.io` repository next to buttonmatcher's,
+because a repository stores each layer once: the base is stored once for both
+services.
+
+Nothing is installed here, so `ebayscout/requirements.txt` became the list the
+base is checked against: `check_base_pins.py` fails the build when the base
+lacks a pin at exactly that version (CLIP at its commit). A change to that file
+therefore needs a new base first, built in buttonmatcher, then its tag in
+`FROM`. The alternative, `pip install -r requirements.txt` on top of the base,
+would always build, but a drifted pin would quietly store its package again in
+every version, the cost this exists to remove.
+
+The base also carries what only buttonmatcher uses (onnxruntime, the OCR
+wheel, the ONNX export of CLIP's image encoder). Nothing here imports them, and
+they cost no storage, being in the shared layers.

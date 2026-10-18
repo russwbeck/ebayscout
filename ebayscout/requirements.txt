@@ -1,6 +1,10 @@
 # eBay Button Scout — Python dependencies
 # Flask + gunicorn + slack-bolt power the daily scan and the /crawl500 slash
 # command. PyTorch CPU-only to keep the image small.
+#
+# The image installs none of this: it starts FROM buttonmatcher's shared base
+# (ebayscout/Dockerfile), and check_base_pins.py fails the build unless the
+# base has every pin below at exactly this version.
 
 --index-url https://download.pytorch.org/whl/cpu
 
@@ -9,8 +13,8 @@ torchvision==0.17.2+cpu
 
 --extra-index-url https://pypi.org/simple
 
-# CLIP (from source — same as buybot and buttonmatcher)
-clip @ git+https://github.com/openai/CLIP.git
+# CLIP (from source, at buttonmatcher's pinned commit, which the base has)
+clip @ git+https://github.com/openai/CLIP.git@d05afc436d78f1c48dc0dbf8e5980a9d471f35f6
 
 # Computer vision
 opencv-python-headless==4.11.0.86
@@ -43,7 +47,7 @@ requests==2.33.1
 certifi==2026.4.22
 charset-normalizer==3.4.7
 idna==3.15
-urllib3==2.7.0
+urllib3==2.8.0
 
 # Misc
 ftfy==6.3.1
