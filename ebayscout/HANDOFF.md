@@ -1,11 +1,62 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-15)
+# eBay Scout — Session Handoff (latest entry 2026-10-18)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
-**`ebayscout/DECISIONS.md`** (full rationale, sections #1–#33) first; this file is
+**`ebayscout/DECISIONS.md`** (full rationale, sections #1–#34) first; this file is
 the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-18 — the image starts FROM buttonmatcher's shared base
+
+Artifact Registry is the largest steady cost left (7.8 GB, about $0.73 a
+month), and most of it was one stack stored again for every kept image version,
+in two repositories. buttonmatcher's PR #260 (merged 2026-10-18) builds one base
+image, `button-base:20261018`; this change moves the service onto it
+(DECISIONS.md #34).
+
+**What changed:**
+- `ebayscout/Dockerfile`: `FROM button-base:20261018`, `COPY ebayscout/`, then
+  `check_base_pins.py`, which fails the build unless the base has every pin in
+  `requirements.txt` at exactly that version. Nothing is installed here.
+- `ebayscout/cloudbuild.yaml`: the image goes to the `gcr.io` repository
+  (`us-docker.pkg.dev/$PROJECT_ID/gcr.io/ebayscout`), next to the base, instead
+  of `buttons`. Deploy flags unchanged. The repository's keep-3 cleanup policy
+  covers the new image too.
+- `ebayscout/requirements.txt`: `urllib3` 2.8.0 and CLIP pinned to `d05afc4`,
+  the base's. buttonmatcher took both on 2026-10-18; the commit is the one every
+  build has installed since 2026-03-25. Every other pin was already the base's.
+- `check_base_pins.py`, with `tests/test_check_base_pins.py`.
+
+**Packages that change for this service:** the ones it doesn't pin itself now
+come at buttonmatcher's lockfile versions, which buttonmatcher runs in production
+(`cryptography` 48.0.1, for one; each build used to take the newest). The base
+also holds buttonmatcher-only packages (onnxruntime, the OCR wheel, the ONNX
+encoder); nothing here imports them.
+
+**A change to `requirements.txt` now needs a new base first** (`CLAUDE.md`).
+Until there is one, the build fails and the running service keeps its image.
+
+**Rollout:**
+1. Merge once buttonmatcher's first deploy on the base has checked out (startup
+   log, `/health`, one real lot).
+2. The trigger builds and deploys as before (`gcloud builds list --limit=3`).
+   Then `/health` returns 200 and the next 9 AM scan runs as usual.
+3. After that scan, delete the old images in `buttons` (the service's earlier
+   revisions point at them, so rolling back past this deploy stops working).
+
+**Checked in the web session:** the CI suite (924 passed, 3 skipped for
+`google.cloud`, as in CI), with `tests/test_check_base_pins.py`'s 7, and pyflakes
+on the new files. In local Docker, on a stand-in base with this file's
+pins (PyTorch, torchvision and CLIP as metadata records, since the sandbox
+cannot download them): the build passes and keeps the gunicorn `CMD`; with
+`urllib3==2.7.0` it fails with the message. Against real installs, the check
+also catches a different CLIP commit and a missing package.
+
+**Not run:** the real build on `button-base:20261018`, the trigger, the deploy
+and the service.
 
 ---
 

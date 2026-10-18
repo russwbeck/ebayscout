@@ -45,6 +45,14 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
 
 ## Process expectations
 
+- **The image starts FROM buttonmatcher's shared base image**
+  (`button-base:<tag>` in `ebayscout/Dockerfile`'s `FROM`; DECISIONS.md #34).
+  The base holds every package and the CLIP weights; nothing is installed here.
+  So a change to `ebayscout/requirements.txt` needs a new base first: add the
+  package or pin in buttonmatcher (`base/requirements-ebayscout.txt` for one
+  only this service uses), build the base there (its `CLAUDE.md`, Deploy), then
+  put the new tag in `FROM`. Until then the build fails (`check_base_pins.py`)
+  and the running service keeps its image.
 - **buybot is decommissioned (2026-07-05).** Shared files (`detect.py`/
   `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, `sheet_retry.py`,
   `confusable_slogans.py`, `pipeline_ingest.py`, `gemini_geometry.py`,

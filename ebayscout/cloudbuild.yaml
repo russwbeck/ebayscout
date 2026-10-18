@@ -3,6 +3,10 @@
 #
 # Trigger is configured to watch: main branch, ebayscout/** file filter
 # Console: Cloud Build → Triggers → ebayscout-job → Edit → Branch: ^main$
+#
+# The image goes to the gcr.io repository, next to buttonmatcher's images and
+# the shared base both start FROM (ebayscout/Dockerfile): Artifact Registry
+# stores a layer once per repository, so the base's layers are stored once.
 
 steps:
   # Build the Docker image
@@ -12,9 +16,9 @@ steps:
       - -f
       - ebayscout/Dockerfile
       - -t
-      - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:$COMMIT_SHA
+      - us-docker.pkg.dev/$PROJECT_ID/gcr.io/ebayscout:$COMMIT_SHA
       - -t
-      - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:latest
+      - us-docker.pkg.dev/$PROJECT_ID/gcr.io/ebayscout:latest
       - .   # build context is repo root
 
   # Push both tags
@@ -22,7 +26,7 @@ steps:
     args:
       - push
       - --all-tags
-      - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout
+      - us-docker.pkg.dev/$PROJECT_ID/gcr.io/ebayscout
 
   # Deploy to Cloud Run Service
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
@@ -31,7 +35,7 @@ steps:
       - run
       - deploy
       - ebay-scout
-      - --image=us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout:$COMMIT_SHA
+      - --image=us-docker.pkg.dev/$PROJECT_ID/gcr.io/ebayscout:$COMMIT_SHA
       - --region=us-east1
       - --memory=4Gi
       - --cpu=2
@@ -47,7 +51,7 @@ steps:
       # heavy work by running it inside an in-flight HTTP request, not via flags.
 
 images:
-  - us-east1-docker.pkg.dev/$PROJECT_ID/buttons/ebayscout
+  - us-docker.pkg.dev/$PROJECT_ID/gcr.io/ebayscout
 
 options:
   logging: CLOUD_LOGGING_ONLY
