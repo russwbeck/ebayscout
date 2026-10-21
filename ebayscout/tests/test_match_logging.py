@@ -639,6 +639,71 @@ def test_the_retries_are_serialized():
     assert hasattr(logger, "_write_lock")
 
 
+# --- the loss alert (2026-10-20) ---------------------------------------------
+# A write the retries gave up on was a log line only: 26 confirm_log rows went
+# missing over six weeks and were found by hand.  It is now reported.
+
+def test_a_lost_confirm_row_is_reported_in_full():
+    orig = _no_sleep()
+    try:
+        told = []
+        ws = _Flaky(99, Exception("[429] Quota exceeded"))
+        logger = ml.SheetLogger(_FakeWS(), ws, service="b", on_failure=told.append)
+        rec = ml.build_confirm_record(
+            service="b", command="/inventory", job_id="j", thread_ts="1.5",
+            crop_num=25, check_id="k", user_id="", chosen_year=1987,
+            chosen_phrase="No 'Cheers' Here", chosen_type="Football",
+            source="auto_sort", rank_restricted=1, rank_shadow=1,
+            shadow_leaderboard_size=50)
+        logger.log_confirmation("k", rec)
+        assert len(told) == 1, "a lost confirm row was not reported"
+        assert "confirm write for k" in told[0] and "429" in told[0]
+        row = json.loads(told[0].split("```")[1])
+        assert row == ml.flatten_confirm_record(rec), (
+            "the alert must carry the row exactly as it would have been written")
+    finally:
+        ml.time.sleep = orig
+
+
+def test_a_lost_match_batch_is_reported_by_job():
+    told = []
+    ws = _Flaky(99, RuntimeError("Worksheet not found"))
+    logger = ml.SheetLogger(ws, _FakeWS(), service="b", on_failure=told.append)
+    logger.log_image_crops("job-9", [{"detection": {}}, {"detection": {}}])
+    assert len(told) == 1 and "job-9" in told[0] and "2 match_log row(s)" in told[0]
+
+
+def test_a_write_that_lands_after_a_retry_is_not_reported():
+    orig = _no_sleep()
+    try:
+        told = []
+        ws = _Flaky(1, Exception("[429] RESOURCE_EXHAUSTED"))
+        logger = ml.SheetLogger(_FakeWS(), ws, service="b", on_failure=told.append)
+        logger.log_confirmation("k", {"ts": "x"})
+        assert len(ws.rows) == 1 and told == []
+    finally:
+        ml.time.sleep = orig
+
+
+def test_a_failing_alert_never_breaks_the_bot():
+    def boom(_text):
+        raise RuntimeError("slack down")
+    ws = _Flaky(99, RuntimeError("Worksheet not found"))
+    logger = ml.SheetLogger(ws, ws, service="b", on_failure=boom)
+    logger.log_image_crops("j", [{"detection": {}}])   # must not raise
+    logger.log_confirmation("k", {"ts": "x"})          # must not raise
+
+
+def test_the_alert_is_sent_outside_the_write_lock():
+    """A slow Slack post must not hold up the next Logger write."""
+    held = []
+    ws = _Flaky(99, RuntimeError("Worksheet not found"))
+    logger = ml.SheetLogger(ws, _FakeWS(), service="b",
+                            on_failure=lambda _t: held.append(logger._write_lock.locked()))
+    logger.log_image_crops("j", [{"detection": {}}])
+    assert held == [False]
+
+
 def test_shadow_pass_enabled_env():
     os.environ.pop("BUTTONMATCHER_SHADOW_PASS", None)
     assert ml.shadow_pass_enabled() is True

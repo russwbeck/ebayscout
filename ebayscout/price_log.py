@@ -337,11 +337,17 @@ class PriceLogger:
     None disables it.  Every call is retried on the Sheets per-minute quota
     (sheet_retry) and never raises: a price row is a record of the work, not a
     reason to fail it.
+
+    ``on_failure`` is called with one ready-to-post line when a write is lost
+    for good -- the same alert as match_logging.SheetLogger, for the same
+    reason: a row the quota dropped was otherwise only a log line.
     """
 
-    def __init__(self, ws, *, sleep=time.sleep):
+    def __init__(self, ws, *, sleep=time.sleep, on_failure=None):
         self._ws = ws
         self._sleep = sleep
+        self._on_failure = on_failure
+        self._last_error = None
         self._lock = threading.Lock()   # sheet_retry's delays assume serialized writers
 
     @property
@@ -358,6 +364,7 @@ class PriceLogger:
                 if delay is None or not sheet_retry.is_rate_limited(e):
                     print(f">>> PRICE_LOG: {what} FAILED: {type(e).__name__}: {e}",
                           flush=True)
+                    self._last_error = e
                     return False, None
                 print(f">>> PRICE_LOG: {what} rate-limited — retrying in {delay:g}s",
                       flush=True)
@@ -366,7 +373,21 @@ class PriceLogger:
 
     def _append(self, rows, what) -> bool:
         ok, _ = self._call(lambda: self._ws.append_rows(rows, value_input_option="RAW"), what)
+        if not ok:
+            self._report_loss(what, f"{len(rows)} price_log row(s) are not in the Logger.")
         return ok
+
+    def _report_loss(self, what, lost):
+        if self._on_failure is None:
+            return
+        e = self._last_error
+        err = f"{type(e).__name__}: {e}" if e else "gave up"
+        try:
+            self._on_failure(f":warning: *Logger write lost* (price_log) — {what}, "
+                             f"after the quota retries. {err[:300]}\n{lost}")
+        except Exception as exc:
+            print(f">>> PRICE_LOG: loss alert failed: {type(exc).__name__}: {exc}",
+                  flush=True)
 
     def log_listing(self, record: dict, replace: bool = False) -> bool:
         """A scanned lot's listing rows.  True when they landed.
@@ -393,9 +414,12 @@ class PriceLogger:
             if old:
                 cells = [{"range": f"{col('superseded')}{r}", "values": [["yes"]]}
                          for r in old]
-                self._call(
-                    lambda: self._ws.batch_update(cells, value_input_option="RAW"),
-                    f"superseding {len(cells)} earlier listing row(s) of run {run_id}")
+                what = f"superseding {len(cells)} earlier listing row(s) of run {run_id}"
+                ok, _ = self._call(
+                    lambda: self._ws.batch_update(cells, value_input_option="RAW"), what)
+                if not ok:
+                    self._report_loss(what, "Mark these price_log rows superseded = yes "
+                                      f"by hand: {', '.join(str(r) for r in old)}.")
             return True
 
     def log_sale(self, rows, ebay_id) -> dict:
@@ -436,10 +460,13 @@ class PriceLogger:
             if live:
                 cells = [{"range": f"{col('superseded')}{r}", "values": [["yes"]]}
                          for r, _ in live]
+                what = f"superseding {len(cells)} earlier row(s) for {ebay_id}"
                 ok, _ = self._call(
-                    lambda: self._ws.batch_update(cells, value_input_option="RAW"),
-                    f"superseding {len(cells)} earlier row(s) for {ebay_id}")
+                    lambda: self._ws.batch_update(cells, value_input_option="RAW"), what)
                 replaced = len(cells) if ok else 0
+                if not ok:
+                    self._report_loss(what, "Mark these price_log rows superseded = yes "
+                                      f"by hand: {', '.join(str(r) for r, _ in live)}.")
             out = {"status": "written", "replaced": replaced}
             if fill:
                 out["shipping_from_listing"] = listed_ship
