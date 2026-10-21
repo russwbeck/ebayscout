@@ -386,6 +386,36 @@ def test_a_disabled_logger_does_nothing():
     assert lg.log_sale(_sale("scout_sold"), "1")["status"] == "failed"
 
 
+def test_a_lost_listing_write_is_reported():
+    told = []
+    ws = _Sheet(fail=[ValueError("tab deleted")])
+    assert not pl.PriceLogger(ws, on_failure=told.append).log_listing(_scan_record())
+    assert len(told) == 1 and "tab deleted" in told[0] and "price_log row(s)" in told[0]
+
+
+def test_a_lost_supersede_names_the_rows_to_mark_by_hand():
+    told = []
+    ws = _Sheet(_sale("scout_sold"), fail=[None, None, ValueError("update refused")])
+    res = pl.PriceLogger(ws, on_failure=told.append).log_sale(
+        _sale("scout_sold", price=41.0), "256123456789")
+    assert res == {"status": "written", "replaced": 0}
+    assert len(told) == 1 and "superseded = yes" in told[0] and ": 2." in told[0]
+
+
+def test_a_landed_write_and_a_failed_lookup_are_not_reported():
+    told = []
+    ws = _Sheet(fail=[ValueError("read failed")])
+    pl.PriceLogger(ws, on_failure=told.append).log_sale(_sale("scout_sold"), "256123456789")
+    assert told == [], "a failed read lost nothing and must not alert"
+
+
+def test_a_failing_price_alert_never_breaks_the_bot():
+    def boom(_text):
+        raise RuntimeError("slack down")
+    ws = _Sheet(fail=[ValueError("tab deleted")])
+    assert not pl.PriceLogger(ws, on_failure=boom).log_listing(_scan_record())
+
+
 # --- the averages --------------------------------------------------------------------
 
 def _letter(name):

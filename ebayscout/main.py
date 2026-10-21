@@ -3287,8 +3287,13 @@ def startup() -> None:
         logger_id     = _get_secret("LOGGER_ID")
         gclient       = sheets_client.get_gspread_client(sheets_json)
         match_ws, confirm_ws = mlog.open_log_sheets(gclient, logger_id)
-        match_logger  = mlog.SheetLogger(match_ws, confirm_ws, service="ebayscout")
-        price_logger  = price_log.PriceLogger(price_log.open_price_sheet(gclient, logger_id))
+        # A Logger row lost for good after the quota retries is posted to the
+        # scout channel, the one place the operator reads (match_logging.py).
+        _loss_alert = lambda text: notifier.send_text(_slack_token, _channel_id, text)
+        match_logger  = mlog.SheetLogger(match_ws, confirm_ws, service="ebayscout",
+                                         on_failure=_loss_alert)
+        price_logger  = price_log.PriceLogger(price_log.open_price_sheet(gclient, logger_id),
+                                              on_failure=_loss_alert)
     except Exception as exc:
         print(f"!!! STARTUP: match-logging init failed (logging disabled): {exc}", flush=True)
         match_logger = mlog.SheetLogger(None, None, service="ebayscout")
