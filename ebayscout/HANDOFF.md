@@ -61,7 +61,9 @@ worked), `/health` returned 200, and the 9 AM scan handed 3/3 lots to
 buttonmatcher. That is the YOLO week, so this service's own CLIP path has not
 run on the base yet; it loads the same weights file buttonmatcher does. The
 `buttons` repository was deleted the same day (2.3 GiB, three images from
-2026-10-16), so rolling back to an earlier revision no longer works.
+2026-10-16), so rolling back to an earlier revision no longer works. Artifact
+Registry for both services is now the one `gcr.io` repository: 1.1 GiB on
+2026-10-20, against 7.8 GB in two repositories the week before.
 
 ---
 
