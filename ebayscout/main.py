@@ -3289,7 +3289,8 @@ def startup() -> None:
         match_ws, confirm_ws = mlog.open_log_sheets(gclient, logger_id)
         # A Logger row lost for good after the quota retries is posted to the
         # scout channel, the one place the operator reads (match_logging.py).
-        _loss_alert = lambda text: notifier.send_text(_slack_token, _channel_id, text)
+        _loss_alert = lambda text, attachment=None: notifier.send_logger_loss(
+            _slack_token, _channel_id, text, attachment)
         match_logger  = mlog.SheetLogger(match_ws, confirm_ws, service="ebayscout",
                                          on_failure=_loss_alert)
         price_logger  = price_log.PriceLogger(price_log.open_price_sheet(gclient, logger_id),

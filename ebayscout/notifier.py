@@ -352,6 +352,35 @@ def send_warning(slack_token: str, channel: str, message: str) -> None:
     _post_message(slack_token, channel, f"⚠️ *ebayscout warning*: {message}")
 
 
+def send_file(slack_token: str, channel: str, text: str, filename: str,
+              content: str) -> bool:
+    """Upload ``content`` as a file to the scout channel with ``text`` as its
+    comment.  True when it went up; the caller decides what to do otherwise."""
+    client = WebClient(token=slack_token)
+    try:
+        client.files_upload_v2(channel=channel, content=content, filename=filename,
+                               title=filename, initial_comment=text)
+        return True
+    except Exception as exc:
+        print(f"!!! SLACK: file upload to {channel} failed: {exc}", flush=True)
+        return False
+
+
+def send_logger_loss(slack_token: str, channel: str, text: str,
+                     attachment=None) -> None:
+    """A Logger row lost for good after the quota retries (match_logging /
+    price_log ``on_failure``).  The lost rows go up as a file, because a
+    confirm row is ~5,000 characters and Slack splits a message that long.
+    If the upload fails (the bot token may lack files:write) the rows are
+    posted as text instead: split is better than lost."""
+    if attachment:
+        filename, content = attachment
+        if send_file(slack_token, channel, text, filename, content):
+            return
+        text += f"\n```{content}```"
+    _post_message(slack_token, channel, text)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

@@ -1153,14 +1153,17 @@ class SheetLogger:
 
     A write the quota rejects is retried rather than dropped — see ``_append``.
 
-    ``on_failure`` is called with one ready-to-post line when a write is lost
-    for good, after the retries.  Until 2026-10-20 that loss was a log line
-    only: 26 confirm_log rows went missing over six weeks of quota events and
-    were found by joining the inventory sheet's Bot Writes tab against the log
-    by hand.  The inventory write already told the operator when it failed;
-    the Logger now does too.  A lost confirm row is carried in full so it can be
-    pasted back; a lost match batch is named, since its rows are too wide for a
-    message.  The callback must not raise into the bot, and is not trusted to.
+    ``on_failure(text, attachment)`` is called when a write is lost for good,
+    after the retries.  Until 2026-10-20 that loss was a log line only: 26
+    confirm_log rows went missing over six weeks of quota events and were found
+    by joining the inventory sheet's Bot Writes tab against the log by hand.
+    The inventory write already told the operator when it failed; the Logger
+    now does too.  ``text`` is a short line to post; ``attachment`` is
+    ``(filename, content)``: every lost row, exactly as it would have been
+    written, one JSON list per line, so nothing is lost.  (The first version put
+    a confirm row in the message itself; at ~5,000 characters Slack split it
+    across two messages on its first live use, 2026-10-21.)  The callback must
+    not raise into the bot, and is not trusted to.
     """
 
     def __init__(self, match_ws, confirm_ws, *, service, on_failure=None):
@@ -1193,7 +1196,7 @@ class SheetLogger:
                   f"startup).", flush=True)
             self._warned_disabled = True
 
-    def _append(self, write, what, lost=None):
+    def _append(self, write, what, lost=None, rows=None, tab=None):
         """Run one worksheet append, retrying only what the quota rejected.
 
         A 429 means "not now", not "no", and this module's whole job is to be
@@ -1207,8 +1210,9 @@ class SheetLogger:
         record of them is not, and a logging outage must not become a broken bot.
         Returns True when the write landed.
 
-        ``lost`` is what ``on_failure`` is told was lost.  It is reported after
-        the lock is released, so a slow alert never holds up the next write.
+        ``lost`` is the line ``on_failure`` is told; ``rows`` the rows that did
+        not land, attached in full, named for ``tab``.  It is reported after the
+        lock is released, so a slow alert never holds up the next write.
         """
         error = None
         with self._write_lock:
@@ -1226,10 +1230,10 @@ class SheetLogger:
                     print(f">>> MATCH_LOG: {what} rate-limited — retrying in "
                           f"{delay:g}s", flush=True)
                     time.sleep(delay)
-        self._report_loss(what, error, lost)
+        self._report_loss(what, error, lost, rows, tab)
         return False
 
-    def _report_loss(self, what, error, lost):
+    def _report_loss(self, what, error, lost, rows=None, tab=None):
         if self._on_failure is None:
             return
         err = f"{type(error).__name__}: {error}" if error else "gave up"
@@ -1237,8 +1241,9 @@ class SheetLogger:
                 f"after the quota retries. {err[:300]}")
         if lost:
             text += "\n" + lost
+        attachment = lost_rows_file(tab, what, rows) if rows else None
         try:
-            self._on_failure(text)
+            self._on_failure(text, attachment)
         except Exception as e:
             print(f">>> MATCH_LOG: loss alert failed: {type(e).__name__}: {e}",
                   flush=True)
@@ -1254,7 +1259,8 @@ class SheetLogger:
         if self._append(lambda: self._match_ws.append_rows(
                 rows, value_input_option="RAW"), f"match write for job {job_id}",
                 lost=f"{len(rows)} match_log row(s) for job `{job_id}` are not "
-                     f"in the Logger."):
+                     f"in the Logger; they are attached.",
+                rows=rows, tab="match_log"):
             if not self._logged_first_write:
                 print(f">>> MATCH_LOG: ✅ first match write OK "
                       f"({len(rows)} row(s), job {job_id}).", flush=True)
@@ -1267,8 +1273,17 @@ class SheetLogger:
         row = flatten_confirm_record(record)
         self._append(lambda: self._confirm_ws.append_row(
             row, value_input_option="RAW"), f"confirm write for {check_id}",
-            lost=("This confirm_log row is not in the Logger; append it as is:\n"
-                  f"```{json.dumps(row, ensure_ascii=False)}```"))
+            lost="This confirm_log row is not in the Logger; it is attached.",
+            rows=[row], tab="confirm_log")
+
+
+def lost_rows_file(tab, what, rows):
+    """``(filename, content)`` for rows a Logger write lost: one JSON list per
+    line, each exactly the row the write would have appended, so a row can be
+    put back without retyping a cell."""
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", what).strip("-")[:80]
+    content = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n"
+    return f"{tab or 'logger'}_lost_{stem}.json", content
 
 
 def _extract_spreadsheet_key(raw):
