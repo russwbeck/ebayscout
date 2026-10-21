@@ -55,8 +55,15 @@ cannot download them): the build passes and keeps the gunicorn `CMD`; with
 `urllib3==2.7.0` it fails with the message. Against real installs, the check
 also catches a different CLIP commit and a missing package.
 
-**Not run:** the real build on `button-base:20261018`, the trigger, the deploy
-and the service.
+**Outcome (2026-10-18):** merged as #130 (`cf4cc90`). The trigger built and
+deployed in about 2½ minutes (the pin check passed and the push to `gcr.io`
+worked), `/health` returned 200, and the 9 AM scan handed 3/3 lots to
+buttonmatcher. That is the YOLO week, so this service's own CLIP path has not
+run on the base yet; it loads the same weights file buttonmatcher does. The
+`buttons` repository was deleted the same day (2.3 GiB, three images from
+2026-10-16), so rolling back to an earlier revision no longer works. Artifact
+Registry for both services is now the one `gcr.io` repository: 1.1 GiB on
+2026-10-20, against 7.8 GB in two repositories the week before.
 
 ---
 
