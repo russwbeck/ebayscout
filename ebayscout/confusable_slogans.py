@@ -90,6 +90,15 @@ CONFUSABLE_GROUPS = [
     # could have taken it. Different years, one letter apart, the same
     # Central Counties design: operator calls them functionally slogan twins.
     ["Temple Hoo?", "Temple Whoo?"],
+    # 2026-10-22, operator: blood-drive buttons with the same printed words
+    # in two designs, both filed under the unknown year (1900), told apart by
+    # a design tag the button does not print.  Not an observed mis-fire but a
+    # certain one: the per-year fold keeps one of them, on CLIP text alone,
+    # and OCR reads the two as one slogan (ocr_reader.printed).
+    ["We're Out for Blood! (scarf)", "We're Out for Blood! (banner)"],
+    ["I Bleed Blue & White (black)", "I Bleed Blue & White (white)"],
+    ["We're in a Fight for Life. (blood drop)",
+     "We're in a Fight for Life. (Pitt-Penn State)"],
 ]
 
 
