@@ -746,6 +746,7 @@ def build_confirm_record(
     edition_shadow=None,
     rank_centered=None,
     auto_rule=None,
+    rules_shadow=None,
 ):
     """One record per user confirmation, written when the human picks an answer.
 
@@ -776,6 +777,13 @@ def build_confirm_record(
     "Basketball", "sims": {...}}. Measurement only (never influenced the
     ranking/auto-confirm); lets confirm_log compare the human's pick to the
     shadow's pick. None for every non-twin confirmation.
+
+    ``rules_shadow`` (appended column, 2026-10-22): buttonmatcher's
+    ``photo_rules.evaluate`` on the crop -- what the photo-match rules
+    (photo_lead, photo_ocr, twin_year) would have chosen -- plus ``gate``, the
+    auto gate's decision and the guards that refused.  Logged beside every
+    answer so a week of lots grades the rules from the Logger alone.  {} when
+    the service does not compute them (ebayscout).
 
     ``auto_rule`` (appended column, 2026-10-08): on the audit sample's rows
     (``audit_shadow`` / ``audit_hit`` / ``audit_miss``), the auto source the
@@ -822,6 +830,7 @@ def build_confirm_record(
         # per-slogan baseline-centered shadow rank (see CONFIRM_HEADER note)
         "rank_centered": rank_centered,
         "auto_rule": auto_rule,
+        "rules_shadow": rules_shadow or {},
     }
 
 
@@ -980,6 +989,9 @@ CONFIRM_HEADER = [
     # crop would have confirmed under (auto_ocr, auto_sort, gemini_auto, ...),
     # so the audit grades each rule separately.  Blank elsewhere. ---
     "auto_rule",
+    # --- appended 2026-10-22: buttonmatcher's photo-match rules in shadow
+    # (photo_rules.py) and the auto gate's decision, as JSON.  {} elsewhere. ---
+    "rules_shadow_json",
 ]
 
 
@@ -1139,6 +1151,7 @@ def flatten_confirm_record(rec):
         json.dumps(rec.get("edition_shadow") or {}, default=str),
         _cell(rec.get("rank_centered")),
         _cell(rec.get("auto_rule")),
+        json.dumps(rec.get("rules_shadow") or {}, default=str),
     ]
 
 

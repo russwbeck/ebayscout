@@ -1100,11 +1100,13 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     # the live board is untouched by the retirement
     assert "Hoo's Sorry Now" in flat[ml.MATCH_HEADER.index("restricted_top_json")]
 
-    # confirm_log is 24 columns: rank_centered, blank when off, then the
-    # audit sample's auto_rule (2026-10-08)
-    assert len(ml.CONFIRM_HEADER) == 24, len(ml.CONFIRM_HEADER)
-    assert ml.CONFIRM_HEADER.index("rank_centered") == len(ml.CONFIRM_HEADER) - 2
-    assert ml.CONFIRM_HEADER[-1] == "auto_rule"
+    # confirm_log is 25 columns: rank_centered, blank when off, then the
+    # audit sample's auto_rule (2026-10-08), then buttonmatcher's photo-rule
+    # shadow (2026-10-22)
+    assert len(ml.CONFIRM_HEADER) == 25, len(ml.CONFIRM_HEADER)
+    assert ml.CONFIRM_HEADER.index("rank_centered") == len(ml.CONFIRM_HEADER) - 3
+    assert ml.CONFIRM_HEADER[-2] == "auto_rule"
+    assert ml.CONFIRM_HEADER[-1] == "rules_shadow_json"
     crec = ml.build_confirm_record(
         service="buttonmatcher", command="/sort", job_id="j", thread_ts="t",
         crop_num=1, check_id="", user_id="u", chosen_year="1995",
@@ -1117,7 +1119,25 @@ def test_retired_shadows_keep_their_columns_and_write_empty():
     assert len(cflat) == len(ml.CONFIRM_HEADER)
     assert cflat[ml.CONFIRM_HEADER.index("rank_centered")] == ""
     assert cflat[ml.CONFIRM_HEADER.index("rank_restricted")] == 1
-    assert cflat[-1] == ""                       # auto_rule: not an audit row
+    assert cflat[-2] == ""                       # auto_rule: not an audit row
+    assert cflat[-1] == "{}"                     # rules_shadow: none computed
+
+
+def test_the_photo_rule_shadow_is_the_last_confirm_column():
+    """Appended 2026-10-22: buttonmatcher's photo_rules.evaluate on the crop
+    plus the auto gate's decision, as JSON.  ebayscout passes nothing: {}."""
+    shadow = {"photo_lead": True, "leader": ["2018", "You Ain't It", 0.949],
+              "gate": {"rule": "ocr_agree", "outcome": "refuse",
+                       "blocked": ["lookalike"]}}
+    rec = ml.build_confirm_record(
+        service="buttonmatcher", command="/inventory", job_id="j", thread_ts="t",
+        crop_num=12, check_id="k", user_id="u", chosen_year="2018",
+        chosen_phrase="You Ain't It", chosen_type="Football", source="pick",
+        rank_restricted=3, rank_shadow=3, shadow_leaderboard_size=40,
+        rules_shadow=shadow)
+    row = ml.flatten_confirm_record(rec)
+    assert len(row) == len(ml.CONFIRM_HEADER)
+    assert json.loads(row[ml.CONFIRM_HEADER.index("rules_shadow_json")]) == shadow
 
 
 def test_audit_rows_name_the_rule_they_held():
