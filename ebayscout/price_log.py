@@ -61,6 +61,7 @@ The formula tab is written once, when it is created; edits to it survive.
 from __future__ import annotations
 
 import datetime
+import json
 import re
 import threading
 import time
@@ -338,9 +339,10 @@ class PriceLogger:
     (sheet_retry) and never raises: a price row is a record of the work, not a
     reason to fail it.
 
-    ``on_failure`` is called with one ready-to-post line when a write is lost
-    for good -- the same alert as match_logging.SheetLogger, for the same
-    reason: a row the quota dropped was otherwise only a log line.
+    ``on_failure(text, attachment)`` is called when a write is lost for good --
+    the same alert as match_logging.SheetLogger, for the same reason: a row the
+    quota dropped was otherwise only a log line.  A lost append attaches its
+    rows, one JSON list per line; a lost supersede names the rows to mark.
     """
 
     def __init__(self, ws, *, sleep=time.sleep, on_failure=None):
@@ -374,17 +376,25 @@ class PriceLogger:
     def _append(self, rows, what) -> bool:
         ok, _ = self._call(lambda: self._ws.append_rows(rows, value_input_option="RAW"), what)
         if not ok:
-            self._report_loss(what, f"{len(rows)} price_log row(s) are not in the Logger.")
+            self._report_loss(what, f"{len(rows)} price_log row(s) are not in the "
+                                    f"Logger; they are attached.", rows)
         return ok
 
-    def _report_loss(self, what, lost):
+    def _report_loss(self, what, lost, rows=None):
         if self._on_failure is None:
             return
         e = self._last_error
         err = f"{type(e).__name__}: {e}" if e else "gave up"
+        attachment = None
+        if rows:
+            stem = re.sub(r"[^A-Za-z0-9._-]+", "-", what).strip("-")[:80]
+            attachment = (f"price_log_lost_{stem}.json",
+                          "\n".join(json.dumps(list(r), ensure_ascii=False)
+                                    for r in rows) + "\n")
         try:
             self._on_failure(f":warning: *Logger write lost* (price_log) — {what}, "
-                             f"after the quota retries. {err[:300]}\n{lost}")
+                             f"after the quota retries. {err[:300]}\n{lost}",
+                             attachment)
         except Exception as exc:
             print(f">>> PRICE_LOG: loss alert failed: {type(exc).__name__}: {exc}",
                   flush=True)

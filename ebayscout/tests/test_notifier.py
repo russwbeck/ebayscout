@@ -309,3 +309,35 @@ class TestAlertsCarryTheWatcherRunId:
                           dict(FAKE_LISTING, lot_file="ebayscout__abc.png", run_id=None),
                           needed_buttons=FAKE_MATCHES, asking_price=5.0, lot_value=7.5)
         assert text.endswith("`ebayscout__abc.png`"), text
+
+
+# --- Logger loss alert (2026-10-21) -------------------------------------------
+
+def test_a_logger_loss_uploads_the_rows_as_one_file():
+    mock_client = MagicMock()
+    with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+        notifier.send_logger_loss("tok", "C1", ":warning: lost",
+                                  ("confirm_log_lost_k.json", '["a", 1]\n'))
+    kw = mock_client.files_upload_v2.call_args.kwargs
+    assert kw["content"] == '["a", 1]\n' and kw["filename"] == "confirm_log_lost_k.json"
+    assert kw["initial_comment"] == ":warning: lost" and kw["channel"] == "C1"
+    mock_client.chat_postMessage.assert_not_called()
+
+
+def test_a_failed_upload_posts_the_rows_as_text_instead():
+    """The bot token may lack files:write; split is better than lost."""
+    mock_client = MagicMock()
+    mock_client.files_upload_v2.side_effect = RuntimeError("missing_scope")
+    with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+        notifier.send_logger_loss("tok", "C1", ":warning: lost",
+                                  ("confirm_log_lost_k.json", '["a", 1]\n'))
+    text = mock_client.chat_postMessage.call_args.kwargs["text"]
+    assert ":warning: lost" in text and '["a", 1]' in text
+
+
+def test_a_loss_without_rows_is_a_plain_post():
+    mock_client = MagicMock()
+    with patch("ebayscout.notifier.WebClient", return_value=mock_client):
+        notifier.send_logger_loss("tok", "C1", ":warning: supersede lost")
+    mock_client.files_upload_v2.assert_not_called()
+    assert mock_client.chat_postMessage.call_args.kwargs["text"] == ":warning: supersede lost"

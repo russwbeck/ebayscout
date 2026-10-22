@@ -643,34 +643,46 @@ def test_the_retries_are_serialized():
 # A write the retries gave up on was a log line only: 26 confirm_log rows went
 # missing over six weeks and were found by hand.  It is now reported.
 
-def test_a_lost_confirm_row_is_reported_in_full():
+def test_a_lost_confirm_row_is_attached_in_full():
     orig = _no_sleep()
     try:
         told = []
         ws = _Flaky(99, Exception("[429] Quota exceeded"))
-        logger = ml.SheetLogger(_FakeWS(), ws, service="b", on_failure=told.append)
+        logger = ml.SheetLogger(_FakeWS(), ws, service="b",
+                                on_failure=lambda t, a: told.append((t, a)))
         rec = ml.build_confirm_record(
             service="b", command="/inventory", job_id="j", thread_ts="1.5",
             crop_num=25, check_id="k", user_id="", chosen_year=1987,
             chosen_phrase="No 'Cheers' Here", chosen_type="Football",
             source="auto_sort", rank_restricted=1, rank_shadow=1,
             shadow_leaderboard_size=50)
-        logger.log_confirmation("k", rec)
+        logger.log_confirmation("auto:1.5:25", rec)
         assert len(told) == 1, "a lost confirm row was not reported"
-        assert "confirm write for k" in told[0] and "429" in told[0]
-        row = json.loads(told[0].split("```")[1])
-        assert row == ml.flatten_confirm_record(rec), (
-            "the alert must carry the row exactly as it would have been written")
+        text, (filename, content) = told[0]
+        assert "confirm write for auto:1.5:25" in text and "429" in text
+        assert filename.startswith("confirm_log_lost_") and filename.endswith(".json")
+        assert "/" not in filename and ":" not in filename
+        assert [json.loads(l) for l in content.splitlines()] == [
+            ml.flatten_confirm_record(rec)], (
+            "the file must carry the row exactly as it would have been written")
+        assert len(text) < 1000, "the message itself must stay one short post"
     finally:
         ml.time.sleep = orig
 
 
-def test_a_lost_match_batch_is_reported_by_job():
+def test_a_lost_match_batch_is_attached_in_full():
     told = []
     ws = _Flaky(99, RuntimeError("Worksheet not found"))
-    logger = ml.SheetLogger(ws, _FakeWS(), service="b", on_failure=told.append)
-    logger.log_image_crops("job-9", [{"detection": {}}, {"detection": {}}])
-    assert len(told) == 1 and "job-9" in told[0] and "2 match_log row(s)" in told[0]
+    logger = ml.SheetLogger(ws, _FakeWS(), service="b",
+                            on_failure=lambda t, a: told.append((t, a)))
+    recs = [{"detection": {}, "crop_num": 1}, {"detection": {}, "crop_num": 2}]
+    logger.log_image_crops("job-9", recs)
+    assert len(told) == 1
+    text, (filename, content) = told[0]
+    assert "job-9" in text and "2 match_log row(s)" in text
+    assert filename.startswith("match_log_lost_")
+    assert [json.loads(l) for l in content.splitlines()] == [
+        ml.flatten_match_record(r) for r in recs]
 
 
 def test_a_write_that_lands_after_a_retry_is_not_reported():
@@ -678,7 +690,8 @@ def test_a_write_that_lands_after_a_retry_is_not_reported():
     try:
         told = []
         ws = _Flaky(1, Exception("[429] RESOURCE_EXHAUSTED"))
-        logger = ml.SheetLogger(_FakeWS(), ws, service="b", on_failure=told.append)
+        logger = ml.SheetLogger(_FakeWS(), ws, service="b",
+                                on_failure=lambda t, a: told.append((t, a)))
         logger.log_confirmation("k", {"ts": "x"})
         assert len(ws.rows) == 1 and told == []
     finally:
@@ -686,7 +699,7 @@ def test_a_write_that_lands_after_a_retry_is_not_reported():
 
 
 def test_a_failing_alert_never_breaks_the_bot():
-    def boom(_text):
+    def boom(_text, _attachment):
         raise RuntimeError("slack down")
     ws = _Flaky(99, RuntimeError("Worksheet not found"))
     logger = ml.SheetLogger(ws, ws, service="b", on_failure=boom)
@@ -699,7 +712,7 @@ def test_the_alert_is_sent_outside_the_write_lock():
     held = []
     ws = _Flaky(99, RuntimeError("Worksheet not found"))
     logger = ml.SheetLogger(ws, _FakeWS(), service="b",
-                            on_failure=lambda _t: held.append(logger._write_lock.locked()))
+                            on_failure=lambda _t, _a: held.append(logger._write_lock.locked()))
     logger.log_image_crops("j", [{"detection": {}}])
     assert held == [False]
 
