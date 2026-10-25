@@ -1,7 +1,11 @@
 """The YOLO week (operator, 2026-10-15): eBay lots through buttonmatcher's full
 Gemini-free process instead of the Gemini Gem.
 
-With ``EBAYSCOUT_YOLO_TEST=1`` the daily feed and ``/crawl`` stop uploading a
+On by default since 2026-10-25, when the operator retired the Gemini pipeline
+and turned the watchers off: nothing reads a photo uploaded for the Gem any
+more, so ``EBAYSCOUT_YOLO_TEST=0`` would feed lots into a dead end.
+
+With the switch on, the daily feed and ``/crawl`` stop uploading a
 lot's photo for the Gem.  Each lot is handed to buttonmatcher instead
 (``POST <BUTTONMATCHER_URL>/internal/ebay_scout_lot``, authenticated with the
 ``PIPELINE_SHARED_SECRET`` the watcher already uses with both services), which
@@ -24,9 +28,10 @@ DEFAULT_BUTTONMATCHER_URL = "https://button-inventory-404960106109.us-east1.run.
 
 
 def enabled() -> bool:
-    """On with EBAYSCOUT_YOLO_TEST=1 (a config-only Cloud Run update)."""
-    return os.environ.get("EBAYSCOUT_YOLO_TEST", "0").strip().lower() in (
-        "1", "true", "yes", "on")
+    """On unless EBAYSCOUT_YOLO_TEST is 0/false/no/off (default on since
+    2026-10-25: the Gemini pipeline the other branch feeds is retired)."""
+    return os.environ.get("EBAYSCOUT_YOLO_TEST", "1").strip().lower() not in (
+        "0", "false", "no", "off")
 
 
 def buttonmatcher_url() -> str:

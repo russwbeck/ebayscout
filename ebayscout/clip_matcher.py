@@ -27,6 +27,7 @@ import clip
 from PIL import Image
 from google.cloud import storage
 
+from . import bank_cache
 from . import config
 from . import match_logging
 from . import scoring
@@ -93,6 +94,31 @@ def game_year_by_key():
     resolver treats as season-year-only."""
     return _game_year_by_key
 
+
+def _read_bank(bucket, pt_name: str, tmpdir: str) -> dict:
+    """One bank buttonmatcher writes (vectors.pt, text_features.pt): its .npz
+    twin when that matches the .pt in the bucket, read without unpickling;
+    otherwise the .pt, as before (bank_cache.py, 2026-10-25).  ebayscout
+    writes no bank, so it writes no twin: buttonmatcher's next save or cold
+    start does."""
+    pt_blob = bucket.get_blob(pt_name)
+    twin = bucket.get_blob(bank_cache.npz_name(pt_name))
+    if (pt_blob is not None and twin is not None
+            and bank_cache.is_twin(twin.metadata, pt_blob.generation)):
+        try:
+            fields = bank_cache.as_fields(bank_cache.unpack(twin.download_as_bytes()))
+            print(f">>> CLIP: {twin.name} read for {pt_name} (no unpickling).",
+                  flush=True)
+            return {k: (torch.from_numpy(v.copy()) if k in bank_cache.TENSOR_KEYS else v)
+                    for k, v in fields.items()}
+        except Exception as exc:
+            print(f"!!! CLIP: {twin.name} unreadable ({exc}); reading {pt_name}",
+                  flush=True)
+    path = os.path.join(tmpdir, pt_name)
+    print(f">>> CLIP: Downloading {pt_name}...", flush=True)
+    bucket.blob(pt_name).download_to_filename(path)
+    return torch.load(path, weights_only=True, map_location="cpu")
+
 # tokenize / STOPWORDS / rarity_weight / confidence_emoji / is_confirmed are
 # imported from scoring.py (pure-python, unit-testable). init() populates the
 # scoring.word_freq table once the slogan set is loaded.
@@ -122,14 +148,12 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
         bucket = client.bucket(bucket_name)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # weights_only=True (2026-09-26): False unpickles, so a tampered
-            # cache file in the bucket would run code here.  buttonmatcher has
-            # always loaded these same two files this way.
+            # weights_only=True (2026-09-26) was meant to stop a tampered cache
+            # file in the bucket running code here; on the pinned torch it does
+            # not, so each bank is read from its .npz twin when there is a
+            # current one (_read_bank, bank_cache.py).
             # --- text_features.pt ---
-            text_path = os.path.join(tmpdir, "text_features.pt")
-            print(">>> CLIP: Downloading text_features.pt...", flush=True)
-            bucket.blob("text_features.pt").download_to_filename(text_path)
-            cached = torch.load(text_path, weights_only=True, map_location="cpu")
+            cached = _read_bank(bucket, "text_features.pt", tmpdir)
             _text_features = cached["features"]
             _text_phrases  = list(cached["phrases"])
             _text_years    = [int(y) for y in cached["years"]]
@@ -137,10 +161,7 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             print(f">>> CLIP: Text embeddings loaded — {_text_features.shape[0]} entries.", flush=True)
 
             # --- vectors.pt ---
-            vec_path = os.path.join(tmpdir, "vectors.pt")
-            print(">>> CLIP: Downloading vectors.pt...", flush=True)
-            bucket.blob("vectors.pt").download_to_filename(vec_path)
-            cached_vecs = torch.load(vec_path, weights_only=True, map_location="cpu")
+            cached_vecs = _read_bank(bucket, "vectors.pt", tmpdir)
             _ref_vectors = cached_vecs["vectors"]
             _ref_labels  = list(cached_vecs["labels"])
             print(f">>> CLIP: Image reference vectors loaded — {len(_ref_labels)} entries.", flush=True)

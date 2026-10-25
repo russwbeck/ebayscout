@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-18)
+# eBay Scout — Session Handoff (latest entry 2026-10-25)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#34) first; this file is
@@ -6,6 +6,30 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-25 — the Gemini pipeline is retired; lots go to buttonmatcher
+
+The operator retired the Gemini pipeline and turned the watchers off. The
+YOLO week's handoff has carried every lot since 2026-10-15 (`#ebay-checker`:
+"handed N/N lot(s) to buttonmatcher, no Gemini" every day), so:
+
+- `yolo_test.enabled()` is on by default; `EBAYSCOUT_YOLO_TEST=0` would only
+  upload photos for a Gem nobody runs.
+- `/pipeline/notify` (it took the watcher's shared secret from the internet),
+  `/internal/pipeline` and `/internal/pipelinetest` are removed.
+  `process_pipeline_lot` and the rest of the Gemini path stay until the code
+  is removed. `PIPELINE_WATCHER_CONTRACT.md` is the record.
+- `clip_matcher.init()` reads buttonmatcher's CLIP banks from their `.npz`
+  twins when they match the `.pt` in the bucket (`bank_cache.py`, shared,
+  phase 1): `torch.load(weights_only=True)` does not stop a planted `.pt`
+  running code on the pinned torch (CVE-2025-32434, CVE-2026-24747). Phase 2
+  (both repos) drops the `.pt`. buttonmatcher's HANDOFF, 2026-10-25.
+
+The operator rotates `PIPELINE_SHARED_SECRET` (the Chromebook held it); this
+service's handoff to buttonmatcher still sends it, so both services take the
+new value.
 
 ---
 

@@ -1,12 +1,14 @@
 # eBay Scout — project background for Claude
 
 Flask + Slack Bolt service on Google Cloud Run (`ebayscout/main.py`). It (1) runs
-a daily scan that feeds the day's unseen eBay lots through the two-worker
-Gemini→GCS pipeline (see `ebayscout/PIPELINE_WATCHER_CONTRACT.md`) and posts
-**deals only** to `#ebay-checker` — a lot containing a **needed** Penn State
-gameday button (`amount_needed > 0`), or one worth more than its asking price —
-and (2) runs `/crawl <N>`, the same pipeline on demand over an on-demand,
-seen-aware eBay search of up to N (≤1000) lots.
+a daily scan that hands the day's unseen eBay lots to buttonmatcher
+(`yolo_test.py`, on by default), which runs each as an automatic Scout lot in
+`#inventory-bot` and values it against the asking price, and (2) runs
+`/crawl <N>`, the same handoff on demand over an on-demand, seen-aware eBay
+search of up to N (≤1000) lots. **The two-worker Gemini→GCS pipeline it used
+to feed (`ebayscout/PIPELINE_WATCHER_CONTRACT.md`) is retired (operator,
+2026-10-25):** the watchers are off and its routes are removed; its code stays
+until a cleanup removes it.
 
 There is **no human review lane here and no manual upload**: `/scout` was
 removed in PR #17 (2026-06-03) and lives in buttonmatcher. Nothing in this
@@ -17,10 +19,9 @@ The legacy CLIP-only scan (`_run_daily_scan` / `_evaluate_listing`) is FROZEN,
 not live: reachable only via `?year_crawl` / `?era_crawl` / `?hunt_ids` and
 `DAILY_PIPELINE_FEED=0`. See DECISIONS.md #33.
 
-**Strategic goal (operator, 2026-10-02): replace Gemini entirely.** The learned
-YOLO detector plus CLIP is to be the whole pipeline, in both services. The
-rollout runs in buttonmatcher first (its `HANDOFF.md`, "2026-10-02 (evening)"),
-and this service follows each step after buttonmatcher has proved it.
+**Strategic goal (operator, 2026-10-02): replace Gemini entirely. Done
+2026-10-25:** the learned YOLO detector plus CLIP and OCR is the whole process,
+in buttonmatcher, and this service hands its lots there.
 
 Full design history and rationale live in `ebayscout/DECISIONS.md` — read it
 before changing deploy/gunicorn/CPU behavior. For the latest status and next
@@ -92,8 +93,12 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
   listing rows, buttonmatcher's `/scout sold` the sales the operator
   enters — keyed by the eBay item number, and one file has
   to define the columns and the one-sale-counts-once rule. It imports
-  `sheet_retry` relative-first, plain-second, like `match_logging.py`. `diff`
-  before and after touching any of them.
+  `sheet_retry` relative-first, plain-second, like `match_logging.py`.
+  `bank_cache.py` joined on 2026-10-25, with its test
+  (`tests/test_bank_cache.py`, either layout): the .npz twins of the CLIP
+  banks (`vectors.pt`, `text_features.pt`) that buttonmatcher writes and
+  `clip_matcher` reads without unpickling. Pure numpy, no imports to wrap.
+  `diff` before and after touching any of them.
 - **`rerank.py` weights are calibrated, not guessed.** `YEAR_WEIGHT` and
   `SID_WEIGHT` must stay equal across both repos —
   `tests/test_buttonmatcher_parity.py` pins them. Raising them needs a fresh

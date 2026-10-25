@@ -26,11 +26,17 @@ def _fn(name):
     return ast.get_source_segment(_MAIN, f) or ""
 
 
-def test_the_switch_is_off_unless_set(monkeypatch):
+def test_the_switch_is_on_unless_turned_off(monkeypatch):
+    """Default on since 2026-10-25: the Gemini pipeline is retired, so a lot
+    not handed to buttonmatcher would go nowhere."""
     monkeypatch.delenv("EBAYSCOUT_YOLO_TEST", raising=False)
-    assert not yt.enabled()
-    monkeypatch.setenv("EBAYSCOUT_YOLO_TEST", "1")
     assert yt.enabled()
+    for on in ("1", "true", "yes", "on", ""):
+        monkeypatch.setenv("EBAYSCOUT_YOLO_TEST", on)
+        assert yt.enabled(), on
+    for off in ("0", "false", "no", "off", " OFF "):
+        monkeypatch.setenv("EBAYSCOUT_YOLO_TEST", off)
+        assert not yt.enabled(), off
 
 
 def test_buttonmatcher_url_default_and_override(monkeypatch):

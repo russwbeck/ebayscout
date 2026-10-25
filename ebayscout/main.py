@@ -1043,117 +1043,12 @@ def _restrict_years_from_ctx(ctx: dict, _cm) -> set[int] | None:
     return None
 
 
-@flask_app.route("/pipeline/notify", methods=["POST"])
-def pipeline_notify():
-    """Trigger entrypoint for the Gemini pipeline. Fast-acks 204, then kicks
-    /internal/pipeline (CPU-hot) in a thread. Auth: X-Pipeline-Secret (watcher)
-    or the internal secret. Body: {"object": "...response.json"} or a
-    Pub/Sub envelope. Ignores non-response objects and objects that belong to
-    another service (no ebayscout prefix and no pending-context blob)."""
-    if not _operator_request_ok(request):
-        return jsonify({"status": "forbidden"}), 403
-
-    body = request.get_json(silent=True) or {}
-    name = body.get("object") or body.get("name")
-    if not name:
-        env = ping.parse_pubsub_envelope(request.get_data())
-        if env:
-            name = env.get("name")
-    if not ping.is_response_json(name):
-        return ("", 204)   # not a .response.json — ignore
-
-    image_name = ping.image_name_for_response(name)
-    key        = _pipeline_key_from_image(image_name)
-    base       = (image_name or "").rsplit("/", 1)[-1]
-    is_ours    = base.startswith(config.PIPELINE_OBJECT_PREFIX)
-    if not is_ours and not (key and seen_items.load_pending_context(key)):
-        return ("", 204)   # belongs to another service — ack-and-drop
-
-    dedup_key = f"{name}#{body.get('generation', '')}"
-    if dedup_key in processed_pipeline_objects:
-        return ("", 204)
-    processed_pipeline_objects.add(dedup_key)
-
-    job_id = uuid.uuid4().hex
-    pending_jobs[job_id] = {"response_name": name, "image_name": image_name, "key": key}
-
-    def _kick():
-        base_url = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
-        headers  = {"X-Internal-Secret": _INTERNAL_SECRET}
-        for attempt in range(4):
-            try:
-                requests.post(f"{base_url}/internal/pipeline",
-                              json={"job_id": job_id}, headers=headers, timeout=3500)
-                return
-            except Exception as exc:
-                print(f"!!! PIPELINE: internal kick failed (try {attempt}): {exc}", flush=True)
-                time.sleep(2 ** attempt)
-
-    threading.Thread(target=_kick, daemon=True).start()
-    return ("", 204)
-
-
-@flask_app.route("/internal/pipeline", methods=["POST"])
-def internal_pipeline():
-    """Run process_pipeline_lot synchronously so Cloud Run keeps CPU allocated
-    for detection + CLIP. Auth: internal secret."""
-    if not _internal_request_ok(request):
-        return jsonify({"status": "forbidden"}), 403
-    body   = request.get_json(silent=True) or {}
-    job_id = body.get("job_id")
-    if not job_id:
-        return jsonify({"status": "no job_id"}), 400
-    if job_id in pipeline_started_jobs:
-        return jsonify({"status": "already started"}), 200
-    pipeline_started_jobs.add(job_id)
-
-    if not vectors_loaded and not _ensure_clip_loaded():
-        return jsonify({"status": "clip init failed"}), 500
-    global buy_rules
-    if not buy_rules:
-        try:
-            buy_rules = sheets_client.load_buy_rules(
-                _get_secret("GOOGLE_SHEETS_JSON"), _get_secret("SPREADSHEET_ID"))
-        except Exception as exc:
-            print(f"!!! PIPELINE: buy_rules reload failed: {exc}", flush=True)
-
-    try:
-        with _keep_cpu_hot():
-            process_pipeline_lot(job_id)
-    except Exception as exc:
-        print(f"!!! PIPELINE: process failed for {job_id}: {exc}", flush=True)
-        traceback.print_exc()
-    return jsonify({"status": "pipeline complete"}), 200
-
-
-@flask_app.route("/internal/pipelinetest", methods=["GET"])
-def internal_pipelinetest():
-    """Run the full pipeline path against an existing GCS object, for live
-    verification without the watcher. ?object=pipeline/output/<f>.png.response.json
-    Auth: internal secret."""
-    if not _internal_request_ok(request):
-        return jsonify({"status": "forbidden"}), 403
-    name = request.args.get("object", "")
-    if not ping.is_response_json(name):
-        return jsonify({"status": "not a .response.json object"}), 400
-    if not vectors_loaded and not _ensure_clip_loaded():
-        return jsonify({"status": "clip init failed"}), 500
-    global buy_rules
-    if not buy_rules:
-        try:
-            buy_rules = sheets_client.load_buy_rules(
-                _get_secret("GOOGLE_SHEETS_JSON"), _get_secret("SPREADSHEET_ID"))
-        except Exception:
-            pass
-    job_id     = uuid.uuid4().hex
-    image_name = ping.image_name_for_response(name)
-    pending_jobs[job_id] = {
-        "response_name": name, "image_name": image_name,
-        "key": _pipeline_key_from_image(image_name),
-    }
-    with _keep_cpu_hot():
-        process_pipeline_lot(job_id)
-    return jsonify({"status": "ok", "job_id": job_id}), 200
+# The Gemini pipeline's routes were removed 2026-10-25 (operator: the
+# pipeline is dead, the watchers are off): /pipeline/notify, which took the
+# watcher's shared secret from the internet, /internal/pipeline and
+# /internal/pipelinetest.  Lots go to buttonmatcher instead (yolo_test.py, on
+# by default); process_pipeline_lot and its helpers stay only until the code
+# itself is removed.
 
 
 def _stage_crop_fullres(src_img, det_crop, ci, det_w, det_h, roi_used):
