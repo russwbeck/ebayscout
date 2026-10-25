@@ -1,21 +1,20 @@
-"""The YOLO week (operator, 2026-10-15): eBay lots through buttonmatcher's full
-Gemini-free process instead of the Gemini Gem.
+"""The handoff to buttonmatcher (named for the YOLO week, operator 2026-10-15,
+when it was a test): every eBay lot goes through buttonmatcher's full
+Gemini-free process.
 
-On by default since 2026-10-25, when the operator retired the Gemini pipeline
-and turned the watchers off: nothing reads a photo uploaded for the Gem any
-more, so ``EBAYSCOUT_YOLO_TEST=0`` would feed lots into a dead end.
-
-With the switch on, the daily feed and ``/crawl`` stop uploading a
-lot's photo for the Gem.  Each lot is handed to buttonmatcher instead
+The daily feed and ``/crawl`` hand each lot to buttonmatcher
 (``POST <BUTTONMATCHER_URL>/internal/ebay_scout_lot``, authenticated with the
-``PIPELINE_SHARED_SECRET`` the watcher already uses with both services), which
-runs it as an automatic Scout lot in #inventory-bot: the photo with the
-listing's title, price and link, the count prompt, then the learned detector,
-CLIP + OCR, the confirm cards and the Scout valuation against the asking price
-(buttonmatcher's ``ebay_handoff.py``).  The lot is marked seen here once
-buttonmatcher has accepted it.
+``PIPELINE_SHARED_SECRET`` both services hold), which runs it as an automatic
+Scout lot in #inventory-bot: the photo with the listing's title, price and
+link, the count prompt, then the learned detector, CLIP + OCR, the confirm
+cards and the Scout valuation against the asking price (buttonmatcher's
+``ebay_handoff.py``).  The lot is marked seen here once buttonmatcher has
+accepted it.
 
-This module is pure (the switch, the payload); main.py does the I/O.
+``EBAYSCOUT_YOLO_TEST`` switched between this and the Gemini pipeline until
+2026-10-25, when the pipeline and the switch were removed.
+
+This module is pure (the payload); main.py does the I/O.
 """
 
 from __future__ import annotations
@@ -25,13 +24,6 @@ import os
 COMMAND = "yolo-test"
 ENDPOINT = "/internal/ebay_scout_lot"
 DEFAULT_BUTTONMATCHER_URL = "https://button-inventory-404960106109.us-east1.run.app"
-
-
-def enabled() -> bool:
-    """On unless EBAYSCOUT_YOLO_TEST is 0/false/no/off (default on since
-    2026-10-25: the Gemini pipeline the other branch feeds is retired)."""
-    return os.environ.get("EBAYSCOUT_YOLO_TEST", "1").strip().lower() not in (
-        "0", "false", "no", "off")
 
 
 def buttonmatcher_url() -> str:

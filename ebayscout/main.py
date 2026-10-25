@@ -15,9 +15,8 @@ import contextlib
 import datetime
 import hmac
 import os
-import time
+import re
 import threading
-import json
 import traceback
 import uuid
 from collections import Counter
@@ -29,17 +28,11 @@ from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 from . import config
-from . import catchup
 from . import sheets_client
 from . import notifier
 from . import etsy_client
 from . import match_logging as mlog
-from . import pipeline_ingest as ping
-from . import gemini_geometry as ggeo
-from . import gemini_resolve as gres
 from . import pipeline_classify
-from . import detect_gate as dgate
-from . import label_harvest as lharv
 from . import yolo_test
 from . import normalize
 from . import price_log
@@ -120,40 +113,24 @@ vectors_loaded: bool = False
 # Fail-open: if it can't open the sheet, logging is silently disabled.
 match_logger: mlog.SheetLogger | None = None
 
-# price_log.PriceLogger: one row per identified button per lot, with the lot's
-# price per button, on the price_log tab of the same workbook. Fail-open.
-price_logger: price_log.PriceLogger | None = None
 
 # Held for the duration of a daily scan / crawl so an overlapping trigger can't
 # start a second concurrent run.
 _scan_lock = threading.Lock()
 
-# Guards the per-result seen read-modify-write in process_pipeline_lot (each lot
-# is marked seen on confirmation, possibly from overlapping result threads).
+# Guards the seen read-modify-write (_mark_item_seen_now, _flush_seen_marks):
+# the handoff marks each lot seen as buttonmatcher accepts it.
 _seen_lock = threading.Lock()
 
-# Guards the per-result scan_log.jsonl append (a GCS read-modify-write). With
-# several Gem workers feeding results concurrently, unguarded appends would clobber
-# each other's lines; this serializes them within the single ebayscout instance.
-_scanlog_lock = threading.Lock()
 
-# --- Gemini → GCS pipeline state (Drive watcher → Gem → GCS → /pipeline/notify) -
-# Shared secret the watcher presents on /pipeline/notify (watcher-direct path).
+# Shared secret for buttonmatcher's /internal/ebay_scout_lot (the handoff) and
+# the operator's manual calls here (_operator_request_ok).  Named for the
+# retired Gemini pipeline's watcher, which presented it first.
 _PIPELINE_SHARED_SECRET = os.environ.get("PIPELINE_SHARED_SECRET", "")
-# Dedup finished pipeline objects by "<name>#<generation>"; an overwrite (re-run
-# of the same image) bumps generation and reprocesses. Resets on restart.
-processed_pipeline_objects: set[str] = set()
-# Idempotency guard for the notify→internal kick (Cloud Run may deliver twice).
-pipeline_started_jobs: set[str] = set()
-# job_id -> transient job dict for the notify→internal hop (rebuilt from the GCS
-# object name + pending-context blob if empty after a cold start).
-pending_jobs: dict[str, dict] = {}
-# normalized slogan -> {years}; built once after CLIP init (see startup()).
-slogan_years: dict[str, set] = {}
 
 # Edition-twin registry (edition_twins.py): normalized slogan -> [entries],
-# built once after CLIP init (see _ensure_clip_loaded()) from the same text DB
-# used to build slogan_years above. Same slogan text reused across multiple
+# built once after CLIP init (see _ensure_clip_loaded()) from the loaded text
+# DB. Same slogan text reused across multiple
 # editions (different year and/or sport) can't be disambiguated by
 # text-agreement auto-confirm alone; _evaluate_listing's auto-resolve gate
 # checks this registry and routes a twin-family winner to human (yellow)
@@ -165,50 +142,6 @@ CONFUSABLE_REGISTRY: dict = {}
 
 def _twin_guard_enabled() -> bool:
     return os.environ.get("BUTTONMATCHER_TWIN_GUARD", "1").strip() not in (
-        "0", "false", "False",
-    )
-
-
-def _carpet_guard_enabled() -> bool:
-    """Carpet guard (2026-09-24, buttonmatcher's 128-crop Mellon lot): a crop
-    cut at a Gemini point that reads as background on the button mask never
-    AUTO-confirms and never takes the DB-direct tier, so a phantom on carpet
-    cannot add value to a deal (gemini_geometry.assoc_off_board).  Kill switch
-    BUTTONMATCHER_CARPET_GUARD=0 (shared convention with buttonmatcher)."""
-    return os.environ.get("BUTTONMATCHER_CARPET_GUARD", "1").strip() not in (
-        "0", "false", "False",
-    )
-
-
-def _anchor_gate_enabled() -> bool:
-    """Physical anchoring gate on crop→slogan associations (2026-07-16
-    shifted-lot incident, buttonmatcher lot "1979 front").  associate_slogans
-    is unlimited nearest-neighbor, so when detection drops circles on blank
-    background and misses real buttons, the orphaned Gemini slogans still pair
-    with SOME crop (measured 2.6–6.6× radius vs ≤0.72× for correct pairs).
-    With this ON each association is stamped ``anchored`` (dist ≤ 0.75×radius,
-    fail-open); gemini_resolve refuses AUTO for unanchored pairs, so
-    classify_crops can't auto-confirm a wrong-neighbor read.  Kill switch
-    BUTTONMATCHER_ANCHOR_GATE=0 (shared convention with buttonmatcher)."""
-    return os.environ.get("BUTTONMATCHER_ANCHOR_GATE", "1").strip() not in (
-        "0", "false", "False",
-    )
-
-
-def _gemini_db_direct_enabled() -> bool:
-    """DB-direct agreement tier for the Gemini pipeline (buttonmatcher parity).
-
-    A crop's CLIP candidate list is YEAR-FOLDED — clip_matcher._score_slogans
-    emits one row per candidate year (that year's text-argmax slogan) over at
-    most 8 dual-signal years — so a slogan shadowed by a sibling of its OWN year
-    is absent from the pool at every depth.  gemini_resolve can only agree with
-    a slogan it can SEE, so those crops stay "manual", never auto-confirm, and
-    never reach reference/_staging.  With this ON, a high-confidence Gemini read
-    of a known DB slogan on an anchored association appends that slogan's DB rows
-    to the crop's pool so Scenario A/B can match it; every downstream gate
-    (conf ≥ 0.70, unflagged, anchored, STAGE_CONF, human /reference review) is
-    unchanged.  Kill switch BUTTONMATCHER_GEMINI_DB_DIRECT=0."""
-    return os.environ.get("BUTTONMATCHER_GEMINI_DB_DIRECT", "1").strip() not in (
         "0", "false", "False",
     )
 
@@ -265,21 +198,12 @@ def _ensure_clip_loaded() -> bool:
             cm.init(config.BUCKET_NAME)
             vectors_loaded = True
             print(">>> WAKE: CLIP loaded.", flush=True)
-            # Build the Gemini resolver's slogan→years multimap from the loaded
-            # text DB (used by process_pipeline_lot's resolve step).
-            try:
-                global slogan_years
-                _phrases, _years, _types = cm.text_db_arrays()
-                slogan_years = gres.build_slogan_year_multimap(
-                    _phrases, _years, normalize.normalize_key)
-                print(f">>> WAKE: slogan_years built — {len(slogan_years)} keys.", flush=True)
-            except Exception as exc:
-                print(f"!!! WAKE: slogan_years build failed: {exc}", flush=True)
-            # Edition-twin registry — same text DB arrays as slogan_years above.
+            # Edition-twin registry, from the loaded text DB.
             # Fail-open: a bad entry or a build exception must never block CLIP
             # wake-up; TWIN_REGISTRY just stays {} and the guard is a no-op.
             try:
                 global TWIN_REGISTRY
+                _phrases, _years, _types = cm.text_db_arrays()
                 _twin_entries = [
                     {"slogan": p, "year": y, "type": t}
                     for p, y, t in zip(_phrases, _years, _types)
@@ -517,10 +441,11 @@ def run_scan():
 
     try:
         if not (year_crawl or era_crawl or hunt_ids) and config.DAILY_PIPELINE_FEED:
-            # DEFAULT daily scan: feed the Gemini pipeline (detect → Gemini → CLIP
-            # via process_pipeline_lot), the promoted default. /crawl is the manual
-            # one-off. The year/era/hunt market-DB variants stay on the CLIP path
-            # below; DAILY_PIPELINE_FEED=0 reverts the default to the CLIP scan.
+            # DEFAULT daily scan: hand the day's unseen lots to buttonmatcher
+            # (_run_crawl; until 2026-10-25 it fed the Gemini pipeline). /crawl
+            # is the manual one-off. The year/era/hunt market-DB variants stay on
+            # the CLIP path below; DAILY_PIPELINE_FEED=0 reverts the default to
+            # the CLIP scan.
             effective_dry = config.DRY_RUN if dry_run_param is None else dry_run_param
             n = limit if limit > 0 else config.DAILY_PIPELINE_N
             remaining = _run_crawl(n, source="daily", ignore_seen=ignore_seen,
@@ -578,11 +503,12 @@ def slack_events():
 @app.command("/crawl")
 def handle_crawl_command(ack, body):
     """on-demand2: search the fixed Citizens/Mellon/Central-Counties button query
-    over up to N lots and feed each lot's primary photo into the Gemini pipeline.
+    over up to N lots and hand each lot to buttonmatcher (yolo_test.py), which
+    runs it as an automatic Scout lot in #inventory-bot.
 
     Seen-aware: lots already run are skipped (except the very first on-demand2
     run, which may include seen lots to reach the cap), and a lot is marked seen
-    only on confirmation — so nothing is lost or double-run.
+    once buttonmatcher has accepted it — so nothing is lost or double-run.
 
     Usage: `/crawl <N>` (e.g. `/crawl 800`), N in 1..CRAWL_MAX_LOTS_CAP. Slack
     requires an ack within 3s, so we validate + ack immediately and kick the
@@ -601,9 +527,11 @@ def handle_crawl_command(ack, body):
     if is_seller:
         _start_seller_pull(ack, seller)
         return
-    is_catchup, catchup_n, catchup_err = catchup.parse_command(raw)
-    if is_catchup:
-        _start_catchup(ack, catchup_n, catchup_err)
+    if re.match(r"(?i)^\s*catch-?up\b", raw):
+        # Retired 2026-10-25 with the Gemini pipeline: it fed still-listed lots
+        # to the Gem so their price rows got written.
+        ack("`/crawl catchup` is retired with the Gemini pipeline, which it fed. "
+            "Lots handed to buttonmatcher write their own price rows.")
         return
     try:
         n = int(raw)
@@ -611,9 +539,8 @@ def handle_crawl_command(ack, body):
         ack(f"Usage: `/crawl <N>` — N = how many lots to search (1–{cap}). "
             f"Example: `/crawl 800`.  Or `/crawl seller <username>` to pull one "
             f"seller's Penn State prices into the Logger sheet, "
-            f"`/crawl purchases` to pull your own last 90 days of eBay purchases "
-            f"into it, or `/crawl catchup` to count still-listed lots that have no "
-            f"price row.")
+            f"or `/crawl purchases` to pull your own last 90 days of eBay "
+            f"purchases into it.")
         return
     if n < 1 or n > cap:
         ack(f"`/crawl {raw}` is out of range — pick N between 1 and {cap}. "
@@ -621,7 +548,8 @@ def handle_crawl_command(ack, body):
         return
 
     ack(f"🔎 Starting `/crawl {n}` — searching up to {n} lots; runs in the "
-        f"background and posts results to the channel as each Gem read returns.")
+        f"background and hands each lot to buttonmatcher, which runs it as a "
+        f"Scout lot in #inventory-bot.")
 
     def _kick():
         base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
@@ -724,46 +652,6 @@ def _start_shipping_backfill(ack) -> None:
             try:
                 notifier.send_warning(_slack_token, _channel_id,
                                       f"/crawl shipping failed to start: {exc}")
-            except Exception:
-                pass
-
-    threading.Thread(target=_kick, daemon=True).start()
-
-
-def _start_catchup(ack, n, error) -> None:
-    """`/crawl catchup [N]`: ack now, run inside /internal/catchup.
-
-    Bare `/crawl catchup` only counts the qualifying lots (catchup.py): Browse
-    calls and one sheet read, nothing fed.  `/crawl catchup <N>` feeds up to N
-    of them, one Gemini read each, so N is capped like /crawl's.
-    """
-    cap = config.CRAWL_MAX_LOTS_CAP
-    if error:
-        ack(error)
-        return
-    if n > cap:
-        ack(f"`/crawl catchup {n}` is out of range — pick N between 1 and {cap}. "
-            f"(Each lot is a paid Gemini read, so the cap guards a typo.)")
-        return
-    if n:
-        ack(f"🧾 Starting `/crawl catchup {n}` — feeding up to {n} still-listed lot(s) "
-            f"that have no price row (one Gemini read each; no alerts, no crop "
-            f"staging). A summary posts here when the feed is done.")
-    else:
-        ack("🧾 Counting still-listed lots that were read before price logging "
-            "began and have no price row (nothing is fed). The count posts here.")
-
-    def _kick():
-        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
-        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
-        try:
-            requests.post(f"{base}/internal/catchup", params={"n": n},
-                          headers=headers, timeout=3500)
-        except Exception as exc:
-            print(f"!!! CATCHUP: internal kick failed: {exc}", flush=True)
-            try:
-                notifier.send_warning(_slack_token, _channel_id,
-                                      f"/crawl catchup failed to start: {exc}")
             except Exception:
                 pass
 
@@ -926,32 +814,6 @@ def _pull_purchases(days, scheduled=False) -> dict:
     return {"status": "ok", "line_items": pulled, "added": added, "total": total}
 
 
-@flask_app.route("/internal/catchup", methods=["POST"])
-def internal_catchup():
-    """Run `/crawl catchup` synchronously in this request (catchup.py, _run_catchup).
-    ?n=0 counts; ?n=N feeds up to N.  Auth: per-startup X-Internal-Secret header.
-    Holds the scan lock, so it never overlaps the daily scan or a /crawl feed."""
-    if not _internal_request_ok(request):
-        return jsonify({"status": "forbidden"}), 403
-    try:
-        n = max(0, min(config.CRAWL_MAX_LOTS_CAP, int(request.args.get("n", 0) or 0)))
-    except ValueError:
-        return jsonify({"status": "bad n"}), 400
-    if not _scan_lock.acquire(blocking=False):
-        try:
-            notifier.send_warning(_slack_token, _channel_id,
-                                  "/crawl catchup: a scan or /crawl is running — try again "
-                                  "when it finishes.")
-        except Exception:
-            pass
-        return jsonify({"status": "already running"}), 409
-    try:
-        result = _run_catchup(n)
-    finally:
-        _scan_lock.release()
-    return jsonify({"status": "catchup complete", "n": n, **result}), 200
-
-
 @flask_app.route("/internal/crawl", methods=["POST"])
 def internal_crawl():
     """Run the on-demand2 N-lot search synchronously in this request so Cloud Run
@@ -988,782 +850,27 @@ def internal_crawl():
 
 
 # ---------------------------------------------------------------------------
-# Gemini → GCS pipeline ingest (Drive watcher → Gem → GCS → here)
+# Seen marks
 # ---------------------------------------------------------------------------
-
-def _gcs_blob_text(name: str, bucket_name: str = config.BUCKET_NAME) -> str:
-    from google.cloud import storage
-    return storage.Client().bucket(bucket_name).blob(name).download_as_text()
-
-
-def _gcs_blob_to_file(name: str, dest: str, bucket_name: str = config.BUCKET_NAME) -> None:
-    from google.cloud import storage
-    storage.Client().bucket(bucket_name).blob(name).download_to_filename(dest)
-
-
-def _delete_pipeline_output(*names: str | None, bucket_name: str = config.BUCKET_NAME) -> None:
-    """Delete the pipeline/output image + .response.json once a lot is fully
-    processed, so the shared GCS bucket doesn't fill up. Best-effort per object;
-    a failure here never affects the result that was already posted."""
-    from google.cloud import storage
-    try:
-        bucket = storage.Client().bucket(bucket_name)
-    except Exception as exc:
-        print(f">>> PIPELINE: output cleanup skipped (GCS client): {exc}", flush=True)
-        return
-    for name in names:
-        if not name:
-            continue
-        try:
-            bucket.blob(name).delete()
-        except Exception as exc:
-            print(f">>> PIPELINE: output cleanup skip {name}: {exc}", flush=True)
-
-
-def _pipeline_key_from_image(image_name: str | None) -> str | None:
-    """Recover the correlation key from pipeline/output/<prefix><key>.png."""
-    if not image_name:
-        return None
-    base = image_name.rsplit("/", 1)[-1]
-    pref = config.PIPELINE_OBJECT_PREFIX
-    if base.startswith(pref):
-        return base[len(pref):].split(".")[0]
-    return None
-
-
-def _restrict_years_from_ctx(ctx: dict, _cm) -> set[int] | None:
-    """Mirror the daily-scan title-year/decade restriction now that CLIP is loaded."""
-    decades = {int(d) for d in (ctx.get("title_decades") or [])}
-    if decades:
-        return decades
-    tyears = [int(y) for y in (ctx.get("title_years") or [])]
-    ref_years = _cm.reference_years()
-    if len(tyears) == 1 and tyears[0] in ref_years:
-        return {tyears[0]}
-    return None
-
-
-# The Gemini pipeline's routes were removed 2026-10-25 (operator: the
-# pipeline is dead, the watchers are off): /pipeline/notify, which took the
-# watcher's shared secret from the internet, /internal/pipeline and
-# /internal/pipelinetest.  Lots go to buttonmatcher instead (yolo_test.py, on
-# by default); process_pipeline_lot and its helpers stay only until the code
-# itself is removed.
-
-
-def _stage_crop_fullres(src_img, det_crop, ci, det_w, det_h, roi_used):
-    """Re-cut one reference crop from the FULL-RES source image instead of the
-    ~800px detection working copy, so auto-staged reference crops aren't
-    downscaled (detection itself stays at 800px — see _prepare_detection_image).
-
-    `ci` is the crop's circle_info entry (detection-space geometry); `det_w/det_h`
-    are the detection image dims. Maps the crop's box back to `src_img` by the
-    uniform downscale factor and re-crops. Fail-safe: returns the original
-    `det_crop` whenever a clean mapping isn't available (ROI-retry frame, missing
-    geometry, degenerate box), so this can never produce a worse crop than today.
-    """
-    try:
-        if roi_used or not det_w or not det_h:
-            return det_crop
-        H, W = src_img.shape[:2]
-        if H == det_h and W == det_w:
-            return det_crop                      # no downscale happened
-        sx, sy = W / det_w, H / det_h
-        if ci.get("shape") == "rect":
-            x1, y1, x2, y2 = ci["x1"], ci["y1"], ci["x2"], ci["y2"]
-        else:
-            cx, cy = ci.get("x"), ci.get("y")
-            if cx is None or cy is None:
-                return det_crop
-            ch, cw = det_crop.shape[:2]          # preserve detect's framing, scaled
-            x1, y1 = cx - cw / 2.0, cy - ch / 2.0
-            x2, y2 = x1 + cw, y1 + ch
-        X1, Y1 = max(0, int(round(x1 * sx))), max(0, int(round(y1 * sy)))
-        X2, Y2 = min(W, int(round(x2 * sx))), min(H, int(round(y2 * sy)))
-        if X2 - X1 < 8 or Y2 - Y1 < 8:
-            return det_crop
-        hi = src_img[Y1:Y2, X1:X2]
-        return hi if hi.size else det_crop
-    except Exception:
-        return det_crop
-
-
-def process_pipeline_lot(job_id: str) -> None:
-    """Consume one Gemini-pipeline result: download image+JSON, run independent
-    Hough detection + Gemini reconciliation, CLIP match, then confirm slogans
-    against Gemini's reading. At scale this lot is a unit of work for BOTH
-    /crawl, so its output is deal-focused:
-
-      * posts to #ebay-checker ONLY when the lot is a deal — it has a needed
-        button, or its matched value exceeds the asking price;
-      * AUTO-STAGES the surest crops (real Hough detection + Gemini-confirmed +
-        CLIP overall >= STAGE_CONF) into reference/_staging/ for /reference review
-        (no Yes/No prompt);
-      * writes scan_log.jsonl + match_log rows and marks the lot seen here, per
-        confirmation — never buffered to a run's end.
-
-    Unlike buttonmatcher's process_pipeline_grid, there is NO Inventory/Sort/
-    Scout chooser and NO vectors.pt write — ebayscout only STAGES crop FILES."""
-    import tempfile
-    import cv2
-    from . import clip_matcher as _cm, detect_pipeline as _dp, image_proc as _ip
-
-    job = pending_jobs.get(job_id) or {}
-    response_name = job.get("response_name")
-    if not response_name:
-        print(f"!!! PIPELINE: no job context for {job_id}", flush=True)
-        return
-    image_name = job.get("image_name") or ping.image_name_for_response(response_name)
-    key        = job.get("key") or _pipeline_key_from_image(image_name)
-
-    # 1) download image + Gemini JSON from GCS
-    try:
-        _rsp_text = _gcs_blob_text(response_name)
-        gemini = ping.parse_gemini_response(_rsp_text)
-    except Exception as exc:
-        print(f"!!! PIPELINE: response.json read failed for {response_name}: {exc}", flush=True)
-        return
-    # The watcher's run id for this Gem read: it tags every watcher.log line of
-    # the attempt, and goes on the deal alert and the scan_log row, so either
-    # side finds the other.  None from a watcher that predates it.
-    run_id = ping.run_id_of(_rsp_text)
-    print(f">>> PIPELINE: job {job_id} run={run_id} image={image_name}", flush=True)
-
-    # 1b) The watcher GAVE UP: Gemini returned nothing usable for this photo in
-    #     its give_up_after tries, and the watcher already posted the photo to
-    #     the debug channel. Mark the listing seen so the daily scan doesn't feed
-    #     it back in under a new key (which restarts the watcher's count and
-    #     sends it to Gemini again every day). There is no image and no analysis.
-    if ping.watcher_gave_up(_rsp_text):
-        _gctx = (seen_items.load_pending_context(key) if key else None) or {}
-        _gitem = _gctx.get("item_id")
-        print(f">>> PIPELINE: watcher gave up on {image_name} (run={run_id}) — "
-              f"marking {_gitem or '(no context)'} seen so it isn't fed again.",
-              flush=True)
-        if _gitem:
-            _mark_item_seen_now(_gitem)
-        if key:
-            seen_items.delete_pending_context(key)
-        _delete_pipeline_output(response_name)
-        pending_jobs.pop(job_id, None)
-        return
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    tmp.close()
-    try:
-        _gcs_blob_to_file(image_name, tmp.name)
-        image_bgr = cv2.imread(tmp.name)
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
-    if image_bgr is None:
-        print(f"!!! PIPELINE: could not read image {image_name}", flush=True)
-        return
-    h, w = image_bgr.shape[:2]
-    if max(h, w) > 2200:
-        s = 2200 / max(h, w)
-        image_bgr = cv2.resize(image_bgr, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
-
-    # 2) recover the originating-listing context (survives cold start)
-    ctx     = (seen_items.load_pending_context(key) if key else None) or {}
-    item_id = ctx.get("item_id", key or "?")
-    asking  = ctx.get("asking")
-    title   = ctx.get("title", "(context lost)")
-    url     = ctx.get("url", "")
-    restrict_years = _restrict_years_from_ctx(ctx, _cm)
-    # Bound HERE, next to the other ctx-derived locals, not at first use.
-    # It used to be assigned ~230 lines below, at step 10, while the label
-    # sidecar at step 4b already read it — and because the name is assigned
-    # somewhere in this function, Python resolves it as a local and that read
-    # raised UnboundLocalError on EVERY lot.  The harvest block is fail-open,
-    # so it logged "!!! PIPELINE: label sidecar failed … cannot access local
-    # variable 'pipeline_command'" and moved on: ebayscout never wrote a single
-    # training label from the day the harvester shipped (2026-07-08) to
-    # 2026-09-12, while buttonmatcher's copy — which passes a literal command —
-    # wrote all 523 that exist.  Front C5's gate is "is EVERY pipeline lot
-    # leaving a labeled example"; the answer was none of ebayscout's, ~75% of
-    # pipeline volume.
-    pipeline_command = f'{ctx.get("command", "/crawl")}-pipeline'
-    # `/crawl catchup` (catchup.py): a lot read once before price logging began,
-    # re-read only for its price rows.  It writes scan_log + price_log and is
-    # marked seen; no alert, no staged crop, no label / vectors / match rows,
-    # since each of those already exists from its first pass.
-    is_catchup = ctx.get("command") == catchup.COMMAND
-
-    gem_slogans = gemini.get("detected_slogans") or []
-    gem_count   = gemini.get("total_button_count") or 0
-    flagged     = [s for s in (gemini.get("flagged_problem_slogans") or []) if isinstance(s, dict)]
-    flagged_indices = {s.get("index") for s in flagged if s.get("index") is not None}
-
-    # Gemini-works vs Gemini-fails. A blank/empty response.json (no slogans AND no
-    # count — parse_gemini_response fails open to EMPTY_ANALYSIS on parse errors)
-    # means the Gem gave us nothing, so we fall back to Hough-only/CLIP-only. In
-    # that fallback ONLY, yellow crops are surfaced for human review; when Gemini
-    # works, classification is autoconfirm-or-ignore (no human prompt).
-    gemini_ok = bool(gem_slogans) or gem_count > 0
-
-    # 3) Hough detection, INDEPENDENT of the JSON.  Guide it with the CONSERVATIVE
-    # count: cap Gemini's claimed total at the number of slogans it actually
-    # LOCALIZED.  A total above the localized slogans is Gemini overcounting a busy
-    # background (turf/carpet); back-filling detection to that inflated total
-    # invents phantoms (carpet case 7).  min() prevents it; when Gemini is
-    # internally consistent (total == localized + flagged partials) this equals the
-    # old total-minus-flagged count, so clean lots are unchanged.  Falls back to
-    # total-minus-flagged only when Gemini gave a count but localized nothing.
-    if gem_count > 0:
-        full_count = (min(gem_count, len(gem_slogans)) if gem_slogans
-                      else max(0, gem_count - len(flagged)))
-    else:
-        full_count = 0
-    expected   = full_count if full_count > 0 else None
-    _gem_inconsistent = bool(gem_count and gem_count != len(gem_slogans))
-    if expected is not None and _gem_inconsistent:
-        print(f">>> PIPELINE: guided count {expected} = min(Gemini total {gem_count}, "
-              f"localized {len(gem_slogans)}); flagged={len(flagged)} — GEMINI COUNT "
-              f"INCONSISTENT (total != detected_slogans length).", flush=True)
-    # Shadow unguided pass (log_analysis.md gap 1): the TRUE no-input count,
-    # logged on every pipeline lot so unguided accuracy is measurable against
-    # Gemini's count — the rollout gate for dropping guidance. ~15 extra Hough
-    # calls inside this already-CPU-hot request; BUTTONMATCHER_SHADOW_PASS=0
-    # is the kill switch. Doubles as the count estimate when Gemini gave none.
-    _noinput_count, _noinput_diag = None, None
-    if mlog.shadow_pass_enabled() or expected is None:
-        try:
-            _noinput_count, _noinput_diag = _dp.count_circles_unguided(image_bgr)
-        except Exception as _sp_err:
-            print(f">>> PIPELINE: shadow unguided pass failed: {_sp_err}", flush=True)
-    if expected is None:
-        expected = _noinput_count if (_noinput_count and _noinput_count > 0) else None
-    if expected is None:
-        print(f">>> PIPELINE: no buttons found in {image_name} — skipped.", flush=True)
-        seen_items.delete_pending_context(key) if key else None
-        _delete_pipeline_output(response_name, image_name)
-        pending_jobs.pop(job_id, None)
-        return
-    _diag = {}
-    crops, debug_img, det_rows, det_cols, circle_info = _dp.detect_buttons(
-        image_bgr, rows=None, cols=None, expected=expected, debug=True,
-        diag_out=_diag, truncate_to_expected=False,
-    )
-
-    # Trust-gate loophole (Logger_10): a shadow pass that collapsed to a single
-    # circle self-certifies on lots where the guided detector itself bailed to
-    # the projection grid. Demote its gate before it is logged/consumed.
-    if _noinput_diag and _noinput_diag.get("gate") == dgate.GATE_AUTO:
-        _noinput_diag["gate"] = dgate.demote_auto_on_detector_bailout(
-            _noinput_diag["gate"], _diag.get("detector_used"))
-
-    # 4) reconcile missed buttons from Gemini x/y, in detection's coord space
-    _ph, _pw = debug_img.shape[:2]
-    _det_img = (image_bgr if (image_bgr.shape[0], image_bgr.shape[1]) == (_ph, _pw)
-                else cv2.resize(image_bgr, (_pw, _ph), interpolation=cv2.INTER_AREA))
-    _lh_led = False   # label-sidecar provenance: crops rebuilt at Gemini x/y
-    if _diag.get("detector_used") == "grid" and gem_slogans:
-        led_crops, led_info = _dp.gemini_led_crops(gem_slogans, _det_img)
-        if led_crops:
-            crops, circle_info = led_crops, led_info
-            _lh_led = True
-    rec_crops, rec_info, crop_to_slogan, _rt = _dp.reconcile_with_gemini(
-        circle_info, gem_slogans, _det_img)
-    # Fill-gated swap: drop the phantom crops reconcile traded for recovered Gemini
-    # buttons BEFORE appending, so the final list matches the (kept detected +
-    # recovered) order reconcile built crop_to_slogan against.
-    _dropped = set(_rt.get("dropped_crop_indices") or [])
-    if _dropped:
-        crops = [c for i, c in enumerate(crops) if i not in _dropped]
-        circle_info = [c for i, c in enumerate(circle_info) if i not in _dropped]
-    if rec_crops:
-        crops = list(crops) + list(rec_crops)
-        circle_info = list(circle_info) + list(rec_info)
-    if not crops:
-        print(f">>> PIPELINE: no crops for {image_name} after reconcile — skipped.", flush=True)
-        seen_items.delete_pending_context(key) if key else None
-        _delete_pipeline_output(response_name, image_name)
-        pending_jobs.pop(job_id, None)
-        return
-
-    # Physical anchoring gate: stamp every crop→slogan association with whether
-    # Gemini's point actually sits ON the crop (dist ≤ 0.75×radius; correct
-    # pairs measure ~0.07×r fleet-wide, wrong-neighbor pairs ≥2×r).
-    # gemini_resolve refuses AUTO for unanchored pairs. Fail-open on missing
-    # dist/radius. Kill switch BUTTONMATCHER_ANCHOR_GATE=0.
-    _n_unanchored = 0
-    _n_synth = 0
-    if _anchor_gate_enabled():
-        for _aci, _assoc in crop_to_slogan.items():
-            _circ = (circle_info[_aci]
-                     if _aci < len(circle_info) and isinstance(circle_info[_aci], dict)
-                     else None)
-            _ar = _circ.get("r") if _circ else None
-            _assoc["anchored"] = ggeo.assoc_anchored(_assoc.get("dist"), _ar)
-            # B33: a crop SYNTHESIZED at a Gemini point is anchored to that
-            # point by construction — dist is ~0 because the point is where the
-            # crop was cut — so ``anchored`` says nothing about it and cannot be
-            # the trust signal. Stamped beside the gate it qualifies, so the
-            # resolver can demand evidence that did not come from the point that
-            # created the crop.
-            _assoc["synthesized"] = ggeo.assoc_synthesized(_circ)
-            if not _assoc["anchored"]:
-                _n_unanchored += 1
-            if _assoc["synthesized"]:
-                _n_synth += 1
-        if _n_unanchored:
-            print(f">>> PIPELINE ANCHOR_GATE: {_n_unanchored}/{len(crop_to_slogan)} "
-                  f"crop→slogan associations unanchored (dist > 0.75×r) — AUTO "
-                  f"refused for those crops.", flush=True)
-        if _n_synth:
-            print(f">>> PIPELINE SYNTH_GATE: {_n_synth}/{len(crop_to_slogan)} "
-                  f"associations are on SYNTHESIZED crops (anchored by "
-                  f"construction) — AUTO requires a candidate CLIP's own "
-                  f"ranking surfaced, not DB-direct.", flush=True)
-
-    # Carpet guard: a crop cut at a Gemini point (recovered or Gemini-led) is
-    # anchored by construction, so the button mask is the one independent look
-    # at whether a button is there. Off-mask → AUTO refused + DB-direct skipped.
-    # Fail-open: a mask failure stamps nothing.
-    _n_off_board = 0
-    if _carpet_guard_enabled():
-        _gp = [ci for ci in crop_to_slogan
-               if ci < len(circle_info) and ggeo.gemini_positioned(circle_info[ci])]
-        if _gp:
-            try:
-                _cg_mask = _dp._prepare_detection_image(_det_img)["mask"]
-                for _ci in _gp:
-                    _c = circle_info[_ci]
-                    _fill = _dp._circle_fill(_cg_mask, _c["x"], _c["y"],
-                                             _c.get("r") or 1)
-                    if ggeo.assoc_off_board(_c, _fill):
-                        crop_to_slogan[_ci]["off_board"] = True
-                        _n_off_board += 1
-            except Exception as _cg_err:
-                print(f"!!! CARPET_GUARD: skipped ({_cg_err})", flush=True)
-        if _n_off_board:
-            print(f">>> PIPELINE CARPET_GUARD: {_n_off_board}/{len(_gp)} "
-                  f"Gemini-positioned crop(s) sit off the button mask "
-                  f"(fill < {ggeo.OFF_BOARD_FILL_MAX}) — AUTO refused.",
-                  flush=True)
-
-    # Training-label sidecar (AUTOMATION_VISION / Logger_10 §10): persist the
-    # detection-space image + final circle set (with provenance) + Gemini's
-    # independent reading to pipeline/labels/, so every pipeline lot becomes a
-    # training label for the learned-detection track. The pipeline deletes its
-    # input/output blobs after processing, so this is the only durable copy.
-    # Fail-open; kill switch BUTTONMATCHER_LABEL_HARVEST=0. Confirmation
-    # outcomes join via confirm_log on job_id.
-    if lharv.harvest_enabled() and not is_catchup:
-        try:
-            _lh_rec_n = len(rec_info) if rec_crops else 0
-            _lh_base = ("gemini_led" if _lh_led
-                        else (_diag.get("detector_used") or "hough"))
-            _lh_sources = ([_lh_base] * (len(circle_info) - _lh_rec_n)
-                           + ["gemini_reconciled"] * _lh_rec_n)
-            _lh_rec = lharv.build_label_record(
-                job_id=job_id, service="ebayscout", command=pipeline_command,
-                image_name=image_name, item_id=item_id,
-                img_w=_pw, img_h=_ph,
-                circle_info=circle_info, circle_sources=_lh_sources,
-                detector_used=_diag.get("detector_used"),
-                mask_path=_diag.get("mask_path"),
-                mask_coverage=_diag.get("mask_coverage"),
-                ni_selected=(_noinput_diag or {}).get("selected"),
-                ni_gate=(_noinput_diag or {}).get("gate"),
-                ni_scale_path=(_noinput_diag or {}).get("scale_path"),
-                gemini_button_count=gem_count,
-                gemini_flagged_count=len(flagged),
-                gemini_slogans=gem_slogans,
-                gemini_coord_scale=gemini.get("coord_scale"),
-                # unmatched_crop_indices indexes into circle_info AT RECONCILE
-                # TIME (before rec_info was appended) — the same list order
-                # preserved above, so per-circle indices still line up here.
-                unmatched_crop_indices=(_rt or {}).get("unmatched_crop_indices"),
-            )
-            _lh_jname, _lh_iname = lharv.label_blob_names(job_id)
-            # Function-local import, as every other storage user in this module
-            # does (see _gcs_text / _gcs_download).  `storage` is NOT a
-            # module-level name here, so this line raised NameError — the
-            # SECOND bug stacked in this fail-open block, behind the
-            # UnboundLocalError above.  Fixing only the first would have moved
-            # the failure one line down and kept the sidecar count at zero.
-            from google.cloud import storage
-            _lh_bucket = storage.Client().bucket(config.BUCKET_NAME)
-            _lh_bucket.blob(_lh_jname).upload_from_string(
-                json.dumps(_lh_rec, default=str),
-                content_type="application/json")
-            _lh_ok, _lh_buf = cv2.imencode(
-                ".jpg", _det_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            if _lh_ok:
-                _lh_bucket.blob(_lh_iname).upload_from_string(
-                    _lh_buf.tobytes(), content_type="image/jpeg")
-            print(f">>> PIPELINE: label sidecar written for {job_id} "
-                  f"({len(circle_info)} circles, base={_lh_base}).", flush=True)
-        except Exception as _lh_err:
-            print(f"!!! PIPELINE: label sidecar failed for {job_id}: "
-                  f"{_lh_err}", flush=True)
-
-    # 5) CLIP matching, INDEPENDENT of the JSON
-    pil_crops   = _ip._bgr_to_pil(crops)
-    # The crops' embeddings, kept instead of dropped (§10.2 step 1): this is the
-    # lane that supplies most of the reference library, so its vectors are most
-    # of the evidence the value function has.  Keyed on job_id, beside this lot's
-    # pipeline/labels/ sidecar and joining the confirm_log rows below.
-    _vec_sink: list = []
-    diagnostics = _cm.match_crops_with_diagnostics(pil_crops,
-                                                   restrict_years=restrict_years,
-                                                   vec_sink=_vec_sink)
-    crop_candidates = {i: d["candidates"] for i, d in enumerate(diagnostics)}
-    if not is_catchup:
-        seen_items.write_crop_vectors(job_id, _vec_sink, item_id=item_id)
-
-    # 5b) DB-DIRECT agreement tier (buttonmatcher parity — main._gemini_db_candidates).
-    #     The candidate lists above are YEAR-FOLDED: _score_slogans emits ONE row
-    #     per candidate year (that year's text-argmax slogan) across at most 8
-    #     dual-signal years, so a slogan shadowed by a sibling of its OWN year is
-    #     absent at every depth and gemini_resolve can never agree with it — the
-    #     crop stays manual, is never auto-confirmed, and never reaches
-    #     reference/_staging.  When Gemini's read is a known DB slogan at high
-    #     confidence on an ANCHORED association, append that slogan's DB rows so
-    #     Scenario A/B can match it.  Appended at the END, so cands[0] (and every
-    #     CLIP score/gap logged elsewhere) is untouched.  Fail-open.
-    _n_dbdirect = 0
-    _dbdirect_crops: set[int] = set()   # WHICH crops, for the per-crop column
-    if _gemini_db_direct_enabled():
-        try:
-            _db_phrases, _db_years, _db_types = _cm.text_db_arrays()
-            _db_rows = list(zip(_db_years, _db_phrases, _db_types))
-            for _ci, _assoc in crop_to_slogan.items():
-                # No CLIP-rank corroboration in this tier, so never act on an
-                # unanchored association (the shifted-lot failure class).
-                if not _assoc.get("anchored", True) or _assoc.get("off_board"):
-                    continue
-                _pool = crop_candidates.get(_ci) or []
-                _dbc = pipeline_classify.gemini_db_candidates(
-                    _assoc.get("slogan"), _assoc.get("confidence"),
-                    _db_rows, normalize.normalize_key, _pool)
-                if _dbc:
-                    crop_candidates[_ci] = list(_pool) + _dbc
-                    _n_dbdirect += 1
-                    _dbdirect_crops.add(_ci)
-            if _n_dbdirect:
-                print(f">>> PIPELINE DB_DIRECT: appended DB rows for {_n_dbdirect}/"
-                      f"{len(crop_to_slogan)} crop(s) whose Gemini slogan CLIP's "
-                      f"year-folded candidate list never surfaced.", flush=True)
-        except Exception as _dd_err:
-            print(f"!!! PIPELINE: DB-direct tier failed (falling back to the "
-                  f"CLIP-only pool): {_dd_err}", flush=True)
-
-    # 6) confirm slogans against Gemini's reading (two-pass)
-    resolution = gres.resolve_with_gemini_slogans(
-        crop_candidates, crop_to_slogan, slogan_years, flagged_indices,
-        normalize_fn=normalize.normalize_key,
-        # Bowl-year normalization, at parity with buttonmatcher (front A26).
-        # Omitting this was a silent no-op, not an error: the shared resolver
-        # defaults the map to None and degenerates to season-year-only
-        # matching, so bowl buttons resolved to season+1 on the whole pipeline.
-        game_year_by_key=_cm.game_year_by_key(),
-    )
-
-    # 6b) Heavy resolve logging.  /crawl is fire-and-forget at scale, so without
-    #     this a run that yields a handful of reference crops out of hundreds of
-    #     buttons is undiagnosable: DB-coverage gap vs CLIP not surfacing the
-    #     slogan vs association/normalization all look identical from outside.
-    _res_telem = resolution.get("telemetry", {}) or {}
-    try:
-        print(f">>> PIPELINE RESOLVE: gemini={len(gem_slogans)} "
-              f"assoc={len(crop_to_slogan)} "
-              f"confirmed={_res_telem.get('n_gemini_confirmed')} "
-              f"resolved={_res_telem.get('n_resolved')} "
-              f"manual={_res_telem.get('n_manual')} "
-              f"low_conf={_res_telem.get('n_low_confidence')} "
-              f"unanchored={_res_telem.get('n_unanchored')} "
-              f"db_direct={_n_dbdirect} "
-              f"majority_year={_res_telem.get('majority_year')} "
-              f"bowl_year={_res_telem.get('n_printed_year_gamematch')}", flush=True)
-        for _ci in range(len(diagnostics)):
-            _assoc = crop_to_slogan.get(_ci) or {}
-            _gs = _assoc.get("slogan")
-            if not _gs:
-                continue
-            _ng = normalize.normalize_key(_gs)
-            _in_db = _ng in slogan_years
-            _res = resolution.get(_ci)
-            print(f">>> PIPELINE RESOLVE crop{_ci + 1}: gemini={_gs!r} "
-                  f"conf={_assoc.get('confidence')} anchored={_assoc.get('anchored', True)} "
-                  f"in_db={_in_db} db_years={sorted(slogan_years.get(_ng, []))} "
-                  f"resolved={'yes:' + str(_res.get('source')) if _res else 'no(manual)'} "
-                  f"clip_pool={[c.get('slogan') for c in (crop_candidates.get(_ci) or [])]}",
-                  flush=True)
-    except Exception as _rl_err:
-        print(f">>> PIPELINE RESOLVE log failed: {_rl_err}", flush=True)
-
-    # 7) classify crops per the autoconfirmation decision tree (pure module).
-    #    Gemini works:  green/auto → confirm; else Gemini slogan in top-10 AND
-    #                   conf≥0.70 AND not flagged (res.auto) → confirm; else ignore.
-    #    Gemini fails:  green/auto → confirm; else ignore. (The yellow tier is
-    #                   not surfaced at scale — deals-only posting; see step 9.)
-    auto_confirmed, _yellow = pipeline_classify.classify_crops(
-        diagnostics, resolution, gemini_ok, job_id)
-
-    # needed-button hits among the auto-confirmed crops
-    needed_hits: dict[tuple, dict] = {}
-    for b in auto_confirmed:
-        overall = b["overall"]
-        enriched = _check_needed_hit({"year": b["year"], "slogan": b["slogan"],
-                                      "overall": overall or 0.0}, buy_rules)
-        if enriched is not None:
-            k = (b["year"], b["slogan"])
-            if k not in needed_hits or (overall or 0) > needed_hits[k].get("overall", 0):
-                needed_hits[k] = enriched
-
-    # total matched lot value (every confirmed button has a sheet price, needed
-    # or not) + undervalued-deal flag (pure helper)
-    lot_value, undervalued, margin = pipeline_classify.lot_value_and_deal(
-        auto_confirmed, _price_of, asking)
-    # The kill switch is applied HERE, at the one place the flag is decided, so
-    # the alert and the scan_log's `alerted` column can never disagree about
-    # whether this lot was reported.
-    undervalued = undervalued and config.ENABLE_UNDERVALUED_ALERTS
-    # A catch-up lot was reported (or not) on its first pass; never twice.
-    post_alerts = not is_catchup
-
-    # 8) AUTO-STAGE the surest crops (real Hough detection + Gemini-confirmed +
-    #    overall >= STAGE_CONF) straight into reference/_staging for buttonmatcher's
-    #    /reference review — no Yes/No prompt. Reuses stage_pipeline_crop + promote
-    #    so there is one promotion path; ebayscout never writes vectors.pt.
-    stageable = ([] if is_catchup else pipeline_classify.staging_candidates(
-        auto_confirmed, circle_info, resolution, config.STAGE_CONF))
-    manifest_crops: list[dict] = []
-    _roi_used = bool(_diag.get("roi_retry"))
-    for b in stageable:
-        try:
-            # Stage from the full-res source, not the ~800px detection copy.
-            hi = _stage_crop_fullres(image_bgr, crops[b["crop_idx"]],
-                                     circle_info[b["crop_idx"]], _pw, _ph, _roi_used)
-            ok, buf = cv2.imencode(".jpg", hi, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-            if not ok:
-                continue
-            gcs_name = seen_items.stage_pipeline_crop(job_id, b["n"], buf.tobytes())
-            if not gcs_name:
-                continue
-            manifest_crops.append({
-                "gcs_name": gcs_name, "year": b["year"], "slogan": b["slogan"],
-                "entry_id": _cm.entry_id_for(b["year"], b["slogan"]),
-                # b["n"] is crop_idx + 1 — the same number the match and confirm
-                # rows log — so it is the key that joins this staged crop to its
-                # embedding in the lot's sidecar (RS-04 / §10.2 step 4).
-                "crop_num": b["n"],
-            })
-        except Exception as exc:
-            print(f"!!! PIPELINE: crop stage failed (crop {b['n']}): {exc}", flush=True)
-    staged = 0
-    if manifest_crops:
-        staged = seen_items.promote_crops_to_reference_staging(
-            job_id, {"job_id": job_id, "item_id": item_id, "crops": manifest_crops})
-        print(f">>> PIPELINE: auto-staged {staged}/{len(manifest_crops)} crop(s) for "
-              f"{item_id} -> reference/_staging (job={job_id}).", flush=True)
-
-    # Per-gate drop counts for the crops → reference/_staging path, on EVERY lot
-    # (including the zero-staged ones, which are the interesting case). Summing
-    # this line over a /crawl run says exactly which gate ate the difference
-    # between "N buttons detected" and "M crops in the reference queue".
-    try:
-        _funnel = pipeline_classify.staging_funnel(
-            len(crops), auto_confirmed, circle_info, resolution, config.STAGE_CONF)
-        print(f">>> PIPELINE STAGE_FUNNEL {item_id}: crops={_funnel['crops']} "
-              f"resolved={_funnel['resolved']} gemini_auto={_funnel['gemini_auto']} "
-              f"auto_confirmed={_funnel['auto_confirmed']} "
-              f"stageable={_funnel['stageable']} staged={staged} | drops: "
-              f"no_resolution={_funnel['drop_no_resolution']} "
-              f"not_auto={_funnel['drop_not_auto']} "
-              f"synthetic={_funnel['drop_synthetic']} "
-              f"below_conf={_funnel['drop_below_conf']} "
-              f"db_direct={_funnel['drop_db_direct']} "
-              f"no_geometry={_funnel['drop_no_geometry']}", flush=True)
-    except Exception as _sf_err:
-        print(f">>> PIPELINE STAGE_FUNNEL log failed: {_sf_err}", flush=True)
-
-    # 9) post to Slack ONLY when this lot is a deal — a needed button, or matched
-    #    lot value over the asking price. No generic per-lot card; no Yes/No;
-    #    yellow-review crops are not surfaced at scale.
-    listing = {"item_id": item_id, "title": title, "url": url, "listing_url": url,
-               "current_price": asking, "seller": ctx.get("seller", ""),
-               "shipping_cost": ctx.get("shipping"),
-               "gallery_url": ctx.get("gallery_url"),
-               # shown on the alert (notifier._trace_text) to join it to watcher.log
-               "lot_file": (image_name or "").rsplit("/", 1)[-1], "run_id": run_id,
-               # format and bids reach the scan_log row, which on this path
-               # recorded neither (an auction's "asking" is a bid, not a price)
-               "buying_options": ctx.get("buying_options") or [],
-               "bid_count": ctx.get("bid_count")}
-    if needed_hits and post_alerts:
-        needed = list(needed_hits.values())
-        try:
-            # Report the value of the WHOLE lot (all confirmed buttons), not just
-            # the needed ones — `lot_value` above already sums every confirmed
-            # button's sheet price.
-            notifier.send_needed_alert(
-                slack_token=_slack_token, channel=_channel_id, listing=listing,
-                needed_buttons=needed, asking_price=asking or 0.0, lot_value=lot_value)
-        except Exception as exc:
-            print(f"!!! PIPELINE: needed alert failed for {item_id}: {exc}", flush=True)
-    if undervalued and post_alerts:
-        try:
-            matches = []
-            for b in auto_confirmed:
-                _ps, _, _, _amt = sheets_client.get_buy_decision(
-                    b["year"], b["slogan"], buy_rules)
-                matches.append({"year": b["year"], "slogan": b["slogan"],
-                                "overall": b["overall"], "max_price_single": _ps,
-                                "amount_needed": _amt,
-                                "lookalike": _lookalike_note(
-                                    b["slogan"], b["year"], buy_rules)})
-            notifier.send_undervalued_alert(
-                slack_token=_slack_token, channel=_channel_id, listing=listing,
-                matches=matches, lot_value=lot_value, asking_price=asking or 0.0,
-                margin=margin, unmatched_count=max(0, len(crops) - len(auto_confirmed)))
-        except Exception as exc:
-            print(f"!!! PIPELINE: undervalued alert failed for {item_id}: {exc}", flush=True)
-
-    # 10) write the research logs NOW — per confirmation, never buffered. Reaching
-    #     here means we got a real reading (Gem-empty lots returned earlier).
-    #     `pipeline_command` is bound near the top, beside the other ctx-derived
-    #     locals — see the note there; re-binding it here is what hid the
-    #     UnboundLocalError at step 4b.
-    record = None
-    try:
-        record = _scan_log_record(
-            listing=listing, photos_processed=1,
-            best_score=max((b["overall"] or 0.0 for b in auto_confirmed), default=0.0),
-            top_matches=[{"year": b["year"], "slogan": b["slogan"],
-                          "overall": b["overall"] or 0.0} for b in auto_confirmed],
-            needed_hit=bool(needed_hits),
-            alerted=bool(needed_hits or undervalued) and post_alerts,
-            best_needed=(max(needed_hits.values(), key=lambda m: m.get("overall", 0))
-                         if needed_hits else None),
-            # every crop cut from the photo, named or not, less the carpet
-            # guard's phantoms — the divisor of the lot's per-button price
-            buttons_detected=max(0, len(crops) - _n_off_board),
-        )
-        if run_id:
-            record["run_id"] = run_id        # joins a non-deal lot to watcher.log
-        if is_catchup:
-            # a second record for a lot first read before PRICE_LOG_START, so
-            # tools/market_report can tell it from the first one
-            record["catchup"] = True
-        # Button prices to the sheet (price_log tab), from this same record.
-        # Never raises.
-        if price_logger is not None:
-            price_logger.log_listing(record)
-        with _scanlog_lock:                  # serialize the GCS read-modify-write
-            seen_items.append_scan_log([record])
-    except Exception as exc:
-        print(f"!!! PIPELINE: scan_log append failed for {item_id}: {exc}", flush=True)
-
-    # Per-crop match records carrying the Gemini reconcile fields, so the
-    # match_log is schema-compatible with buttonmatcher's pipeline rows.
-    try:
-        if match_logger is not None and diagnostics and not is_catchup:
-            _det = mlog.build_detection_diag(
-                h=_diag.get("h") or image_bgr.shape[0],
-                w=_diag.get("w") or image_bgr.shape[1],
-                bg_brightness=_diag.get("bg_brightness") or 0.0,
-                bg_saturation=_diag.get("bg_saturation"),
-                bg_is_white=bool(_diag.get("bg_is_white")),
-                mask_path=_diag.get("mask_path"),
-                hough_pass1_count=_diag.get("hough_pass1_count") or 0,
-                hough_retry_count=_diag.get("hough_retry_count"),
-                final_count_user=len(crops), final_count_noinput=_noinput_count,
-                noinput_diag=_noinput_diag,
-                user_count=None, detector_used=_diag.get("detector_used"),
-                n_crops=len(crops),
-                raw_hough=_diag.get("raw_hough"),
-                circles_rejected=_diag.get("circles_rejected"),
-                radius_min=_diag.get("radius_min"), radius_max=_diag.get("radius_max"),
-                radius_mean=_diag.get("radius_mean"), radius_std=_diag.get("radius_std"),
-                mask_components=_diag.get("mask_components"),
-                expected_radius=_diag.get("expected_radius"),
-                hough_dp=_diag.get("hough_dp"),
-                hough_mindist=_diag.get("hough_mindist"),
-                hough_param1=_diag.get("hough_param1"),
-                hough_param2=_diag.get("hough_param2"),
-                hough_minradius=_diag.get("hough_minradius"),
-                hough_maxradius=_diag.get("hough_maxradius"),
-                rej_radius_min=_diag.get("rej_radius_min"),
-                rej_radius_median=_diag.get("rej_radius_median"),
-                rej_radius_max=_diag.get("rej_radius_max"),
-                mask_blobs_raw=_diag.get("mask_blobs_raw"),
-                dt_peaks_total=_diag.get("dt_peaks_total"),
-                mask_coverage=_diag.get("mask_coverage"),
-                satfb_blue_cov=_diag.get("satfb_blue_cov"),
-                satfb_bright_cov=_diag.get("satfb_bright_cov"),
-                white_recovered=_diag.get("white_rescue"),
-                border_removed=_diag.get("border_removed"),
-                fill_removed=_diag.get("fill_removed"),
-                overlap_removed=_diag.get("overlap_removed"),
-                edge_density=_diag.get("edge_density"),
-                brightness_std=_diag.get("brightness_std"),
-                count_source=("gemini_led"
-                              if (_diag.get("detector_used") == "grid" and gem_slogans)
-                              else "gemini" if full_count > 0 else "unguided"),
-                gemini_button_count=gem_count,
-                n_recovered=len(rec_crops),
-                reconcile_misses=(_rt or {}).get("misses"),
-                gem_unmatched=(_rt or {}).get("n_unmatched_crops"),
-                gem_unmatched_indices=(_rt or {}).get("unmatched_crop_indices"),
-                n_swapped=(_rt or {}).get("n_swapped"),
-                reconcile_swaps=(_rt or {}).get("swaps"),
-                gemini_anchored=(_rt or {}).get("gemini_anchored"),
-            )
-            _records = [
-                mlog.build_match_record(
-                    service="ebayscout", command=pipeline_command, mode="pipeline",
-                    job_id=job_id, thread_ts=None, channel_id=_channel_id, user_id=None,
-                    crop_num=i + 1, check_id=f"{job_id}:{item_id}:{i + 1}",
-                    detection=_det, bank=None,
-                    restricted_top=d.get("restricted_top", []),
-                    shadow_top=d.get("shadow_top", []),
-                    shadow_enabled=bool(d.get("shadow_enabled")),
-                    # Front C7.  `i` is the same index crop_candidates was
-                    # keyed by, so this says WHICH crops the year-folded board
-                    # could not surface — the lot-level DB_DIRECT print never
-                    # could.
-                    db_direct=(i in _dbdirect_crops),
-                )
-                for i, d in enumerate(diagnostics)
-            ]
-            match_logger.log_image_crops(job_id, _records)
-    except Exception as exc:
-        print(f"!!! PIPELINE: match_log failed for {item_id}: {exc}", flush=True)
-
-    if not is_catchup:
-        _log_pipeline_count(job_id, item_id, gem_count, command=pipeline_command)
-
-    # mark the lot seen on confirmation (never at feed) so it's never re-run; a
-    # Gem that never answered leaves the lot un-seen (the watcher retries it), so
-    # we only reach here for a real reading.
-    if item_id and item_id != "?":
-        _mark_item_seen_now(item_id)
-
-    if key:
-        seen_items.delete_pending_context(key)
-    # Free the bucket: the image + .response.json are fully consumed now.
-    _delete_pipeline_output(response_name, image_name)
-    pending_jobs.pop(job_id, None)
+# The Gemini pipeline was removed 2026-10-25 (operator: the pipeline is dead,
+# the watchers are off): its routes (/pipeline/notify, which took the watcher's
+# shared secret from the internet, /internal/pipeline, /internal/pipelinetest),
+# process_pipeline_lot and the detector it ran.  Lots go to buttonmatcher
+# (yolo_test.py).
 
 
 def _mark_item_seen_now(item_id: str) -> None:
-    """Mark one item seen the instant its pipeline result confirms: load -> add ->
-    save under a lock so concurrent result threads can't clobber each other.
-    seen_items.json on GCS is the source of truth; result volume is low (~one Gem
-    at a time), so a full read-modify-write per result is cheap."""
+    """Mark one item seen the moment buttonmatcher accepts it: load -> add ->
+    save under a lock so concurrent writers can't clobber each other.
+    seen_items.json on GCS is the source of truth; volume is low (one lot at a
+    time), so a full read-modify-write per lot is cheap."""
     try:
         with _seen_lock:
             seen = seen_items.load_seen()
             seen_items.mark_seen(item_id, seen)
             seen_items.save_seen(seen)
     except Exception as exc:
-        print(f"!!! PIPELINE: mark_seen({item_id}) failed: {exc}", flush=True)
+        print(f"!!! SEEN: mark_seen({item_id}) failed: {exc}", flush=True)
 
 
 def _flush_seen_marks(marks: list[str], flushed: int) -> tuple[int, bool]:
@@ -1771,10 +878,11 @@ def _flush_seen_marks(marks: list[str], flushed: int) -> tuple[int, bool]:
     clobbering anyone else's.
 
     The legacy CLIP scan used to load `seen` once at the top and later upload the
-    whole dict back.  A pipeline result confirming during that window marks its
-    lot seen through _mark_item_seen_now — and the scan's wholesale save then
-    wrote a snapshot that predates it, erasing the mark.  The lot is re-fed and
-    re-alerted on the next run, which is the failure the store exists to stop.
+    whole dict back.  A lot marked seen during that window through
+    _mark_item_seen_now (then by a Gemini pipeline result) was erased by the
+    scan's wholesale save, which wrote a snapshot that predates it.  The lot is
+    re-fed and re-alerted on the next run, which is the failure the store
+    exists to stop.
 
     So both writers now do the same thing: reload from GCS, apply only the marks
     they own, save — all under _seen_lock, which is what makes the read and the
@@ -1799,26 +907,6 @@ def _flush_seen_marks(marks: list[str], flushed: int) -> tuple[int, bool]:
               flush=True)
         return flushed, False
     return (len(marks) if ok else flushed), ok
-
-
-def _log_pipeline_count(job_id: str, item_id: str, total_button_count: int,
-                        command: str = "/crawl-pipeline") -> None:
-    """Log the Gem's button-count estimate as its own confirm_log row
-    (source='gemini_count'), preserving the old /crawl10 count telemetry."""
-    if match_logger is None:
-        return
-    check_id = f"gemini_count:{item_id}"
-    try:
-        rec = mlog.build_confirm_record(
-            service="ebayscout", command=command, job_id=job_id,
-            thread_ts=None, crop_num=None, check_id=check_id, user_id=None,
-            chosen_year=None, chosen_phrase=str(total_button_count),
-            chosen_type=None, source="gemini_count",
-            rank_restricted=None, rank_shadow=None, shadow_leaderboard_size=None,
-        )
-        match_logger.log_confirmation(check_id, rec)
-    except Exception as exc:
-        print(f"!!! PIPELINE: gemini_count log failed for {item_id}: {exc}", flush=True)
 
 
 @flask_app.route("/test-clip", methods=["GET"])
@@ -2810,46 +1898,9 @@ def _run_daily_scan(
 # on-demand2 / crawl (called from /internal/crawl)
 # ---------------------------------------------------------------------------
 
-def _feed_lot_to_pipeline(listing: dict, ebay_app_id: str, ebay_cert_id: str,
-                          command: str) -> str | None:
-    """Push one lot's PRIMARY photo into the Gemini pipeline (upload-only).
-
-    Downloads photo 0, writes a pending-context blob (so the async Gem result can
-    be correlated back to this listing even after a cold start), and uploads the
-    image to the GCS pipeline-input prefix the watcher polls. ``command``
-    ("/crawl") is carried in the context. Returns the
-    correlation key on success, or None when the lot has no photo.
-
-    Does NOT mark the lot seen — that happens on confirmation in
-    process_pipeline_lot, so a lot the Gem never answers is retried, never lost.
-    """
-    from . import ebay_client, image_proc as _ip
-
-    item_id = listing["item_id"]
-
-    picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
-    if not picture_urls and listing.get("gallery_url"):
-        picture_urls = [listing["gallery_url"]]
-    if not picture_urls:
-        print(f">>> PIPELINE FEED: {item_id} has no photos — skipping.", flush=True)
-        return None
-
-    image_bytes = _ip.download_image(picture_urls[0])   # PRIMARY photo only
-
-    # Correlation key carried in the GCS object name; the authoritative listing
-    # context is persisted to GCS so the async result survives a cold start.
-    key = uuid.uuid4().hex[:12]
-    ctx = _lot_ctx(listing, key, command)
-    seen_items.save_pending_context(key, ctx)
-    if not seen_items.upload_pipeline_input(key, image_bytes):
-        raise RuntimeError("pipeline-input upload to GCS failed")
-    print(f">>> PIPELINE FEED: uploaded {item_id} -> pipeline as key={key} ({command}).",
-          flush=True)
-    return key
-
 
 def _lot_ctx(listing: dict, key: str, command: str) -> dict:
-    """A lot's listing context, as the pipeline and the YOLO test keep it."""
+    """A lot's listing context, as the handoff to buttonmatcher keeps it."""
     item_id = listing["item_id"]
     title   = listing.get("title", "?")
     seller  = listing.get("seller", "")
@@ -2875,8 +1926,8 @@ def _lot_ctx(listing: dict, key: str, command: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The YOLO week (yolo_test.py): each lot handed to buttonmatcher, which runs
-# its full Gemini-free process on it as an automatic Scout lot.
+# The handoff (yolo_test.py, from the YOLO week): each lot handed to
+# buttonmatcher, which runs its full process on it as an automatic Scout lot.
 # ---------------------------------------------------------------------------
 
 def _handoff_lot_to_buttonmatcher(listing: dict, ebay_app_id: str,
@@ -2908,7 +1959,7 @@ def _handoff_lot_to_buttonmatcher(listing: dict, ebay_app_id: str,
 
 
 def _collect_ebay_listings(ebay_app_id, ebay_cert_id, max_pages: int = 1):
-    """The daily eBay pull (used by the daily CLIP scan and the daily pipeline
+    """The daily eBay pull (used by the daily CLIP scan and the daily handoff
     feed — NOT by /crawl, which has its own search): the general queries
     (EBAY_SEARCH_QUERIES) plus the PSU queries restricted to Sports-Mem (drops
     Power-Supply-Unit noise), with the standard seller/keyword/category
@@ -2936,8 +1987,8 @@ def _collect_ebay_listings(ebay_app_id, ebay_cert_id, max_pages: int = 1):
 
 def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
                dry_run: bool = False) -> int:
-    """Feed an eBay pull into the Gemini pipeline, capped at N lots; the pipeline
-    does detection → Gemini → CLIP → deal-posting → auto-staging.
+    """Hand an eBay pull to buttonmatcher, capped at N lots; each lot runs there
+    as an automatic Scout lot (detection, CLIP + OCR, the Scout valuation).
 
     The daily scan and /crawl keep SEPARATE searches (they serve different
     purposes), selected by ``source``:
@@ -2946,17 +1997,16 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
       - "/crawl" → the fixed on-demand search (CRAWL500_QUERIES, OR-expanded),
                    with the SAME eBay safeguards as the daily scan (excluded
                    sellers + keywords + categories, all from shared config).
-    ``source`` also tags the lots in the pipeline (→ detection mode + scan_log
-    `command`) and the Slack summary. ``ignore_seen`` feeds every fetched lot
-    regardless of seen_items; ``dry_run`` reports the count without feeding or
-    mutating state.
+    ``source`` also tags the lots and the Slack summary. ``ignore_seen`` feeds
+    every fetched lot regardless of seen_items; ``dry_run`` reports the count
+    without feeding or mutating state.
 
-    SEEN-aware: each lot's primary photo is pushed into the pipeline (watcher →
-    Gem → GCS → /pipeline/notify); everything else happens asynchronously in
-    process_pipeline_lot. A lot is marked seen ONLY on confirmation, so a lot the
-    Gem never answers is retried, never lost. First run (per the GCS marker) — or
-    ignore_seen — feeds already-seen lots too; every run after feeds only unseen.
-    Returns the number of lots fed (or that would be fed, for dry_run).
+    SEEN-aware: each lot is POSTed to buttonmatcher (_handoff_lot_to_buttonmatcher)
+    and marked seen once buttonmatcher accepts it, so a lot it refused is retried,
+    never lost.  (The Gemini pipeline this fed until 2026-10-25 is gone.)  First
+    run (per the GCS marker) — or ignore_seen — feeds already-seen lots too;
+    every run after feeds only unseen.  Returns the number of lots fed (or that
+    would be fed, for dry_run).
     """
     from . import ebay_client, seen_items as seen_store
 
@@ -2999,9 +2049,9 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
     all_listings = dedup_listings(all_listings)
     seen = seen_store.load_seen()
 
-    # Skip lots already run (in `seen`) unless feed_all. `seen` is marked on
-    # confirmation (process_pipeline_lot), never here, so failed/un-answered lots
-    # stay re-feedable. /crawl uses a double-seen rule for pre-cutoff items
+    # Skip lots already run (in `seen`) unless feed_all. `seen` is marked once
+    # buttonmatcher accepts a lot (_handoff_lot_to_buttonmatcher), so a lot it
+    # refused stays re-feedable. /crawl uses a double-seen rule for pre-cutoff items
     # (early pipeline era); daily always skips after one seen.
     if feed_all:
         candidate = all_listings
@@ -3033,12 +2083,8 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
         item_id = listing["item_id"]
         seller  = listing.get("seller", "")
         try:
-            if yolo_test.enabled():
-                # The YOLO week: buttonmatcher's full process, no Gem.
-                if _handoff_lot_to_buttonmatcher(listing, ebay_app_id,
-                                                 ebay_cert_id, source):
-                    fed += 1
-            elif _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, source):
+            if _handoff_lot_to_buttonmatcher(listing, ebay_app_id, ebay_cert_id,
+                                             source):
                 fed += 1
         except Exception as exc:
             print(f"!!! FEED[{source}]: feed failed for {item_id} [{seller}]: {exc}", flush=True)
@@ -3047,116 +2093,13 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
     if first_run:
         seen_store.mark_ondemand2_first_run_done()
 
-    if yolo_test.enabled():
-        notifier.send_warning(
-            _slack_token, _channel_id,
-            f"🔎 `{source}` (YOLO test): handed {fed}/{len(new_listings)} lot(s) "
-            f"to buttonmatcher, no Gemini. Each runs as an automatic Scout lot "
-            f"in #inventory-bot.")
-        print(f">>> FEED[{source}]: YOLO test — handed off={fed}/{len(new_listings)}.",
-              flush=True)
-        return fed
     notifier.send_warning(
         _slack_token, _channel_id,
-        f"🔎 `{source}`: fed {fed}/{len(new_listings)} lot(s) into the Gemini "
-        f"pipeline{' (first run — included already-seen lots)' if feed_all else ''}. "
-        f"Deals (needed buttons / undervalued lots) post here as each Gem read "
-        f"returns; confirmed lots are marked seen so they are never re-run."
-    )
-    print(f">>> FEED[{source}]: feed complete — fed={fed}/{len(new_listings)}.", flush=True)
+        f"🔎 `{source}`: handed {fed}/{len(new_listings)} lot(s) to buttonmatcher"
+        f"{' (first run — included already-seen lots)' if feed_all else ''}. "
+        f"Each runs as an automatic Scout lot in #inventory-bot.")
+    print(f">>> FEED[{source}]: handed off={fed}/{len(new_listings)}.", flush=True)
     return fed
-
-
-def _run_catchup(n: int) -> dict:
-    """`/crawl catchup`: find still-listed lots read before price logging began
-    that have no listing row (catchup.candidates), then count them (n == 0) or
-    feed up to n into the pipeline as catch-up lots.
-
-    The searches are the daily and /crawl phrases, CRAWL_MAX_PAGES deep, because
-    these lots are by definition older than the newest windows.  Fed lots are
-    marked seen at once (see catchup.py) so a second run cannot feed them again.
-    process_pipeline_lot recognises the command and writes only scan_log and
-    price_log for them: no alert, no staging, no training records.
-    """
-    from . import ebay_client
-
-    def _warn(msg):
-        try:
-            notifier.send_warning(_slack_token, _channel_id, msg)
-        except Exception:
-            pass
-
-    try:
-        ebay_app_id  = _get_secret("EBAY_APP_ID")
-        ebay_cert_id = _get_secret("EBAY_CERT_ID")
-    except Exception as exc:
-        _warn(f"/crawl catchup: no eBay credentials ({exc}).")
-        return {"qualify": 0, "fed": 0}
-
-    try:
-        found = _collect_ebay_listings(ebay_app_id, ebay_cert_id,
-                                       max_pages=config.CRAWL_MAX_PAGES)
-        found += ebay_client.find_all_listings(
-            client_id=ebay_app_id, client_secret=ebay_cert_id,
-            queries=config.CRAWL500_QUERIES,
-            excluded_sellers=config.EXCLUDED_SELLERS,
-            excluded_keywords=config.EXCLUDED_KEYWORDS,
-            max_results=200, max_pages=config.CRAWL_MAX_PAGES,
-        )
-    except Exception as exc:
-        traceback.print_exc()
-        _warn(f"/crawl catchup: search failed ({exc}); nothing fed.")
-        return {"qualify": 0, "fed": 0}
-    found = dedup_listings(found)
-
-    # The price_log ids are read fresh rather than trusted from memory: a lot
-    # that already has a listing row must not get a second one.  No sheet, no
-    # feed — guessing here is how a lot's prices would count twice.
-    try:
-        gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
-        ws = price_log.open_price_sheet(gclient, _get_secret("LOGGER_ID"))
-        if ws is None:
-            raise RuntimeError("the price_log tab is unavailable")
-        cols = f"{price_log.col('kind')}:{price_log.col('ebay_id')}"
-        logged = catchup.logged_listing_numbers(ws.batch_get([cols])[0])
-    except Exception as exc:
-        traceback.print_exc()
-        _warn(f"/crawl catchup: couldn't read price_log ({exc}); nothing fed.")
-        return {"qualify": 0, "fed": 0}
-
-    seen = seen_items.load_seen()
-    qualify = catchup.candidates(found, seen, logged, config.PRICE_LOG_START)
-    print(f">>> CATCHUP: {len(found)} found, {len(qualify)} qualify "
-          f"(seen, last seen < {config.PRICE_LOG_START}, no listing row); n={n}.",
-          flush=True)
-
-    if n <= 0:
-        _warn(catchup.preview_text(len(qualify), len(found), config.CRAWL_MAX_LOTS_CAP))
-        return {"qualify": len(qualify), "fed": 0}
-
-    picked = qualify[:n]
-    fed_ids: list[str] = []
-    flushed, marked = 0, True
-    for listing in picked:
-        try:
-            if _feed_lot_to_pipeline(listing, ebay_app_id, ebay_cert_id, catchup.COMMAND):
-                fed_ids.append(listing["item_id"])
-        except Exception as exc:
-            print(f"!!! CATCHUP: feed failed for {listing.get('item_id')}: {exc}", flush=True)
-            traceback.print_exc()
-        # Marked at feed time, unlike /crawl, so a second run can't re-feed them;
-        # checkpointed so a container lost mid-feed leaves few unmarked.
-        if len(fed_ids) - flushed >= 25:
-            flushed, ok = _flush_seen_marks(fed_ids, flushed)
-            marked = marked and ok
-    flushed, ok = _flush_seen_marks(fed_ids, flushed)
-    marked = marked and ok
-    _warn(catchup.summary_text(len(fed_ids), len(picked), len(qualify)))
-    if fed_ids and not marked:
-        _warn("⚠️ /crawl catchup: the fed lots could not be marked seen, so a second "
-              "catch-up run would feed them again. Don't re-run it until the Gem "
-              "has answered for these (each answer marks its lot seen).")
-    return {"qualify": len(qualify), "fed": len(fed_ids)}
 
 
 # ---------------------------------------------------------------------------
@@ -3165,7 +2108,7 @@ def _run_catchup(n: int) -> dict:
 
 def startup() -> None:
     """Load Google Sheets, the match-logging workbook, and CLIP in the background."""
-    global buy_rules, match_logger, price_logger
+    global buy_rules, match_logger
 
     print(">>> STARTUP: Loading buy rules...", flush=True)
     try:
@@ -3188,12 +2131,9 @@ def startup() -> None:
             _slack_token, _channel_id, text, attachment)
         match_logger  = mlog.SheetLogger(match_ws, confirm_ws, service="ebayscout",
                                          on_failure=_loss_alert)
-        price_logger  = price_log.PriceLogger(price_log.open_price_sheet(gclient, logger_id),
-                                              on_failure=_loss_alert)
     except Exception as exc:
         print(f"!!! STARTUP: match-logging init failed (logging disabled): {exc}", flush=True)
         match_logger = mlog.SheetLogger(None, None, service="ebayscout")
-        price_logger = price_log.PriceLogger(None)
 
     # Hydrate CLIP in the background.  On a cold, CPU-throttled container this
     # may not finish until an HTTP request (a scan) provides CPU — those paths

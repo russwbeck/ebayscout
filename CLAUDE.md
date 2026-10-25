@@ -2,13 +2,13 @@
 
 Flask + Slack Bolt service on Google Cloud Run (`ebayscout/main.py`). It (1) runs
 a daily scan that hands the day's unseen eBay lots to buttonmatcher
-(`yolo_test.py`, on by default), which runs each as an automatic Scout lot in
+(`yolo_test.py`), which runs each as an automatic Scout lot in
 `#inventory-bot` and values it against the asking price, and (2) runs
 `/crawl <N>`, the same handoff on demand over an on-demand, seen-aware eBay
 search of up to N (≤1000) lots. **The two-worker Gemini→GCS pipeline it used
 to feed (`ebayscout/PIPELINE_WATCHER_CONTRACT.md`) is retired (operator,
-2026-10-25):** the watchers are off and its routes are removed; its code stays
-until a cleanup removes it.
+2026-10-25):** the watchers are off, and its routes and code are removed, with
+the detector it ran and `/crawl catchup`.
 
 There is **no human review lane here and no manual upload**: `/scout` was
 removed in PR #17 (2026-06-03) and lives in buttonmatcher. Nothing in this
@@ -54,6 +54,16 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
   only this service uses), build the base there (its `CLAUDE.md`, Deploy), then
   put the new tag in `FROM`. Until then the build fails (`check_base_pins.py`)
   and the running service keeps its image.
+- **Shared files, as of 2026-10-25** (byte-identical with buttonmatcher's
+  copies): `bank_cache.py`, `confusable_slogans.py`, `detect_mask.py`,
+  `detect_scale.py`, `edition_twins.py`, `match_logging.py`, `price_log.py`,
+  `sheet_retry.py` and the shared docs; `rerank.py` is ported by hand. On
+  2026-10-25 the Gemini pipeline's code went from both repos:
+  `pipeline_ingest.py` and `gemini_resolve.py` are gone, and
+  `detect_pipeline.py`, `detect_color.py`, `detect_gate.py`,
+  `gemini_geometry.py`, `crop_vectors.py` and `label_harvest.py` left this
+  repo (buttonmatcher keeps its copies). The history below names files as
+  they were then.
 - **buybot is decommissioned (2026-07-05).** Shared files (`detect.py`/
   `detect_pipeline.py`, `detect_gate.py`, `match_logging.py`, `sheet_retry.py`,
   `confusable_slogans.py`, `pipeline_ingest.py`, `gemini_geometry.py`,

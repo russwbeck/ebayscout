@@ -1,6 +1,6 @@
-"""The YOLO week (yolo_test.py, 2026-10-15): with the switch on, each eBay lot
-goes to buttonmatcher's full Gemini-free process as an automatic Scout lot
-instead of to the Gem.
+"""The handoff (yolo_test.py; the YOLO week, 2026-10-15): each eBay lot goes to
+buttonmatcher's full Gemini-free process as an automatic Scout lot.  Its
+switch went with the Gemini pipeline on 2026-10-25.
 
 yolo_test.py is pure and tested directly; main.py's wiring is read via ast
 (main.py imports the heavy stack).  Run: python -m pytest tests/test_yolo_test.py
@@ -26,17 +26,10 @@ def _fn(name):
     return ast.get_source_segment(_MAIN, f) or ""
 
 
-def test_the_switch_is_on_unless_turned_off(monkeypatch):
-    """Default on since 2026-10-25: the Gemini pipeline is retired, so a lot
-    not handed to buttonmatcher would go nowhere."""
-    monkeypatch.delenv("EBAYSCOUT_YOLO_TEST", raising=False)
-    assert yt.enabled()
-    for on in ("1", "true", "yes", "on", ""):
-        monkeypatch.setenv("EBAYSCOUT_YOLO_TEST", on)
-        assert yt.enabled(), on
-    for off in ("0", "false", "no", "off", " OFF "):
-        monkeypatch.setenv("EBAYSCOUT_YOLO_TEST", off)
-        assert not yt.enabled(), off
+def test_there_is_no_switch_back_to_the_gem():
+    """EBAYSCOUT_YOLO_TEST=0 fed the Gemini pipeline, which is gone."""
+    assert not hasattr(yt, "enabled")
+    assert "EBAYSCOUT_YOLO_TEST" not in _MAIN
 
 
 def test_buttonmatcher_url_default_and_override(monkeypatch):
@@ -57,10 +50,10 @@ def test_the_payload_is_what_buttonmatcher_takes():
                  "buying_options": ["AUCTION"], "bid_count": 3}
 
 
-def test_the_feed_hands_lots_off_instead_of_feeding_the_gem_when_on():
+def test_the_feed_hands_every_lot_to_buttonmatcher():
     crawl = _fn("_run_crawl")
-    assert "if yolo_test.enabled():" in crawl
-    assert crawl.index("_handoff_lot_to_buttonmatcher(") < crawl.index("_feed_lot_to_pipeline(")
+    assert "_handoff_lot_to_buttonmatcher(" in crawl
+    assert "_feed_lot_to_pipeline" not in _MAIN
 
 
 def test_a_lot_is_seen_only_once_buttonmatcher_took_it():

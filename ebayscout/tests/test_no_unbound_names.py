@@ -79,33 +79,6 @@ def test_no_undefined_names_or_unbound_locals():
                      + "\n  ".join(bad))
 
 
-def test_pipeline_command_is_bound_before_the_label_sidecar_reads_it():
-    """The exact 2026-07-08 defect, pinned by line order.
-
-    Kept alongside the pyflakes sweep because it names the failure instead of
-    reporting it generically, and it still fails if pyflakes is unavailable.
-    """
-    src = open(os.path.join(REPO, "main.py")).read().splitlines()
-    assigns = [i for i, l in enumerate(src) if l.strip().startswith("pipeline_command =")]
-    reads = [i for i, l in enumerate(src)
-             if "pipeline_command" in l and not l.strip().startswith("#")
-             and not l.strip().startswith("pipeline_command =")]
-    assert assigns, "pipeline_command is never assigned"
-    assert min(assigns) < min(reads), (
-        f"pipeline_command assigned at line {min(assigns) + 1} but first read at "
-        f"line {min(reads) + 1} — UnboundLocalError on every lot")
-
-
-def test_the_label_sidecar_block_imports_storage():
-    """`storage` is function-local in this module, never module-level."""
-    src = open(os.path.join(REPO, "main.py")).read()
-    # located by the guard's start: it also reads `and not is_catchup` since 2026-10-03
-    block = src.split("if lharv.harvest_enabled()")[1].split("# 5) CLIP matching")[0]
-    assert "storage.Client()" in block
-    assert "from google.cloud import storage" in block, (
-        "storage.Client() with no local import — NameError, fail-open, silent")
-
-
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_"):

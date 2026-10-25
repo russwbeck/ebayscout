@@ -9,6 +9,50 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-10-25 (cleanup) — the Gemini pipeline's code removed
+
+The pipeline retired earlier the same day (the entry below); this removes its
+code, in step with buttonmatcher (its HANDOFF, "2026-10-25 (cleanup)").
+
+- **One path for lots:** the daily feed and `/crawl` hand every lot to
+  buttonmatcher (`_handoff_lot_to_buttonmatcher`). The `EBAYSCOUT_YOLO_TEST`
+  switch is gone with the branch it chose (`yolo_test.enabled()`), so the env
+  var does nothing now; leave it or remove it.
+- **`/crawl catchup` is retired.** It fed still-listed lots to the Gem so
+  they got the price_log listing row they never had; it answers that it is
+  retired now. buttonmatcher writes the listing rows of every lot handed to it
+  (`_log_scout_listing`), so nothing new needs catching up.
+- **Removed from `main.py`** (about 1,060 lines): `process_pipeline_lot`,
+  `_feed_lot_to_pipeline`, `/internal/catchup`, the pending-context and
+  staging helpers, the pipeline flags (carpet guard, anchor gate, DB-direct),
+  the `slogan_years` build and the price_log writer only the pipeline used.
+  `/crawl seller`, `/crawl shipping` and `/crawl purchases` keep using
+  `price_log.py` through their own code.
+- **Modules removed:** `detect_pipeline.py` (the copy of buttonmatcher's
+  detector), `detect_color.py`, `detect_gate.py`, `gemini_geometry.py`,
+  `gemini_resolve.py`, `pipeline_ingest.py`, `label_harvest.py`,
+  `crop_vectors.py`, `catchup.py`, and their tests. `pipeline_classify.py`
+  keeps the two helpers the frozen CLIP scan's alerts use
+  (`lot_value_and_deal`, `lookalike_note`); `seen_items.py`, `config.py`,
+  `clip_matcher.py` (the bowl-year map, `entry_id_for`, `vec_sink`) and
+  `notifier.py` (`send_undervalued_alert`) lost their pipeline parts.
+  `image_proc.py` still uses `detect_mask.py` and `detect_scale.py`, so those
+  stay shared.
+- **`tests/test_buttonmatcher_parity.py`** drops the bowl-year resolver
+  checks (front A26) and the detector comparison (front B31): ebayscout runs
+  neither. The scoring constants, rerank weights, placeholder and un-fold
+  pins stay.
+- **Shared files** (`CLAUDE.md`): `bank_cache`, `confusable_slogans`,
+  `detect_mask`, `detect_scale`, `edition_twins`, `match_logging`,
+  `price_log`, `sheet_retry` and the shared docs, all still byte-identical.
+
+Tests: the CI set (`pytest ebayscout/tests`, ignoring `test_clip_matcher.py`
+and `test_seen_items.py`, which need torch and google-cloud), 663 passed and
+3 skipped; 947 before, the difference being the tests of the removed code.
+The two ignored modules reference none of it.
+
+---
+
 ## 2026-10-25 — the Gemini pipeline is retired; lots go to buttonmatcher
 
 The operator retired the Gemini pipeline and turned the watchers off. The
@@ -16,7 +60,8 @@ YOLO week's handoff has carried every lot since 2026-10-15 (`#ebay-checker`:
 "handed N/N lot(s) to buttonmatcher, no Gemini" every day), so:
 
 - `yolo_test.enabled()` is on by default; `EBAYSCOUT_YOLO_TEST=0` would only
-  upload photos for a Gem nobody runs.
+  upload photos for a Gem nobody runs. (The switch went with the code, in the
+  cleanup entry above.)
 - `/pipeline/notify` (it took the watcher's shared secret from the internet),
   `/internal/pipeline` and `/internal/pipelinetest` are removed.
   `process_pipeline_lot` and the rest of the Gemini path stay until the code

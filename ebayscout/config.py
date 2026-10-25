@@ -79,15 +79,6 @@ RED_THRESHOLD             = 0.65   # below this = low confidence (35% wrong in d
 # buttonmatcher/main.py REF_CHECK_WEIGHT.
 REF_CHECK_WEIGHT          = 0.15
 
-# Auto-staging gate (Gemini pipeline). A crop is copied straight into
-# reference/_staging (for buttonmatcher's /reference review) when it cleared real
-# Hough detection AND Gemini confirmed its slogan (independent agreement). The
-# CLIP `overall` is NO LONGER a confidence gate — log analysis (Logger_5) showed a
-# score threshold is the wrong safety lever (a 0.968 visual-twin still matched
-# wrong, while a 0.82 floor captured ~3.5x more good crops). Gemini agreement is
-# the safety; this value is only a tiny junk floor (ignore sub-~0.5 noise).
-STAGE_CONF = 0.50
-
 # --- GCS dedup file ---
 SEEN_ITEMS_BLOB = "ebay_scout/seen_items.json"
 
@@ -147,19 +138,6 @@ IMAGE_MAX_DIM         = 1400     # resize longest side (was 800); better small-b
 HOUGH_RADIUS_SCALES   = (1.0, 0.66, 0.45, 0.30)  # multi-scale sweep, large→small
 HOUGH_MIN_RADIUS_PX   = 9        # floor so we don't chase speckle
 ENCODE_BATCH          = 16       # sub-batch size for CLIP image encoding
-
-# --- Undervalued-lot alerts ---
-# Post a deal alert when the confirmed buttons in a lot are worth more than the
-# asking price, whether or not any of them is NEEDED.
-#
-# This constant read False for months and nothing consulted it: the pipeline
-# posted the alert whenever lot_value > asking, and the deferral note that used
-# to sit here described a state the code was never in.  It is read now, and set
-# to the behaviour that has actually been live — a flag is only worth having if
-# it says what the service does.  Setting it False silences those alerts (the
-# needed-button path is unaffected) and is the one line to change if the
-# valuation proves noisy; the review's ask #5 is the operator's decision on it.
-ENABLE_UNDERVALUED_ALERTS = True
 
 # --- Scan log (groundwork for a future automated valuer) ---
 # One JSON line per processed listing: title, asking price, photos scored, top
@@ -344,48 +322,16 @@ CRAWL500_MAX_LOTS = 500   # historical default; the /crawl command now takes N.
 # like `/crawl 50000` — the handler rejects N outside 1..CRAWL_MAX_LOTS_CAP.
 CRAWL_MAX_LOTS_CAP = 1000
 
-# The first day the pipeline wrote price_log listing rows.  `/crawl catchup`
-# (catchup.py) re-feeds still-listed lots whose LAST seen mark is earlier, so
-# they get the listing row they never had.
-PRICE_LOG_START = "2026-09-30"
-
-# The default daily /run-scan FEEDS THE GEMINI PIPELINE (detection → Gemini →
-# CLIP via process_pipeline_lot) instead of the legacy CLIP-only scan. `/crawl
-# <N>` is the manual one-off; the daily scan is the automated default moving
-# forward. Set DAILY_PIPELINE_FEED=0 to revert the daily run to the CLIP scan
-# without a redeploy (e.g. if the watcher workers are down).
+# The default daily /run-scan hands the day's unseen lots to buttonmatcher
+# (main._run_crawl; until 2026-10-25 it fed the Gemini pipeline, hence the
+# name) instead of running the legacy CLIP-only scan. `/crawl <N>` is the
+# manual one-off. Set DAILY_PIPELINE_FEED=0 to revert the daily run to the CLIP
+# scan without a redeploy.
 DAILY_PIPELINE_FEED = os.environ.get("DAILY_PIPELINE_FEED", "1").strip().lower() in (
     "1", "true", "yes", "on")
-# Max lots the daily pipeline feed pushes per run. Seen-aware, so after the first
+# Max lots the daily feed hands over per run. Seen-aware, so after the first
 # run daily increments are just the day's new listings; this caps the first run.
 DAILY_PIPELINE_N = 1000
-
-# --- Gemini → GCS pipeline (Drive watcher → Gem → GCS → /pipeline/notify) -----
-# Google Drive folder the external watcher polls; /crawl10 uploads primary lot
-# photos here. Set DRIVE_FOLDER_ID in the deploy env. The Drive service-account
-# key is stored in Secret Manager as DRIVE_SA_JSON (scope drive.file; the folder
-# must be shared with the SA's email).
-DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
-# Filename/object-name prefix that routes pipeline outputs to ebayscout (vs
-# buttonmatcher) — both services share the bucket's pipeline/output/ prefix.
-PIPELINE_OBJECT_PREFIX = "ebayscout__"
-# GCS prefix where the Gem writes <f>.png + <f>.png.response.json.
-PIPELINE_OUTPUT_PREFIX = "pipeline/output/"
-# GCS prefix where /crawl10 drops each lot's primary photo for the watcher to
-# pick up (a service account can't own Drive files on personal Gmail — "no
-# storage quota" — so ebayscout feeds the pipeline via GCS instead of Drive).
-PIPELINE_INPUT_PREFIX = "pipeline/input/"
-# Per-lot correlation context written at upload, read when the async result
-# returns (one small JSON blob per key; survives cold start).
-PENDING_CONTEXT_PREFIX = "ebay_scout/pending/"
-# Temp holding area for auto-confirmed crops awaiting the Yes/No reference vote.
-PIPELINE_CROPS_PREFIX  = "ebay_scout/pipeline_crops/"
-# Shared reference staging area buttonmatcher's /reference flow consumes. On a
-# Yes vote ebayscout copies crop FILES here (it never writes vectors.pt).
-REFERENCE_STAGING_PREFIX = "reference/_staging/"
-# Stale pending/crop blobs older than this many days are swept (never-returned
-# Gem reads, abandoned Yes/No prompts).
-PIPELINE_TTL_DAYS = 7
 
 # --- Year-augmented deep-crawl terms (on-demand /run-scan?year_crawl=1) ---
 # Base terms that get a year appended (e.g. "Penn State button 1982") for each

@@ -1,9 +1,11 @@
 # Watcher contract — routing eBay-Scout lots through the Gemini pipeline
 
-> **RETIRED (operator, 2026-10-25).** The watchers are off, and
-> `/pipeline/notify`, `/internal/pipeline` and `/internal/pipelinetest` are
-> removed. Lots go to buttonmatcher instead (`yolo_test.py`, on by default).
-> This document is the record of how the pipeline worked; nothing below runs.
+> **RETIRED AND REMOVED (operator, 2026-10-25).** The watchers are off, and
+> the routes (`/pipeline/notify`, `/internal/pipeline`,
+> `/internal/pipelinetest`) and the code (`process_pipeline_lot`, the
+> detector, staging, `/crawl catchup`) are gone. Lots go to buttonmatcher
+> (`yolo_test.py`). This document is the record of how the pipeline worked;
+> nothing below runs, and names below may no longer exist.
 
 `/crawl <N>` pushes each lot's **primary photo** into the same
 Drive → Gem → GCS pipeline buttonmatcher uses, and consumes the result

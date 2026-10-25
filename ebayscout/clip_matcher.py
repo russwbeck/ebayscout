@@ -33,7 +33,6 @@ from . import match_logging
 from . import scoring
 from . import rerank
 from . import normalize
-from . import edition_twins as edt
 from .scoring import tokenize, rarity_weight, STOPWORDS, confidence_emoji, is_confirmed
 
 # Pin PyTorch's CPU thread budget so it doesn't over-subscribe the container's
@@ -67,32 +66,10 @@ _init_lock   = threading.Lock()
 
 _era_means: dict | None = None   # era_label -> unit [D] tensor, built lazily
 
-# (year, normalized_slogan) -> sloganID, loaded from the shared text_db.json so
-# the Gemini pipeline can stage confirmed crops under reference/_staging/<id>/
-# exactly where buttonmatcher's /reference flow consumes them. Best-effort: a
-# (year, slogan) with no id falls back to the year-only "_year_YYYY" convention.
+# (year, normalized_slogan) -> sloganID, loaded from the shared text_db.json for
+# the text_features.pt staleness check in init().  (The Gemini pipeline also
+# staged confirmed crops under reference/_staging/<id>/ by it, until 2026-10-25.)
 _slogan_key_to_entry: dict = {}
-
-# (normalize_key(slogan), season_year:int) -> game_date CALENDAR year:int, for
-# entries whose printed/game year differs from their season year (bowl
-# editions).  Mirrors buttonmatcher's GAME_YEAR_BY_KEY, built from the SAME
-# text_db.json in the loop below, and keyed the same way round —
-# (normkey, year), NOT the (year, normkey) `_slogan_key_to_entry` uses — because
-# the shared `gemini_resolve._game_year_of` looks it up in that order.
-#
-# Why this exists here at all: it was built and passed only in buttonmatcher,
-# so ebayscout carried the shared resolver's `game_year_by_key` parameter and
-# never filled it.  Bowl matching silently degenerated to season-only on the
-# Gemini pipeline — ~92% of volume — and all 51 `gemini_printed_year`
-# confirmations in the 2026-09-07 export came from buttonmatcher slash
-# commands, none from here (SHIPPED_WATCH_REVIEW.md §5, front A26).
-_game_year_by_key: dict = {}
-
-def game_year_by_key():
-    """The bowl-offset map for `gemini_resolve(game_year_by_key=...)`.  Empty
-    dict (never None) before init() or when the lever is off, which the shared
-    resolver treats as season-year-only."""
-    return _game_year_by_key
 
 
 def _read_bank(bucket, pt_name: str, tmpdir: str) -> dict:
@@ -166,11 +143,10 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
             _ref_labels  = list(cached_vecs["labels"])
             print(f">>> CLIP: Image reference vectors loaded — {len(_ref_labels)} entries.", flush=True)
 
-            # --- text_db.json (sloganID map for reference staging) ---
-            # Optional: only used by the Gemini-pipeline staging path. Shared
-            # schema: {"<id>": {"slogan":..., "year":..., "type":...}, ...}.
+            # --- text_db.json (sloganID map for the staleness check) ---
+            # Optional. Shared schema:
+            # {"<id>": {"slogan":..., "year":..., "type":...}, ...}.
             _slogan_key_to_entry.clear()
-            _game_year_by_key.clear()
             _placeholder_keys = set()
             try:
                 tdb_path = os.path.join(tmpdir, "text_db.json")
@@ -178,7 +154,6 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
                 import json as _json
                 with open(tdb_path) as _fh:
                     _tdb = _json.load(_fh)
-                _gd_on = edt.game_date_year_enabled()
                 for _eid, _rec in (_tdb or {}).items():
                     try:
                         _yr = int(_rec.get("year"))
@@ -194,28 +169,11 @@ def init(bucket_name: str = config.BUCKET_NAME) -> None:
                     # predicate stays byte-identical to buttonmatcher's.
                     if normalize.is_placeholder_slogan(_rec.get("slogan", "")):
                         _placeholder_keys.add((_yr, _nk))
-                    # Bowl-offset entry: only stored when the game year differs
-                    # from the season year, since a matching year adds nothing
-                    # (the season year already matches).  Same rule as
-                    # buttonmatcher's hydrate_data().
-                    if _gd_on:
-                        _gy = edt.game_year_from_date(_rec.get("game_date"))
-                        if _gy is not None and _gy != _yr:
-                            _game_year_by_key[(_nk, _yr)] = _gy
                 print(f">>> CLIP: text_db.json loaded — {len(_slogan_key_to_entry)} entry ids.",
                       flush=True)
             except Exception as _exc:
-                print(f">>> CLIP: text_db.json not loaded (staging will use _year_YYYY): {_exc}",
+                print(f">>> CLIP: text_db.json not loaded (no staleness check): {_exc}",
                       flush=True)
-            # ALWAYS print, on every path.  This line is front A26's gate, and
-            # an absent line cannot be told apart from a lever that is off or a
-            # DB that failed to download — so say which.  buttonmatcher prints
-            # its own on build failure for the same reason.
-            print(f">>> GAME_YEAR: {len(_game_year_by_key)} bowl-offset entries "
-                  f"(printed year != season year) indexed"
-                  f"{'' if edt.game_date_year_enabled() else ' — LEVER OFF'}"
-                  f"{'' if _slogan_key_to_entry else ' — text_db unavailable'}.",
-                  flush=True)
 
             # --- staleness guard: text_features.pt vs. text_db.json ---
             # text_features.pt (downloaded above, unconditionally) is never
@@ -280,26 +238,9 @@ def reference_years() -> set[int]:
 
 def text_db_arrays() -> tuple[list[str], list[int], list[str]]:
     """(_text_phrases, _text_years, _text_types) — the parallel slogan DB arrays.
-    Used to build the Gemini resolver's slogan→years multimap (empty before init)."""
+    main.py builds the edition-twin and look-alike registries from them (empty
+    before init)."""
     return list(_text_phrases), [int(y) for y in _text_years], list(_text_types)
-
-
-def entry_id_for(year, slogan: str) -> str:
-    """Resolve the reference sloganID for (year, slogan) for crop staging.
-
-    Returns the shared text_db.json sloganID when known, else the year-only
-    "_year_YYYY" convention buttonmatcher also accepts (so a crop is never lost
-    just because its exact slogan isn't ID-mapped)."""
-    try:
-        yr = int(str(year).split()[0])
-    except (ValueError, IndexError, AttributeError):
-        yr = None
-    if yr is not None:
-        eid = _slogan_key_to_entry.get((yr, normalize.normalize_key(slogan)))
-        if eid:
-            return eid
-        return f"_year_{yr}"
-    return "_year_unknown"
 
 
 def _label_year(label) -> int | None:
@@ -479,7 +420,6 @@ def match_crops_with_diagnostics(
     pil_images: list[Image.Image],
     restrict_years: set[int] | None = None,
     shadow: bool | None = None,
-    vec_sink: list | None = None,
 ) -> list[dict]:
     """Match crops AND produce the per-crop logging payload in ONE encode pass.
 
@@ -496,16 +436,8 @@ def match_crops_with_diagnostics(
     No threshold is applied to ``candidates`` — every crop reports its best
     matches; the caller gates "confirmed" via is_confirmed(overall, gap). The
     shadow (all-years) leaderboard is skipped when BUTTONMATCHER_SHADOW_PASS=0.
-
-    ``vec_sink``, when a list is passed, receives one L2-normed vector per crop
-    in crop order (``vec_sink[i]`` is crop_num ``i+1``), for the caller's
-    crop-vector sidecar (``crop_vectors``).  Nothing here reads it back: it is
-    the embedding the two matmuls below already run on, kept instead of dropped,
-    because it is the only thing the reference library can be measured with —
-    "does this reference photo make a real confirmed crop of that button rank
-    #1" is then a dot product on stored data rather than the composite quality
-    score's guess about photography (`REFERENCE_SCORING_REVIEW.md` §10).
-    ebayscout matters most here: it is the larger source of staged crops.
+    (Its ``vec_sink``, the Gemini pipeline's crop-vector sidecar, went with the
+    pipeline on 2026-10-25.)
     """
     if not _initialized:
         raise RuntimeError("clip_matcher.init() must be called before match_crops_with_diagnostics().")
@@ -522,15 +454,6 @@ def match_crops_with_diagnostics(
         with torch.inference_mode():
             vecs = _model.encode_image(tensors).float()
         vecs = vecs / vecs.norm(dim=-1, keepdim=True)
-
-        # The crops' embeddings, for the caller's sidecar (§10.2 step 1).  Taken
-        # per chunk, in chunk order, so the sink ends up in crop order exactly
-        # as ``out`` does.  Fail-open: losing a sidecar must never lose a lot.
-        if vec_sink is not None:
-            try:
-                vec_sink.extend(vecs.detach().cpu().numpy().astype(np.float32))
-            except Exception as _vs_err:
-                print(f">>> CLIP: crop-vector sink skipped ({_vs_err})", flush=True)
 
         for vec in vecs:
             vec        = vec.unsqueeze(0)
