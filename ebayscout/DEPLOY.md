@@ -168,7 +168,8 @@ The image goes to the `gcr.io` repository (multi-region `us`), next to
 buttonmatcher's images and the shared base image both services start FROM
 (`button-base:<tag>`, built by hand from buttonmatcher's `base/Dockerfile`).
 The base has to exist before this service builds (DECISIONS.md #34). The
-`buttons` repository in us-east1 held this service's images until 2026-10-18.
+`buttons` repository in us-east1 held this service's images until 2026-10-18,
+when it was deleted.
 
 ---
 

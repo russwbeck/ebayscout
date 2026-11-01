@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-18)
+# eBay Scout — Session Handoff (latest entry 2026-10-25)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#34) first; this file is
@@ -6,6 +6,75 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-10-25 (cleanup) — the Gemini pipeline's code removed
+
+The pipeline retired earlier the same day (the entry below); this removes its
+code, in step with buttonmatcher (its HANDOFF, "2026-10-25 (cleanup)").
+
+- **One path for lots:** the daily feed and `/crawl` hand every lot to
+  buttonmatcher (`_handoff_lot_to_buttonmatcher`). The `EBAYSCOUT_YOLO_TEST`
+  switch is gone with the branch it chose (`yolo_test.enabled()`), so the env
+  var does nothing now; leave it or remove it.
+- **`/crawl catchup` is retired.** It fed still-listed lots to the Gem so
+  they got the price_log listing row they never had; it answers that it is
+  retired now. buttonmatcher writes the listing rows of every lot handed to it
+  (`_log_scout_listing`), so nothing new needs catching up.
+- **Removed from `main.py`** (about 1,060 lines): `process_pipeline_lot`,
+  `_feed_lot_to_pipeline`, `/internal/catchup`, the pending-context and
+  staging helpers, the pipeline flags (carpet guard, anchor gate, DB-direct),
+  the `slogan_years` build and the price_log writer only the pipeline used.
+  `/crawl seller`, `/crawl shipping` and `/crawl purchases` keep using
+  `price_log.py` through their own code.
+- **Modules removed:** `detect_pipeline.py` (the copy of buttonmatcher's
+  detector), `detect_color.py`, `detect_gate.py`, `gemini_geometry.py`,
+  `gemini_resolve.py`, `pipeline_ingest.py`, `label_harvest.py`,
+  `crop_vectors.py`, `catchup.py`, and their tests. `pipeline_classify.py`
+  keeps the two helpers the frozen CLIP scan's alerts use
+  (`lot_value_and_deal`, `lookalike_note`); `seen_items.py`, `config.py`,
+  `clip_matcher.py` (the bowl-year map, `entry_id_for`, `vec_sink`) and
+  `notifier.py` (`send_undervalued_alert`) lost their pipeline parts.
+  `image_proc.py` still uses `detect_mask.py` and `detect_scale.py`, so those
+  stay shared.
+- **`tests/test_buttonmatcher_parity.py`** drops the bowl-year resolver
+  checks (front A26) and the detector comparison (front B31): ebayscout runs
+  neither. The scoring constants, rerank weights, placeholder and un-fold
+  pins stay.
+- **Shared files** (`CLAUDE.md`): `bank_cache`, `confusable_slogans`,
+  `detect_mask`, `detect_scale`, `edition_twins`, `match_logging`,
+  `price_log`, `sheet_retry` and the shared docs, all still byte-identical.
+
+Tests: the CI set (`pytest ebayscout/tests`, ignoring `test_clip_matcher.py`
+and `test_seen_items.py`, which need torch and google-cloud), 663 passed and
+3 skipped; 947 before, the difference being the tests of the removed code.
+The two ignored modules reference none of it.
+
+---
+
+## 2026-10-25 — the Gemini pipeline is retired; lots go to buttonmatcher
+
+The operator retired the Gemini pipeline and turned the watchers off. The
+YOLO week's handoff has carried every lot since 2026-10-15 (`#ebay-checker`:
+"handed N/N lot(s) to buttonmatcher, no Gemini" every day), so:
+
+- `yolo_test.enabled()` is on by default; `EBAYSCOUT_YOLO_TEST=0` would only
+  upload photos for a Gem nobody runs. (The switch went with the code, in the
+  cleanup entry above.)
+- `/pipeline/notify` (it took the watcher's shared secret from the internet),
+  `/internal/pipeline` and `/internal/pipelinetest` are removed.
+  `process_pipeline_lot` and the rest of the Gemini path stay until the code
+  is removed. `PIPELINE_WATCHER_CONTRACT.md` is the record.
+- `clip_matcher.init()` reads buttonmatcher's CLIP banks from their `.npz`
+  twins when they match the `.pt` in the bucket (`bank_cache.py`, shared,
+  phase 1): `torch.load(weights_only=True)` does not stop a planted `.pt`
+  running code on the pinned torch (CVE-2025-32434, CVE-2026-24747). Phase 2
+  (both repos) drops the `.pt`. buttonmatcher's HANDOFF, 2026-10-25.
+
+The operator rotates `PIPELINE_SHARED_SECRET` (the Chromebook held it); this
+service's handoff to buttonmatcher still sends it, so both services take the
+new value.
 
 ---
 
@@ -55,8 +124,15 @@ cannot download them): the build passes and keeps the gunicorn `CMD`; with
 `urllib3==2.7.0` it fails with the message. Against real installs, the check
 also catches a different CLIP commit and a missing package.
 
-**Not run:** the real build on `button-base:20261018`, the trigger, the deploy
-and the service.
+**Outcome (2026-10-18):** merged as #130 (`cf4cc90`). The trigger built and
+deployed in about 2½ minutes (the pin check passed and the push to `gcr.io`
+worked), `/health` returned 200, and the 9 AM scan handed 3/3 lots to
+buttonmatcher. That is the YOLO week, so this service's own CLIP path has not
+run on the base yet; it loads the same weights file buttonmatcher does. The
+`buttons` repository was deleted the same day (2.3 GiB, three images from
+2026-10-16), so rolling back to an earlier revision no longer works. Artifact
+Registry for both services is now the one `gcr.io` repository: 1.1 GiB on
+2026-10-20, against 7.8 GB in two repositories the week before.
 
 ---
 

@@ -27,53 +27,6 @@ FAKE_MATCHES = [
 ]
 
 
-class TestSendUndervaluedAlert:
-    def test_calls_chat_post_message_once(self):
-        mock_client = MagicMock()
-        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
-            notifier.send_undervalued_alert(
-                slack_token="xoxb-fake",
-                channel="#test",
-                listing=FAKE_LISTING,
-                matches=FAKE_MATCHES,
-                lot_value=7.50,
-                asking_price=15.00,
-                margin=-7.50,   # undervalued check is done by caller
-                unmatched_count=2,
-            )
-        mock_client.chat_postMessage.assert_called_once()
-
-    def test_message_contains_key_fields(self):
-        captured = {}
-
-        def fake_post(**kwargs):
-            captured.update(kwargs)
-            return MagicMock()
-
-        mock_client = MagicMock()
-        mock_client.chat_postMessage.side_effect = fake_post
-
-        with patch("ebayscout.notifier.WebClient", return_value=mock_client):
-            notifier.send_undervalued_alert(
-                slack_token="xoxb-fake",
-                channel="#test-channel",
-                listing=FAKE_LISTING,
-                matches=FAKE_MATCHES,
-                lot_value=7.50,
-                asking_price=15.00,
-                margin=-7.50,
-                unmatched_count=2,
-            )
-
-        text = captured.get("text", "")
-        assert "$15.00" in text          # asking price
-        assert "$7.50" in text           # lot value
-        assert "1977" in text            # year
-        assert "We Are Number One" in text
-        assert "sporty_collector" in text
-        assert "2 additional" in text    # unmatched count
-
-
 class TestSendNeededAlert:
     def test_calls_chat_post_message_once(self):
         needed = [m for m in FAKE_MATCHES if m["amount_needed"] > 0]
@@ -254,11 +207,6 @@ class TestSellerTextIsEscaped:
         # the listing's own link still renders
         assert "<https://www.ebay.com/itm/1|" in text, text
 
-    def test_undervalued_alert(self):
-        self._assert_inert(self._sent(
-            notifier.send_undervalued_alert, matches=FAKE_MATCHES, lot_value=7.5,
-            asking_price=5.0, margin=2.5, unmatched_count=0))
-
     def test_needed_alert(self):
         self._assert_inert(self._sent(
             notifier.send_needed_alert, needed_buttons=FAKE_MATCHES,
@@ -289,12 +237,6 @@ class TestAlertsCarryTheWatcherRunId:
     def test_needed_alert_names_file_and_run(self):
         text = self._sent(notifier.send_needed_alert, self.TRACED,
                           needed_buttons=FAKE_MATCHES, asking_price=5.0, lot_value=7.5)
-        assert text.endswith("`ebayscout__0659a77949a3.png` · run `3f9a2c1d`"), text
-
-    def test_undervalued_alert_names_file_and_run(self):
-        text = self._sent(notifier.send_undervalued_alert, self.TRACED,
-                          matches=FAKE_MATCHES, lot_value=7.5, asking_price=5.0,
-                          margin=2.5, unmatched_count=0)
         assert text.endswith("`ebayscout__0659a77949a3.png` · run `3f9a2c1d`"), text
 
     def test_legacy_listing_is_unchanged(self):

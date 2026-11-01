@@ -99,6 +99,13 @@ CONFUSABLE_GROUPS = [
     ["I Bleed Blue & White (black)", "I Bleed Blue & White (white)"],
     ["We're in a Fight for Life. (blood drop)",
      "We're in a Fight for Life. (Pitt-Penn State)"],
+    # 2026-10-25, operator: 1975 "Hammer The Hawks" and 1976 "Hammer The
+    # Hawkeyes" are one Central Counties design, one word apart.  confirm_log:
+    # of 21 confirmed 1976 crops only 9 ranked #1; 7 went to 1975 Hawks and 5
+    # to the 1972 "Hammer The Hawkeyes" (an edition twin, which the group
+    # brings along).  Also the test bed for the zoomed comparison shadow
+    # (buttonmatcher zoom_compare.py).
+    ["Hammer The Hawks", "Hammer The Hawkeyes"],
 ]
 
 

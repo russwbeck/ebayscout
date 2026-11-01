@@ -1,9 +1,9 @@
 """
 ebayscout/notifier.py
 
-Format and send Slack alerts for the two alert types:
-  1. Undervalued lot  (asking price < calculated lot value)
-  2. Needed buttons   (lot contains buttons where amount_needed > 0)
+Format and send Slack alerts: needed buttons (a lot contains buttons where
+amount_needed > 0), plus the scan summaries.  The undervalued-lot alert went
+with its only sender, the Gemini pipeline (2026-10-25).
 
 Uses slack_sdk WebClient directly — no Bolt / Flask needed for a batch job.
 """
@@ -52,73 +52,6 @@ def _trace_text(listing: dict) -> str:
     if listing.get("run_id"):
         parts.append(f"run `{_esc(listing['run_id'])}`")
     return " · ".join(parts)
-
-
-def send_undervalued_alert(
-    slack_token: str,
-    channel: str,
-    listing: dict,
-    matches: list[dict],
-    lot_value: float,
-    asking_price: float,
-    margin: float,
-    unmatched_count: int,
-) -> None:
-    """
-    Post an undervalued-lot alert.
-
-    Args:
-        listing:         {item_id, title, listing_url, seller, ...}
-        matches:         High-confidence matches with price data fields:
-                         {year, slogan, overall, max_price_single, amount_needed}
-        lot_value:       Sum of max_price_single for all high-conf matches.
-        asking_price:    eBay asking price.
-        margin:          lot_value - asking_price (always > 0 when this fires).
-        unmatched_count: Number of crops that didn't reach confidence threshold.
-    """
-    title       = listing.get("title", "Untitled")
-    listing_url = listing.get("listing_url", "")
-    seller      = listing.get("seller", "unknown")
-
-    header_text = (
-        f"🔍 *Undervalued lot found on eBay*\n"
-        f"*<{listing_url}|{_esc(_truncate(title, 80))}>*\n"
-        f"Asking: *${asking_price:.2f}*  |  "
-        f"Calculated value: *${lot_value:.2f}*  |  "
-        f"Margin: *+${margin:.2f}*"
-    )
-
-    button_lines = []
-    for m in matches:
-        year   = m.get("year", "?")
-        slogan = m.get("slogan", "?")
-        price  = m.get("max_price_single", "")
-        needed = m.get("amount_needed", 0)
-        needed_tag = f"  ⭐ needed ({needed})" if needed > 0 else ""
-        line = f"  • {year} — \"{slogan}\"    max: {price}{needed_tag}"
-        button_lines.append(line)
-        flag = _lookalike_line(m.get("lookalike"))
-        if flag:
-            button_lines.append(flag)
-
-    buttons_text = "\n".join(button_lines) if button_lines else "  (none identified with confidence)"
-
-    unmatched_text = (
-        f"\n_{unmatched_count} additional button(s) could not be identified with confidence._"
-        if unmatched_count > 0
-        else ""
-    )
-
-    seller_text = f"Seller: {_esc(seller)}"
-
-    full_text = "\n\n".join(filter(None, [
-        header_text,
-        "Matched buttons:\n" + buttons_text + unmatched_text,
-        seller_text,
-        _trace_text(listing),
-    ]))
-
-    _post_message(slack_token, channel, full_text)
 
 
 def send_needed_alert(

@@ -1,6 +1,6 @@
-"""Standalone runner for test_crop_vectors_wiring (works without pytest).
+"""Standalone runner for test_bank_cache (works without pytest).
 
-    python tests/run_crop_vectors_wiring_tests.py
+    python tests/run_bank_cache_tests.py
 Exits non-zero if any test fails.
 """
 
@@ -10,26 +10,27 @@ import traceback
 import importlib.util
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(os.path.dirname(HERE))   # parent of the ebayscout pkg
-sys.path.insert(0, REPO_ROOT)
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 
 spec = importlib.util.spec_from_file_location(
-    "test_crop_vectors_wiring", os.path.join(HERE, "test_crop_vectors_wiring.py")
+    "test_bank_cache", os.path.join(HERE, "test_bank_cache.py")
 )
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 passed = failed = 0
-for name in sorted(dir(mod)):
-    if not name.startswith("test_"):
+for tname in sorted(dir(mod)):
+    if not tname.startswith("test_"):
         continue
     try:
-        getattr(mod, name)()
+        getattr(mod, tname)()
         passed += 1
-        print(f"PASS {name}")
+        print(f"PASS {tname}")
     except Exception:
         failed += 1
-        print(f"FAIL {name}")
+        print(f"FAIL {tname}")
         traceback.print_exc()
 
 print(f"\n{passed} passed, {failed} failed")
