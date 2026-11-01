@@ -1,10 +1,9 @@
 """
 ebayscout/normalize.py
 
-Single slogan-string normalization policy, shared by the Gemini pipeline's
-slogan/year multimap (gemini_resolve.build_slogan_year_multimap) and the
-two-pass resolver (gemini_resolve.resolve_with_gemini_slogans), and by the
-reference-staging entry-id lookup.
+Single slogan-string normalization policy, shared by clip_matcher's text_db
+lookups and main.py's edition-twin and look-alike registries.  (The Gemini
+pipeline's resolver and reference staging used it too, until 2026-10-25.)
 
 Replicates buttonmatcher/buy_rules._normalize_key EXACTLY so the two services
 agree on slogan identity (the GCS reference DB + text_db are shared): lowercase
