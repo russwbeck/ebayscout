@@ -1157,6 +1157,21 @@ def flatten_confirm_record(rec):
 
 # --- Sheet logger ------------------------------------------------------------
 
+# Batched confirm rows (2026-11-07).  Eight /inventory lots in nine minutes,
+# mostly auto-confirms, wrote one confirm_log row per button -- 15 in about four
+# seconds on one lot -- beside the inventory count and Bot Writes row each
+# button also writes, and the project hit Sheets' "write requests per minute
+# per user" quota: one confirm row lost after the retries.  The Logger is a
+# record, not a deliverable, and need not be instant (operator), so a logger
+# built with ``batch_confirms=True`` queues confirm rows and writes them in one
+# ``append_rows`` CONFIRM_FLUSH_DELAY_S after the first of a burst, at once when
+# CONFIRM_FLUSH_MAX are queued, and whenever ``flush()`` is called (the caller
+# flushes on its health ping and at exit, so a scale-to-zero does not drop
+# rows).  Off by default: a service opts in.
+CONFIRM_FLUSH_DELAY_S = 5.0
+CONFIRM_FLUSH_MAX = 50
+
+
 class SheetLogger:
     """Writes structured rows to two injected gspread-style worksheets.
 
@@ -1179,7 +1194,9 @@ class SheetLogger:
     not raise into the bot, and is not trusted to.
     """
 
-    def __init__(self, match_ws, confirm_ws, *, service, on_failure=None):
+    def __init__(self, match_ws, confirm_ws, *, service, on_failure=None,
+                 batch_confirms=False, flush_delay=CONFIRM_FLUSH_DELAY_S,
+                 flush_max=CONFIRM_FLUSH_MAX, timer_factory=None):
         self._match_ws = match_ws
         self._confirm_ws = confirm_ws
         self._service = service
@@ -1193,6 +1210,14 @@ class SheetLogger:
         # nothing when writes succeed (one append per image, one per click) and
         # is exactly what you want when they do not.
         self._write_lock = threading.Lock()
+        # Batched confirm rows: see CONFIRM_FLUSH_DELAY_S.
+        self._batch_confirms = bool(batch_confirms)
+        self._flush_delay = float(flush_delay)
+        self._flush_max = max(1, int(flush_max))
+        self._timer_factory = timer_factory or threading.Timer
+        self._pending = []              # [(check_id, row)], oldest first
+        self._pending_lock = threading.Lock()
+        self._flush_timer = None
 
     @property
     def service(self):
@@ -1284,10 +1309,56 @@ class SheetLogger:
             self._warn_disabled_once("confirm write")
             return
         row = flatten_confirm_record(record)
-        self._append(lambda: self._confirm_ws.append_row(
-            row, value_input_option="RAW"), f"confirm write for {check_id}",
-            lost="This confirm_log row is not in the Logger; it is attached.",
-            rows=[row], tab="confirm_log")
+        if not self._batch_confirms:
+            self._append(lambda: self._confirm_ws.append_row(
+                row, value_input_option="RAW"), f"confirm write for {check_id}",
+                lost="This confirm_log row is not in the Logger; it is attached.",
+                rows=[row], tab="confirm_log")
+            return
+        flush_now = False
+        with self._pending_lock:
+            self._pending.append((check_id, row))
+            if len(self._pending) >= self._flush_max:
+                flush_now = True
+            elif self._flush_timer is None:
+                t = self._timer_factory(self._flush_delay, self.flush)
+                t.daemon = True
+                self._flush_timer = t
+                t.start()
+        if flush_now:
+            self.flush()
+
+    @property
+    def pending_confirms(self):
+        """How many confirm rows are queued and not yet written."""
+        with self._pending_lock:
+            return len(self._pending)
+
+    def flush(self):
+        """Write every queued confirm row in one ``append_rows``.  Returns how
+        many rows were in the batch (0 when none were queued).  Never raises;
+        a batch the quota still refuses after the retries is reported through
+        ``on_failure`` with every row attached, as a single row was."""
+        with self._pending_lock:
+            batch, self._pending = self._pending, []
+            timer, self._flush_timer = self._flush_timer, None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        if not batch:
+            return 0
+        rows = [r for _, r in batch]
+        ids = [str(c) for c, _ in batch]
+        what = (f"confirm write for {ids[0]}" if len(ids) == 1 else
+                f"confirm write for {len(ids)} rows ({ids[0]} .. {ids[-1]})")
+        self._append(lambda: self._confirm_ws.append_rows(
+            rows, value_input_option="RAW"), what,
+            lost=(f"These {len(rows)} confirm_log row(s) are not in the Logger; "
+                  f"they are attached."),
+            rows=rows, tab="confirm_log")
+        return len(rows)
 
 
 def lost_rows_file(tab, what, rows):

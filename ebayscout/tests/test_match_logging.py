@@ -1344,3 +1344,115 @@ def test_ocr_columns_are_the_tail_and_flatten():
                              "ocr_year")] == ["", "", "", "", ""]
     assert ml.MATCH_HEADER[-5:] == ["ocr_text", "ocr_slogan", "ocr_score", "ocr_agree",
                                     "ocr_year"]
+
+
+# --- batched confirm rows (2026-11-07) -------------------------------------------
+# Eight fast /inventory lots hit Sheets' per-minute write quota with one
+# confirm_log row per button; a logger built with batch_confirms=True writes a
+# burst in one append_rows.  Off by default, so a service opts in.
+
+class _CountingWS(_FakeWS):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def append_rows(self, rows, value_input_option=None):
+        self.calls += 1
+        super().append_rows(rows, value_input_option)
+
+    def append_row(self, row, value_input_option=None):
+        self.calls += 1
+        super().append_row(row, value_input_option)
+
+
+class _ManualTimer:
+    """threading.Timer stand-in: started, but fires only when the test says."""
+    made = []
+
+    def __init__(self, delay, fn):
+        self.delay, self.fn, self.started, self.cancelled = delay, fn, False, False
+        _ManualTimer.made.append(self)
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        if not self.cancelled:
+            self.fn()
+
+
+def _crec(i):
+    return ml.build_confirm_record(
+        service="b", command="/inventory", job_id="j", thread_ts="t", crop_num=i,
+        check_id=f"k{i}", user_id="", chosen_year=1990, chosen_phrase="X",
+        chosen_type="Football", source="auto_sort", rank_restricted=1,
+        rank_shadow=1, shadow_leaderboard_size=50)
+
+
+def test_confirms_are_written_one_by_one_unless_a_service_opts_in():
+    cws = _CountingWS()
+    logger = ml.SheetLogger(_FakeWS(), cws, service="b")
+    for i in range(3):
+        logger.log_confirmation(f"k{i}", _crec(i))
+    assert cws.calls == 3 and len(cws.rows) == 3
+    assert logger.flush() == 0
+
+
+def test_a_burst_of_confirms_is_one_write():
+    _ManualTimer.made = []
+    cws = _CountingWS()
+    logger = ml.SheetLogger(_FakeWS(), cws, service="b", batch_confirms=True,
+                            timer_factory=_ManualTimer)
+    for i in range(15):
+        logger.log_confirmation(f"k{i}", _crec(i))
+    assert cws.calls == 0 and logger.pending_confirms == 15
+    assert len(_ManualTimer.made) == 1, "one timer per burst, not per row"
+    assert _ManualTimer.made[0].delay == ml.CONFIRM_FLUSH_DELAY_S
+    _ManualTimer.made[0].fire()
+    assert cws.calls == 1 and len(cws.rows) == 15
+    assert [r[5] for r in cws.rows] == list(range(15)), "rows keep their order"
+    assert logger.pending_confirms == 0
+    # the next burst arms a new timer
+    logger.log_confirmation("k99", _crec(99))
+    assert len(_ManualTimer.made) == 2
+
+
+def test_a_full_queue_is_written_at_once_and_flush_writes_the_rest():
+    _ManualTimer.made = []
+    cws = _CountingWS()
+    logger = ml.SheetLogger(_FakeWS(), cws, service="b", batch_confirms=True,
+                            flush_max=4, timer_factory=_ManualTimer)
+    for i in range(6):
+        logger.log_confirmation(f"k{i}", _crec(i))
+    assert cws.calls == 1 and len(cws.rows) == 4      # the full batch went
+    assert _ManualTimer.made[0].cancelled             # and took its timer
+    assert logger.flush() == 2 and cws.calls == 2     # flush() writes the rest
+    assert logger.flush() == 0 and cws.calls == 2     # nothing left: no write
+
+
+def test_a_batch_the_quota_refuses_is_reported_with_every_row():
+    orig = _no_sleep()
+    try:
+        lost = []
+        ws = _Flaky(99, Exception("[429] Quota exceeded"))
+        logger = ml.SheetLogger(_FakeWS(), ws, service="b", batch_confirms=True,
+                                on_failure=lambda t, a: lost.append((t, a)),
+                                timer_factory=_ManualTimer)
+        for i in range(3):
+            logger.log_confirmation(f"k{i}", _crec(i))
+        assert logger.flush() == 3                     # never raises
+        (text, (name, content)), = lost
+        assert "3 confirm_log row(s)" in text and name.startswith("confirm_log_lost_")
+        assert len(content.strip().splitlines()) == 3  # every row, one per line
+    finally:
+        ml.time.sleep = orig
+
+
+def test_a_disabled_logger_queues_nothing():
+    logger = ml.SheetLogger(_FakeWS(), None, service="b", batch_confirms=True,
+                            timer_factory=_ManualTimer)
+    logger.log_confirmation("k", _crec(1))
+    assert logger.pending_confirms == 0 and logger.flush() == 0
