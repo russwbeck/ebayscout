@@ -35,6 +35,29 @@ scan_log, which kept both, is no longer written.
 "What has kling24toys listed since a date" is a filter on price_log: seller
 = kling24toys, source handoff or seller, ts after the date.
 
+**Relisted lots are recognised, not run again** (same day; `relists.py`).
+Sellers relist a lot every week under a new item number, so the seen-list
+missed it and the operator counted and confirmed the same buttons again
+(rmn-vintage's Tire Out Akron 10-17/10-30/11-06, westmidwest1's Cincinnati,
+Ho Ho 10-23/11-01/11-07). Before the hand-off, `_run_crawl` matches each lot
+against the confirmed lots in price_log (button rows with year and slogan,
+not superseded; one batch_get per run, `_relist_index`):
+
+- **same photo**: eBay's picture id (`/images/g/<id>/`, `:g:<id>` in the
+  listing URL) survives a relist that reuses the photo; works on every
+  existing row, since scan rows keep the listing URL; or
+- **same seller and title**, less a trailing stock code (`P117`, `#45`):
+  needs the new seller column, so it starts matching once a lot carrying a
+  seller has been confirmed.
+
+A match is marked seen and not handed over; it writes one price_log row,
+source `relist`, run_id `relist-of-<earlier item>` (its buttons are that
+item's rows, not written again, so a relisted lot counts once in the
+averages), and the day's `#ebay-checker` line lists each with links to both
+listings. A lot handed over and never finished has nothing to reuse and is
+handed over again. Off: `EBAYSCOUT_SKIP_RELISTS=0`. Risk: one seller using
+one title for different lots; the Slack list is where that shows.
+
 ---
 
 ## 2026-10-25 (cleanup) — the Gemini pipeline's code removed

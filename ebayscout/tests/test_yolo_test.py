@@ -88,5 +88,5 @@ def test_the_feed_writes_the_handoff_rows_in_batches():
     assert h.index("_mark_item_seen_now(item_id)") < h.index("handoff_record(")
     crawl = _fn("_run_crawl")
     assert "handed.append(rec)" in crawl and "_HANDOFF_ROW_BATCH" in crawl
-    assert crawl.rstrip().count("_log_handoff_rows(handed)") == 2
+    assert crawl.count("_log_handoff_rows(handed)") >= 2
     assert '"condition":' in _fn("_lot_ctx")

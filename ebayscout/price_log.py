@@ -30,6 +30,11 @@ n_in_lot = 3, so a lot is one observation whatever its duplicates.
                        finishes it in #inventory-bot; one never finished keeps
                        only this row.  run_id handoff-<feed>-<job_id>, the
                        job_id buttonmatcher's match_log and confirm_log carry.
+  listing  relist      ebayscout: a lot recognised as a relisting of one already
+                       confirmed (same photo, or same seller and title), so not
+                       handed over again; one row like a handoff row, run_id
+                       relist-of-<earlier item number>, whose button rows are
+                       the lot's (ebayscout's relists.py, 2026-11-08)
 
 Seller and condition
 --------------------
@@ -283,10 +288,12 @@ def handoff_row(record: dict) -> list:
     """The one row of a lot handed to buttonmatcher (ebayscout), from the same
     record shape ``listing_rows`` reads: the listing as it stood, with no year,
     slogan or price per button, so it never enters an average.  Written when
-    the lot is handed over, so a lot nobody finishes is still on record."""
+    the lot is handed over, so a lot nobody finishes is still on record.
+    ``source`` in the record overrides ``handoff`` (ebayscout's ``relist``)."""
     ask = record.get("asking")
     return [
-        record.get("ts") or _now_iso(), KIND_LISTING, SOURCE_HANDOFF,
+        record.get("ts") or _now_iso(), KIND_LISTING,
+        record.get("source") or SOURCE_HANDOFF,
         _cell(ebay_item_number(record.get("item_id"))
               or ebay_item_number(record.get("listing_url"))),
         "", "", "", "",                     # year, slogan, n_in_lot, buttons_detected

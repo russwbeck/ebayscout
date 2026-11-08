@@ -37,6 +37,7 @@ from . import yolo_test
 from . import normalize
 from . import price_log
 from . import purchases
+from . import relists
 from . import scan_log
 from . import seen_items
 from . import seller_listings
@@ -1989,6 +1990,26 @@ def _log_handoff_rows(records: list) -> None:
               f"{type(exc).__name__}: {exc}", flush=True)
 
 
+def _relist_index() -> dict:
+    """The confirmed lots in price_log, keyed for relists.match.  {} when
+    relist matching is off (EBAYSCOUT_SKIP_RELISTS=0) or price_log cannot be
+    read: then every lot is handed over, as before 2026-11-08."""
+    if os.environ.get("EBAYSCOUT_SKIP_RELISTS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return {}
+    try:
+        gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
+        ws = price_log.open_price_sheet(gclient, _get_secret("LOGGER_ID"))
+        if ws is None:
+            return {}
+        idx = relists.index(ws.batch_get(relists.ranges()))
+        print(f">>> RELISTS: {len(idx)} keys from confirmed lots.", flush=True)
+        return idx
+    except Exception as exc:
+        print(f"!!! RELISTS: price_log not read, no relist matching this run: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        return {}
+
+
 def _collect_ebay_listings(ebay_app_id, ebay_cert_id, max_pages: int = 1):
     """The daily eBay pull (used by the daily CLIP scan and the daily handoff
     feed — NOT by /crawl, which has its own search): the general queries
@@ -2111,9 +2132,24 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
 
     fed = 0
     handed = []           # handoff rows not yet written (_log_handoff_rows)
+    relisted = []         # lots recognised as relistings, not handed over
+    relist_idx = _relist_index()
     for listing in new_listings:
         item_id = listing["item_id"]
         seller  = listing.get("seller", "")
+        earlier = relists.match(listing, relist_idx)
+        if earlier:
+            # the same lot, confirmed before: no second count and confirm
+            rec = relists.relist_record(listing, earlier)
+            _mark_item_seen_now(item_id)
+            relisted.append(rec)
+            handed.append(rec)
+            print(f">>> FEED[{source}]: {item_id} [{seller}] relists {earlier} — "
+                  f"not handed over.", flush=True)
+            if len(handed) >= _HANDOFF_ROW_BATCH:
+                _log_handoff_rows(handed)
+                handed = []
+            continue
         try:
             rec = _handoff_lot_to_buttonmatcher(listing, ebay_app_id, ebay_cert_id,
                                                 source)
@@ -2133,9 +2169,12 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
 
     notifier.send_warning(
         _slack_token, _channel_id,
-        f"🔎 `{source}`: handed {fed}/{len(new_listings)} lot(s) to buttonmatcher"
+        f"🔎 `{source}`: handed {fed}/{len(new_listings) - len(relisted)} lot(s) to buttonmatcher"
         f"{' (first run — included already-seen lots)' if feed_all else ''}. "
-        f"Each runs as an automatic Scout lot in #inventory-bot.")
+        f"Each runs as an automatic Scout lot in #inventory-bot."
+        + (f"\n♻️ {len(relisted)} relisted lot(s) already confirmed, not sent again "
+           f"(price_log source `relist`):\n{relists.slack_lines(relisted)}"
+           if relisted else ""))
     print(f">>> FEED[{source}]: handed off={fed}/{len(new_listings)}.", flush=True)
     return fed
 

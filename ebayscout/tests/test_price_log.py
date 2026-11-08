@@ -158,6 +158,7 @@ def test_a_handed_over_lot_is_one_row_with_no_buttons():
     assert _col(row, "sale_format") == "buy_it_now" and _col(row, "superseded") == "no"
     assert _col(row, "seller") == "kling24toys" and _col(row, "condition") == "Used"
     assert _col(row, "run_id") == "handoff-daily-j1"
+    assert _col(pl.handoff_row(_scan_record(source="relist")), "source") == "relist"
     bare = pl.handoff_row({"listing_url": "https://www.ebay.com/itm/256123456789"})
     assert _col(bare, "ebay_id") == "256123456789" and _col(bare, "lot_price") == ""
     assert _col(bare, "ts")
