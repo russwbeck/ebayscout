@@ -41,7 +41,29 @@ def handoff_payload(ctx: dict, picture_url: str) -> dict:
         "asking":    ctx.get("asking"),
         "shipping":  ctx.get("shipping"),
         "seller":    ctx.get("seller"),
+        "condition": ctx.get("condition"),
         # price_log keeps auctions out of the averages by these
         "buying_options": ctx.get("buying_options") or [],
         "bid_count": ctx.get("bid_count"),
+    }
+
+
+def handoff_record(ctx: dict, job_id) -> dict:
+    """The record of one handed-over lot that ``price_log.handoff_row`` writes
+    (2026-11-08): the listing, its seller and condition, and a run_id naming
+    the feed and buttonmatcher's job, which its match_log and confirm_log rows
+    carry.  Written when the lot is handed over, so a lot nobody finishes in
+    #inventory-bot is still on record."""
+    feed = str(ctx.get("command") or "feed").strip("/") or "feed"
+    return {
+        "item_id":        ctx.get("item_id"),
+        "title":          ctx.get("title"),
+        "listing_url":    ctx.get("url"),
+        "asking":         ctx.get("asking"),
+        "shipping":       ctx.get("shipping"),
+        "buying_options": ctx.get("buying_options") or [],
+        "bid_count":      ctx.get("bid_count"),
+        "seller":         ctx.get("seller"),
+        "condition":      ctx.get("condition"),
+        "run_id":         f"handoff-{feed}-{job_id or ctx.get('key') or ''}",
     }

@@ -23,6 +23,27 @@ n_in_lot = 3, so a lot is one observation whatever its duplicates.
                        year or slogan (it is not identified), so it never
                        enters an average; each pull appends, run_id
                        seller-<username>-<pulled_at> (2026-10-14)
+  listing  handoff     ebayscout: every lot the daily feed or /crawl hands to
+                       buttonmatcher, written when it is handed over, one row
+                       per lot with no year or slogan (2026-11-08).  The lot's
+                       buttons follow as source scan rows when the operator
+                       finishes it in #inventory-bot; one never finished keeps
+                       only this row.  run_id handoff-<feed>-<job_id>, the
+                       job_id buttonmatcher's match_log and confirm_log carry.
+  listing  relist      ebayscout: a lot recognised as a relisting of one already
+                       confirmed (same photo, or same seller and title), so not
+                       handed over again; one row like a handoff row, run_id
+                       relist-of-<earlier item number>, whose button rows are
+                       the lot's (ebayscout's relists.py, 2026-11-08)
+
+Seller and condition
+--------------------
+Every eBay listing row carries the seller's eBay username and the listing's
+condition as eBay states it (2026-11-08), so one seller's listings are a filter
+on the sheet.  The rows written before have them blank; a row for a lot that is
+not an eBay listing (a /scout lot, a sale) leaves them blank too.  They are the
+last two columns, so a tab made before them is extended in place
+(``open_price_sheet``) and every column it had keeps its letter.
 
 ``ebay_id`` is the eBay item number (the digits in ``.../itm/<number>``), so a
 listing and its sale join on one value however each writer first saw it.
@@ -84,6 +105,7 @@ SOURCE_SCAN = "scan"
 SOURCE_SCOUT_SOLD = "scout_sold"
 SOURCE_SCOUT = "scout"          # a /scout lot's asking price (buttonmatcher)
 SOURCE_SELLER = "seller"
+SOURCE_HANDOFF = "handoff"      # a lot handed to buttonmatcher (ebayscout)
 
 FORMAT_AUCTION = "auction"
 FORMAT_BUY_IT_NOW = "buy_it_now"
@@ -98,7 +120,7 @@ PRICE_HEADER = [
     "ts", "kind", "source", "ebay_id", "year", "slogan", "n_in_lot",
     "buttons_detected", "lot_price", "shipping", "price_per_button",
     "allocation", "sale_format", "bids", "sale_date", "price_basis",
-    "superseded", "title", "listing_url", "run_id",
+    "superseded", "title", "listing_url", "run_id", "seller", "condition",
 ]
 
 
@@ -211,7 +233,8 @@ def _cell(v):
 def lot_rows(*, kind, source, ebay_id, counts, prices, buttons_in_lot, lot_price,
              shipping=None, allocation="even", sale_format=FORMAT_OTHER,
              bids=None, sale_date="", price_basis="", superseded=False,
-             title="", listing_url="", run_id="", ts=None) -> list[list]:
+             title="", listing_url="", run_id="", ts=None, seller="",
+             condition="") -> list[list]:
     """One price_log row per identified button of one lot, in PRICE_HEADER order.
 
     ``prices`` is {(year, slogan): price per button}, from split_sale or the
@@ -227,6 +250,7 @@ def lot_rows(*, kind, source, ebay_id, counts, prices, buttons_in_lot, lot_price
             _cell(bids), _cell(sale_date), price_basis,
             "yes" if superseded else "no",
             _cell(title), _cell(listing_url), _cell(run_id),
+            _cell(seller), _cell(condition),
         ])
     return rows
 
@@ -256,7 +280,31 @@ def listing_rows(record: dict) -> list[list]:
         shipping=record.get("shipping"),
         title=record.get("title"), listing_url=record.get("listing_url"),
         run_id=record.get("run_id"), ts=record.get("ts"),
+        seller=record.get("seller"), condition=record.get("condition"),
     )
+
+
+def handoff_row(record: dict) -> list:
+    """The one row of a lot handed to buttonmatcher (ebayscout), from the same
+    record shape ``listing_rows`` reads: the listing as it stood, with no year,
+    slogan or price per button, so it never enters an average.  Written when
+    the lot is handed over, so a lot nobody finishes is still on record.
+    ``source`` in the record overrides ``handoff`` (ebayscout's ``relist``)."""
+    ask = record.get("asking")
+    return [
+        record.get("ts") or _now_iso(), KIND_LISTING,
+        record.get("source") or SOURCE_HANDOFF,
+        _cell(ebay_item_number(record.get("item_id"))
+              or ebay_item_number(record.get("listing_url"))),
+        "", "", "", "",                     # year, slogan, n_in_lot, buttons_detected
+        "" if ask in (None, "") else ask, _cell(record.get("shipping")),
+        "", "",                             # price_per_button, allocation
+        listing_format(record.get("buying_options")), _cell(record.get("bid_count")),
+        "", BASIS_ASKING, "no",             # sale_date, price_basis, superseded
+        _cell(record.get("title")), _cell(record.get("listing_url")),
+        _cell(record.get("run_id")),
+        _cell(record.get("seller")), _cell(record.get("condition")),
+    ]
 
 
 # --- one sale counts once --------------------------------------------------------
@@ -432,6 +480,18 @@ class PriceLogger:
                                       f"by hand: {', '.join(str(r) for r in old)}.")
             return True
 
+    def log_handoffs(self, records) -> bool:
+        """The handoff rows of a batch of lots (``handoff_row``), in one
+        append: a /crawl hands over hundreds, and Sheets allows 60 writes a
+        minute.  True when they landed, or there were none."""
+        rows = [handoff_row(r) for r in records or []]
+        if not rows:
+            return True
+        if self._ws is None:
+            return False
+        with self._lock:
+            return self._append(rows, f"handoff rows for {len(rows)} lot(s)")
+
     def log_sale(self, rows, ebay_id) -> dict:
         """Write one sale's rows, replacing any earlier entry for the same item.
 
@@ -514,6 +574,20 @@ def _spreadsheet_key(raw) -> str:
     return m.group(1) if m else s
 
 
+def _extend_header(ws, have: int) -> None:
+    """Add the header cells a tab made before the newest columns lacks (seller
+    and condition, 2026-11-08), after the ones it has, so no column moves.
+    Raises on failure: the caller disables the log rather than append rows
+    wider than their header."""
+    need = len(PRICE_HEADER)
+    if (getattr(ws, "col_count", need) or need) < need:
+        ws.add_cols(need - ws.col_count)
+    ws.update(values=[PRICE_HEADER[have:]], range_name=f"{col(PRICE_HEADER[have])}1",
+              value_input_option="RAW")
+    print(f">>> PRICE_LOG: '{PRICE_TAB}' header extended with "
+          f"{', '.join(PRICE_HEADER[have:])}.", flush=True)
+
+
 def open_price_sheet(gspread_client, spreadsheet_id):
     """Open (creating if needed) price_log and its price_analysis tab; return
     price_log's worksheet.
@@ -521,6 +595,8 @@ def open_price_sheet(gspread_client, spreadsheet_id):
     None on any failure, so the caller's PriceLogger is disabled — never fatal.
     Also None when price_log exists with a different header: appending under
     the wrong columns would corrupt every average without an error anywhere.
+    A header that is this one minus its newest columns is extended in place
+    (``_extend_header``); one that cannot be extended disables the log too.
     The formula tab is a convenience: failing to create it leaves the log
     working.
     """
@@ -539,6 +615,9 @@ def open_price_sheet(gspread_client, spreadsheet_id):
             first = ws.row_values(1)
             if not first:
                 ws.append_row(PRICE_HEADER, value_input_option="RAW")
+            elif (len(first) < len(PRICE_HEADER)
+                  and first == PRICE_HEADER[:len(first)]):
+                _extend_header(ws, len(first))
             elif first != PRICE_HEADER:
                 print(f">>> PRICE_LOG: disabled — '{PRICE_TAB}' has a different "
                       f"header ({first[:4]}…); rename that tab to start a new one.",

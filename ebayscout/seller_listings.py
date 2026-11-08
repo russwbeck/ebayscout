@@ -109,6 +109,7 @@ def summary_row(item, pulled_at, seller):
         "", price_log.BASIS_ASKING, "no",   # sale_date, price_basis, superseded
         item.get("title") or "", item.get("itemWebUrl") or "",
         f"seller-{seller}-{pulled_at}",
+        seller, item.get("condition") or "",
     ]
 
 

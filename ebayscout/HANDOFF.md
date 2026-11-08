@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-25)
+# eBay Scout — Session Handoff (latest entry 2026-11-08)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#34) first; this file is
@@ -6,6 +6,57 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-11-08 — every handed-over lot logged, with its seller
+
+The operator, comparing kling24toys' new listings with their own, found the
+Logger could not say who listed a lot: the seller went to buttonmatcher in the
+handoff and was only shown in Slack, and price_log had rows only for Scout
+lots someone finished (11-03 to 11-07: about 5 of 13 button lots). The GCS
+scan_log, which kept both, is no longer written.
+
+- **price_log gains `seller` and `condition`** (columns U and V, after
+  `run_id`; `price_log.py` and its test, shared). An existing tab's header is
+  extended in place on the first open; no column moves, so the
+  price_analysis formulas and the shipping backfill read what they did.
+- **A row per lot at handoff**: `_handoff_lot_to_buttonmatcher` returns
+  `yolo_test.handoff_record` once buttonmatcher has taken the lot, and
+  `_run_crawl` appends those rows (`price_log.handoff_row`, source `handoff`,
+  no year, slogan or price per button, so never in an average) in batches of
+  50 (`_HANDOFF_ROW_BATCH`): the daily feed and `/crawl` alike. run_id
+  `handoff-<daily|crawl>-<job_id>`, the job_id of buttonmatcher's match_log
+  and confirm_log rows. A lost write is posted to `#ebay-checker`.
+- **`condition`** now rides the handoff to buttonmatcher, whose finished
+  Scout rows carry it and the seller (`ebay_handoff.listing_record`).
+- **`/crawl seller` rows** carry the seller and condition too.
+
+"What has kling24toys listed since a date" is a filter on price_log: seller
+= kling24toys, source handoff or seller, ts after the date.
+
+**Relisted lots are recognised, not run again** (same day; `relists.py`).
+Sellers relist a lot every week under a new item number, so the seen-list
+missed it and the operator counted and confirmed the same buttons again
+(rmn-vintage's Tire Out Akron 10-17/10-30/11-06, westmidwest1's Cincinnati,
+Ho Ho 10-23/11-01/11-07). Before the hand-off, `_run_crawl` matches each lot
+against the confirmed lots in price_log (button rows with year and slogan,
+not superseded; one batch_get per run, `_relist_index`):
+
+- **same photo**: eBay's picture id (`/images/g/<id>/`, `:g:<id>` in the
+  listing URL) survives a relist that reuses the photo; works on every
+  existing row, since scan rows keep the listing URL; or
+- **same seller and title**, less a trailing stock code (`P117`, `#45`):
+  needs the new seller column, so it starts matching once a lot carrying a
+  seller has been confirmed.
+
+A match is marked seen and not handed over; it writes one price_log row,
+source `relist`, run_id `relist-of-<earlier item>` (its buttons are that
+item's rows, not written again, so a relisted lot counts once in the
+averages), and the day's `#ebay-checker` line lists each with links to both
+listings. A lot handed over and never finished has nothing to reuse and is
+handed over again. Off: `EBAYSCOUT_SKIP_RELISTS=0`. Risk: one seller using
+one title for different lots; the Slack list is where that shows.
 
 ---
 
