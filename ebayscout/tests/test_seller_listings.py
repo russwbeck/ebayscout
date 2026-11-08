@@ -83,7 +83,9 @@ def test_a_row_is_a_price_log_listing_row_from_the_seller():
                    "", "", "", "", 12.0, 4.5, "", "", "buy_it_now", "", "", "asking", "no",
                    "2008 Penn State Citizens Bank Buttons Season Set",
                    "https://www.ebay.com/itm/267770621737",
-                   "seller-kling24toys-2026-10-03T12:00:00+00:00"]
+                   "seller-kling24toys-2026-10-03T12:00:00+00:00", "kling24toys", "Used"]
+    bare = sl.summary_row(dict(_item(), condition=None), "t", "s")
+    assert _at(bare, "seller") == "s" and _at(bare, "condition") == ""
 
 
 def test_a_seller_row_never_enters_the_per_slogan_average():

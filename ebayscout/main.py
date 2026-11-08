@@ -1920,6 +1920,7 @@ def _lot_ctx(listing: dict, key: str, command: str) -> dict:
         "buying_options": listing.get("buying_options") or [],
         "bid_count":      listing.get("bid_count"),
         "shipping":       listing.get("shipping_cost"),
+        "condition":      listing.get("condition") or "",
         "command":      command,
         "created":      datetime.datetime.utcnow().isoformat() + "Z",
     }
@@ -1931,10 +1932,12 @@ def _lot_ctx(listing: dict, key: str, command: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _handoff_lot_to_buttonmatcher(listing: dict, ebay_app_id: str,
-                                  ebay_cert_id: str, command: str) -> bool:
+                                  ebay_cert_id: str, command: str):
     """POST one lot to buttonmatcher's /internal/ebay_scout_lot; mark it seen
-    once buttonmatcher has accepted it (200).  False when the lot has no photo
-    or buttonmatcher refused it (it stays unseen and comes back next run)."""
+    once buttonmatcher has accepted it (200), and return the record of its
+    price_log handoff row (yolo_test.handoff_record).  None when the lot has
+    no photo or buttonmatcher refused it (it stays unseen and comes back next
+    run)."""
     from . import ebay_client
     item_id = listing["item_id"]
     picture_urls = ebay_client.get_item_pictures(ebay_app_id, ebay_cert_id, item_id)
@@ -1942,7 +1945,7 @@ def _handoff_lot_to_buttonmatcher(listing: dict, ebay_app_id: str,
         picture_urls = [listing["gallery_url"]]
     if not picture_urls:
         print(f">>> YOLO_TEST: {item_id} has no photos — skipping.", flush=True)
-        return False
+        return None
     ctx = _lot_ctx(listing, uuid.uuid4().hex[:12], command)
     resp = requests.post(
         yolo_test.buttonmatcher_url() + yolo_test.ENDPOINT,
@@ -1951,11 +1954,39 @@ def _handoff_lot_to_buttonmatcher(listing: dict, ebay_app_id: str,
     if resp.status_code != 200:
         print(f"!!! YOLO_TEST: buttonmatcher refused {item_id}: "
               f"{resp.status_code} {resp.text[:200]}", flush=True)
-        return False
+        return None
     _mark_item_seen_now(item_id)
     print(f">>> YOLO_TEST: {item_id} handed to buttonmatcher "
           f"({resp.text[:80]})", flush=True)
-    return True
+    try:
+        job_id = (resp.json() or {}).get("job_id")
+    except Exception:
+        job_id = None
+    return yolo_test.handoff_record(ctx, job_id)
+
+
+# A /crawl hands over hundreds of lots; their handoff rows go to price_log in
+# batches of this many, so a run that dies part way keeps what it wrote.
+_HANDOFF_ROW_BATCH = 50
+
+
+def _log_handoff_rows(records: list) -> None:
+    """Append the handed-over lots' rows to price_log in one write (source
+    handoff, with the seller; price_log.handoff_row).  Never raises: a lost
+    row is posted to Slack, the lot itself is already in #inventory-bot."""
+    if not records:
+        return
+    try:
+        gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
+        ws = price_log.open_price_sheet(gclient, _get_secret("LOGGER_ID"))
+        logger = price_log.PriceLogger(
+            ws, on_failure=lambda text, _att: notifier.send_warning(
+                _slack_token, _channel_id, text))
+        if not logger.log_handoffs(records):
+            print(f"!!! HANDOFF ROWS: {len(records)} not written to price_log.", flush=True)
+    except Exception as exc:
+        print(f"!!! HANDOFF ROWS: {len(records)} not written to price_log: "
+              f"{type(exc).__name__}: {exc}", flush=True)
 
 
 def _collect_ebay_listings(ebay_app_id, ebay_cert_id, max_pages: int = 1):
@@ -2079,16 +2110,23 @@ def _run_crawl(n: int, source: str = "/crawl", ignore_seen: bool = False,
         return len(new_listings)
 
     fed = 0
+    handed = []           # handoff rows not yet written (_log_handoff_rows)
     for listing in new_listings:
         item_id = listing["item_id"]
         seller  = listing.get("seller", "")
         try:
-            if _handoff_lot_to_buttonmatcher(listing, ebay_app_id, ebay_cert_id,
-                                             source):
+            rec = _handoff_lot_to_buttonmatcher(listing, ebay_app_id, ebay_cert_id,
+                                                source)
+            if rec:
                 fed += 1
+                handed.append(rec)
         except Exception as exc:
             print(f"!!! FEED[{source}]: feed failed for {item_id} [{seller}]: {exc}", flush=True)
             traceback.print_exc()
+        if len(handed) >= _HANDOFF_ROW_BATCH:
+            _log_handoff_rows(handed)
+            handed = []
+    _log_handoff_rows(handed)
 
     if first_run:
         seen_store.mark_ondemand2_first_run_done()

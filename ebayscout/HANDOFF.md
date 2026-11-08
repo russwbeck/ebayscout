@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-10-25)
+# eBay Scout — Session Handoff (latest entry 2026-11-08)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#34) first; this file is
@@ -6,6 +6,34 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-11-08 — every handed-over lot logged, with its seller
+
+The operator, comparing kling24toys' new listings with their own, found the
+Logger could not say who listed a lot: the seller went to buttonmatcher in the
+handoff and was only shown in Slack, and price_log had rows only for Scout
+lots someone finished (11-03 to 11-07: about 5 of 13 button lots). The GCS
+scan_log, which kept both, is no longer written.
+
+- **price_log gains `seller` and `condition`** (columns U and V, after
+  `run_id`; `price_log.py` and its test, shared). An existing tab's header is
+  extended in place on the first open; no column moves, so the
+  price_analysis formulas and the shipping backfill read what they did.
+- **A row per lot at handoff**: `_handoff_lot_to_buttonmatcher` returns
+  `yolo_test.handoff_record` once buttonmatcher has taken the lot, and
+  `_run_crawl` appends those rows (`price_log.handoff_row`, source `handoff`,
+  no year, slogan or price per button, so never in an average) in batches of
+  50 (`_HANDOFF_ROW_BATCH`): the daily feed and `/crawl` alike. run_id
+  `handoff-<daily|crawl>-<job_id>`, the job_id of buttonmatcher's match_log
+  and confirm_log rows. A lost write is posted to `#ebay-checker`.
+- **`condition`** now rides the handoff to buttonmatcher, whose finished
+  Scout rows carry it and the seller (`ebay_handoff.listing_record`).
+- **`/crawl seller` rows** carry the seller and condition too.
+
+"What has kling24toys listed since a date" is a filter on price_log: seller
+= kling24toys, source handoff or seller, ts after the date.
 
 ---
 

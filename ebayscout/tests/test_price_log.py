@@ -138,6 +138,40 @@ def _scan_record(**kw):
     return rec
 
 
+def test_a_listing_row_carries_the_seller_and_condition():
+    rows = pl.listing_rows(_scan_record(seller="kling24toys", condition="Used"))
+    assert {_col(r, "seller") for r in rows} == {"kling24toys"}
+    assert {_col(r, "condition") for r in rows} == {"Used"}
+    assert {_col(r, "seller") for r in pl.listing_rows(_scan_record())} == {""}
+
+
+def test_a_handed_over_lot_is_one_row_with_no_buttons():
+    """Written when ebayscout hands the lot over, so a lot nobody finishes is
+    still on record; no year, slogan or price per button, so no average."""
+    row = pl.handoff_row(_scan_record(seller="kling24toys", condition="Used",
+                                      shipping=7.5, run_id="handoff-daily-j1"))
+    assert len(row) == len(pl.PRICE_HEADER)
+    assert _col(row, "kind") == "listing" and _col(row, "source") == "handoff"
+    assert _col(row, "ebay_id") == "256123456789"
+    assert [_col(row, n) for n in ("year", "slogan", "price_per_button")] == ["", "", ""]
+    assert _col(row, "lot_price") == 24.0 and _col(row, "shipping") == 7.5
+    assert _col(row, "sale_format") == "buy_it_now" and _col(row, "superseded") == "no"
+    assert _col(row, "seller") == "kling24toys" and _col(row, "condition") == "Used"
+    assert _col(row, "run_id") == "handoff-daily-j1"
+    bare = pl.handoff_row({"listing_url": "https://www.ebay.com/itm/256123456789"})
+    assert _col(bare, "ebay_id") == "256123456789" and _col(bare, "lot_price") == ""
+    assert _col(bare, "ts")
+
+
+def test_handoff_rows_go_in_one_append():
+    ws = _Sheet()
+    lg = pl.PriceLogger(ws)
+    assert lg.log_handoffs([_scan_record(), _scan_record(item_id="v1|999999999999|0")])
+    assert ws.calls == [("append", "RAW")] and len(ws.rows) == 3
+    assert lg.log_handoffs([]) and len(ws.calls) == 1
+    assert not pl.PriceLogger(None).log_handoffs([_scan_record()])
+
+
 def test_a_scanned_lot_is_one_listing_row_per_named_button():
     rows = pl.listing_rows(_scan_record())
     assert len(rows) == 2 and all(len(r) == len(pl.PRICE_HEADER) for r in rows)
@@ -435,7 +469,7 @@ def _letter(name):
 def test_the_average_is_price_per_button_listing_beside_sold():
     f = pl.avg_formula()
     p, k = _letter("price_per_button"), _letter("kind")
-    assert f.startswith(f"=QUERY({pl.PRICE_TAB}!A:{_letter('run_id')},")
+    assert f.startswith(f"=QUERY({pl.PRICE_TAB}!A:{_letter(pl.PRICE_HEADER[-1])},")
     assert f"avg({p})" in f and f"count({p})" in f and f"pivot {k}" in f
     assert f"group by {_letter('year')}, {_letter('slogan')}" in f
     assert f"{_letter('superseded')} = 'no'" in f
@@ -513,6 +547,31 @@ def test_an_existing_analysis_tab_is_left_alone():
     assert pl.open_price_sheet(_Client(book), "abc123") is book.tabs["price_log"]
     assert analysis.updates == []
     assert book.tabs["price_log"].values == [pl.PRICE_HEADER]   # no second header
+
+
+def test_a_log_made_before_seller_and_condition_is_extended_in_place():
+    """The live tab predates the last two columns (2026-11-08): it gains their
+    header cells after run_id, every other column keeps its letter, and the
+    log stays on."""
+    old = pl.PRICE_HEADER[:pl.PRICE_HEADER.index("run_id") + 1]
+    tab = _Tab("price_log", list(old))
+    tab.col_count, tab.added = len(old), []
+    tab.add_cols = lambda n: tab.added.append(n)
+    book = _Book([tab, _Tab("price_analysis")])
+    assert pl.open_price_sheet(_Client(book), "abc123") is tab
+    assert tab.added == [2]
+    assert tab.updates == [(f"{_letter('seller')}1", [["seller", "condition"]], "RAW")]
+    assert _letter("seller") == "U" and _letter("run_id") == "T"
+
+
+def test_a_log_that_cannot_be_extended_is_left_off():
+    old = pl.PRICE_HEADER[:-2]
+    tab = _Tab("price_log", list(old))
+
+    def refuse(**kw):
+        raise RuntimeError("protected range")
+    tab.update = refuse
+    assert pl.open_price_sheet(_Client(_Book([tab, _Tab("price_analysis")])), "k") is None
 
 
 def test_a_log_with_another_header_is_not_written_under_the_wrong_columns():
