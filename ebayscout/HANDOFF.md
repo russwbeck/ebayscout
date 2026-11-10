@@ -116,7 +116,7 @@ YOLO week's handoff has carried every lot since 2026-10-15 (`#ebay-checker`:
 - `/pipeline/notify` (it took the watcher's shared secret from the internet),
   `/internal/pipeline` and `/internal/pipelinetest` are removed.
   `process_pipeline_lot` and the rest of the Gemini path stay until the code
-  is removed. `PIPELINE_WATCHER_CONTRACT.md` is the record.
+  is removed. `docs/archive/PIPELINE_WATCHER_CONTRACT.md` is the record.
 - `clip_matcher.init()` reads buttonmatcher's CLIP banks from their `.npz`
   twins when they match the `.pt` in the bucket (`bank_cache.py`, shared,
   phase 1): `torch.load(weights_only=True)` does not stop a planted `.pt`
@@ -884,7 +884,7 @@ shared byte-identical with buttonmatcher:
 - **`LOGGER_FRONTS.md`** — the register of every front we measure with the
   Logger (instrument, gate, standing), spanning the four docs above. The
   Progress Trackers workbook is generated from it.
-- `HOUGH_AND_LOGGING_UPDATES.md` is historical (frozen); `match_logging.py`
+- `docs/archive/HOUGH_AND_LOGGING_UPDATES.md` is historical (frozen); `match_logging.py`
   is the canonical log schema.
 
 buybot was decommissioned 2026-07-05 — shared files sync across
@@ -973,7 +973,7 @@ now takes the lot count instead of two fixed-size endpoints:
 (crc32 sharding by `worker_index`/`worker_count`), each with its own Chrome profile
 (`user_data_dir`) pre-authenticated to that account. Full schema + the Google
 "browser not secure" login workaround + the Gem JSON-validity rule (single quotes
-inside slogans, never raw `"`) are in **`PIPELINE_WATCHER_CONTRACT.md`**.
+inside slogans, never raw `"`) are in **`docs/archive/PIPELINE_WATCHER_CONTRACT.md`**.
 
 Related buttonmatcher work this session: `/reference` 404-race fix (concurrency
 guard + tolerant promotion) and the revert to manual review (`REF_FLOOR=2`).

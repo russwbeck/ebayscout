@@ -6,7 +6,7 @@ a daily scan that hands the day's unseen eBay lots to buttonmatcher
 `#inventory-bot` and values it against the asking price, and (2) runs
 `/crawl <N>`, the same handoff on demand over an on-demand, seen-aware eBay
 search of up to N (≤1000) lots. **The two-worker Gemini→GCS pipeline it used
-to feed (`ebayscout/PIPELINE_WATCHER_CONTRACT.md`) is retired (operator,
+to feed (`docs/archive/PIPELINE_WATCHER_CONTRACT.md`) is retired (operator,
 2026-10-25):** the watchers are off, and its routes and code are removed, with
 the detector it ran and `/crawl catchup`.
 
