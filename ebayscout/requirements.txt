@@ -28,7 +28,7 @@ google-auth==2.50.0
 
 # Google Drive upload (push /crawl10 primary photos into the Gemini pipeline).
 # Gemini itself is no longer called in-process — the external watcher's Gem does
-# the analysis (see docs/archive/GEMINI_TRIAGE_REMOVED.md). Pinned for google-auth 2.50.0.
+# the analysis (see GEMINI_TRIAGE_REMOVED.md). Pinned for google-auth 2.50.0.
 google-api-python-client==2.149.0
 
 # Google Sheets
