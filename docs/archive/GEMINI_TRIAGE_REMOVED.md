@@ -1,5 +1,8 @@
 # Removed: direct Gemini Flash triage in `/crawl10` (preserved for restore)
 
+> **RETIRED, kept as the record.** The Gemini path it describes is gone: the
+> pipeline was retired 2026-10-25 and lots go to buttonmatcher now.
+>
 > **Note (2026-06-19):** `/crawl10` and `/crawl500` no longer exist — both were
 > consolidated into `/crawl <N>` (DECISIONS #29). This archive of the even older
 > inline-Gemini triage is doubly historical; the restore steps below predate the
