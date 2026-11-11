@@ -14,6 +14,7 @@ Interaction flow:
 import contextlib
 import datetime
 import hmac
+import json
 import os
 import re
 import threading
@@ -42,6 +43,7 @@ from . import scan_log
 from . import seen_items
 from . import seller_listings
 from . import shipping_backfill
+from . import title_recovery
 from . import confusable_slogans as cfs
 from . import edition_twins as edt
 from .utils import (
@@ -528,6 +530,9 @@ def handle_crawl_command(ack, body):
     if is_seller:
         _start_seller_pull(ack, seller)
         return
+    if title_recovery.parse_command(raw):
+        _start_title_recovery(ack)
+        return
     if re.match(r"(?i)^\s*catch-?up\b", raw):
         # Retired 2026-10-25 with the Gemini pipeline: it fed still-listed lots
         # to the Gem so their price rows got written.
@@ -541,7 +546,8 @@ def handle_crawl_command(ack, body):
             f"Example: `/crawl 800`.  Or `/crawl seller <username>` to pull one "
             f"seller's Penn State prices into the Logger sheet, "
             f"or `/crawl purchases` to pull your own last 90 days of eBay "
-            f"purchases into it.")
+            f"purchases into it, or `/crawl titles` to look up the titles of "
+            f"lots already handed over.")
         return
     if n < 1 or n > cap:
         ack(f"`/crawl {raw}` is out of range — pick N between 1 and {cap}. "
@@ -566,6 +572,32 @@ def handle_crawl_command(ack, body):
             try:
                 notifier.send_warning(_slack_token, _channel_id,
                                       f"/crawl {n} failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
+def _start_title_recovery(ack) -> None:
+    """`/crawl titles`: ack now, look the titles up inside /internal/titles.
+
+    One Browse getItem per lot in the saved hand-off lines and one GCS write:
+    no search, no photo, no CLIP, nothing handed to buttonmatcher.  It runs
+    inside its own request, like the other /crawl forms."""
+    ack(f"📋 Looking up the titles of the lots in "
+        f"`{title_recovery.JOBS_BLOB}` on eBay (lookups only: nothing is "
+        f"searched, handed over or posted as a lot).")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            requests.post(f"{base}/internal/titles", headers=headers, timeout=3500)
+        except Exception as exc:
+            print(f"!!! TITLES: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"/crawl titles failed to start: {exc}")
             except Exception:
                 pass
 
@@ -657,6 +689,42 @@ def _start_shipping_backfill(ack) -> None:
                 pass
 
     threading.Thread(target=_kick, daemon=True).start()
+
+
+@flask_app.route("/internal/titles", methods=["POST"])
+def internal_titles():
+    """Look up the titles of lots already handed to buttonmatcher
+    (title_recovery.py), synchronously in this request: reads the saved
+    hand-off lines from GCS, one Browse getItem each, writes titles.json.
+    Auth: per-startup X-Internal-Secret header."""
+    if not _internal_request_ok(request):
+        return jsonify({"status": "forbidden"}), 403
+    from google.cloud import storage
+    from . import ebay_client
+    jobs, titles, error = [], {}, None
+    try:
+        bucket = storage.Client().bucket(config.BUCKET_NAME)
+        blob = bucket.blob(title_recovery.JOBS_BLOB)
+        jobs = title_recovery.parse_jobs(blob.download_as_text()) if blob.exists() else []
+        if jobs:
+            app_id, cert_id = _get_secret("EBAY_APP_ID"), _get_secret("EBAY_CERT_ID")
+            print(f">>> TITLES: {len(jobs)} lots to look up.", flush=True)
+            titles = title_recovery.collect(
+                jobs, lambda item: ebay_client.get_item(app_id, cert_id, item))
+            bucket.blob(title_recovery.TITLES_BLOB).upload_from_string(
+                json.dumps(titles, indent=1), content_type="application/json")
+            print(f">>> TITLES: {len(titles)} of {len(jobs)} still listed.", flush=True)
+    except Exception as exc:
+        traceback.print_exc()
+        error = f"{type(exc).__name__}: {exc}"
+    try:
+        notifier.send_text(_slack_token, _channel_id,
+                           title_recovery.summary_text(len(jobs), len(titles), error))
+    except Exception as exc:
+        print(f"!!! TITLES: Slack summary failed: {exc}", flush=True)
+    if error:
+        return jsonify({"status": "failed", "error": error}), 500
+    return jsonify({"status": "ok", "lots": len(jobs), "titles": len(titles)}), 200
 
 
 @flask_app.route("/internal/seller", methods=["POST"])
