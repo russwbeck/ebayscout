@@ -9,6 +9,35 @@ newest is at the top, as in buttonmatcher's copy.
 
 ---
 
+## 2026-11-11 — `/crawl titles`: the titles of lots already handed over
+
+Most of the operator's clicks on handed-over lots are "Not a button": coats,
+baby clothes, enamel logo pins that the clothing category and
+`EXCLUDED_KEYWORDS` miss (Fanatics lists under sports memorabilia). A filter
+is to be trained on the operator's answers, by the photo and the title only,
+never by seller (operator, 2026-11-11); it lives in buttonmatcher
+(`tools/ebay_triage.py`, its HANDOFF of the same date). The answers kept the
+photo and no title, so the older titles are looked up again here.
+
+- **`/crawl titles`** (`title_recovery.py`, `/internal/titles`): reads the
+  hand-off lines buttonmatcher logs (`EBAY_LOT: <item id> -> Scout job
+  <job_id>`), which the operator saves from Cloud Logging into
+  `ebay_scout/title_jobs.txt`, asks eBay for each item that still exists
+  (`ebay_client.get_item`, one call an item), and writes
+  `ebay_scout/titles.json` (`{job_id: {item_id, title, condition}}`), with
+  one summary line in `#ebay-checker`.
+- It only looks up: no search, no photo, no CLIP, nothing handed to
+  buttonmatcher, nothing marked seen, nothing written to the Logger. The
+  seller is not written.
+- A listing that has ended gives no title.
+- The commands, start to finish, are in the docstring of buttonmatcher's
+  `tools/ebay_triage.py`.
+
+Not changed: what is handed over. The filter itself is not built; when it
+is, it closes lots in buttonmatcher, after the photo is read.
+
+---
+
 ## 2026-11-08 — every handed-over lot logged, with its seller
 
 The operator, comparing kling24toys' new listings with their own, found the
