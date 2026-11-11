@@ -1,4 +1,4 @@
-# eBay Scout — Session Handoff (latest entry 2026-11-08)
+# eBay Scout — Session Handoff (latest entry 2026-11-11)
 
 Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
 **`ebayscout/DECISIONS.md`** (full rationale, sections #1–#34) first; this file is
@@ -6,6 +6,22 @@ the "what we did today + where it stands + what's next" layer on top.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## 2026-11-11 — `tools/email_sales.py`: the monthly email pull, in the repo
+
+The operator's 1st-of-the-month reminder asks for a Gmail Takeout `.mbox` of
+eBay's sale, shipping-label and order emails. `python -m
+ebayscout.tools.email_sales <mbox>` turns it into JSON: one row per item sold
+(sale price, shipping the buyer paid, the label's postage on a package's
+first item, item number and full title from the label), the purchase orders
+(totals and a 1600 px photo URL), and an `ambiguous` list for two sales in one
+order whose cut-off titles match. It reads no buyer names or addresses into
+the output and writes nothing; the rows are checked and merged into the
+Logger's `sales`, `purchases` and `price_log` tabs by hand. October's export
+(38 emails) was the first run: 14 new `sales` rows, 9 `price_log` sold rows,
+photos on the 10 October purchases. Never commit an `.mbox`.
 
 ---
 
