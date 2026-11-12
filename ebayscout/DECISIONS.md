@@ -841,7 +841,7 @@ watcher reuses the session. The Gem must emit **strictly valid JSON**; slogans
 with quotation marks must use single quotes inside the value (a raw `"` such as
 `PSU Dots The "I" In Win` breaks `json.loads`, leaving the lot to retry until the
 per-worker `gem_empty_limit` halt). Full schema lives in
-`PIPELINE_WATCHER_CONTRACT.md`.
+`docs/archive/PIPELINE_WATCHER_CONTRACT.md`.
 
 ## 30. Daily scan promoted to the Gemini pipeline; daily/`crawl` searches kept separate
 

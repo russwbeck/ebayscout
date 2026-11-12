@@ -1,12 +1,14 @@
 # Manual crawl trigger — reference
 
-Invocation for a manual, seen-ignoring pipeline run against the live
+Invocation for a manual, seen-ignoring hand-off run against the live
 Cloud Run service. Run from **Google Cloud Console → Cloud Shell**. The auth
 line changed on 2026-09-26 (the security pass); it matches DEPLOY.md's and
 has not been re-run live from this doc since.
 
-> **Cost:** `?ignore_seen=1` feeds every fetched lot (bypasses seen-dedup) into
-> the Gemini→GCS pipeline — real eBay-API + Gemini + CPU spend. Always run the
+> **Cost:** `?ignore_seen=1` hands every fetched lot (bypasses seen-dedup) to
+> buttonmatcher, which runs each as a Scout lot in `#inventory-bot` — real
+> eBay-API + CPU spend here and a count prompt per lot for the operator. (The
+> Gemini→GCS pipeline this once fed was retired 2026-10-25.) Always run the
 > **dry-run preview first** to see how many lots would feed. The passive daily
 > feed collects the same detection telemetry at zero marginal cost
 > (`AUTOMATION_ROADMAP.md`, "Data-collection cheat sheet"); use this only when
@@ -21,11 +23,11 @@ URL=$(gcloud run services describe ebay-scout --region=us-east1 --format='value(
 #    `gcloud auth print-identity-token` is refused (403).  See DEPLOY.md.
 TOK="X-Pipeline-Secret: $(gcloud secrets versions access latest --secret=PIPELINE_SHARED_SECRET)"
 
-# 3. PREVIEW — posts nothing, writes nothing; reports how many lots WOULD feed
+# 3. PREVIEW — posts nothing, writes nothing; reports how many lots WOULD be handed over
 curl -sS -X POST -H "$TOK" \
   "$URL/run-scan?ignore_seen=1&limit=200&dry_run=1"
 
-# 4. REAL RUN — feeds up to 200 lots into the pipeline
+# 4. REAL RUN — hands up to 200 lots to buttonmatcher
 curl -sS -X POST -H "$TOK" \
   "$URL/run-scan?ignore_seen=1&limit=200"
 ```
@@ -33,11 +35,10 @@ curl -sS -X POST -H "$TOK" \
 ## What this actually runs
 
 - Hits `/run-scan` (`main.py`) → with `DAILY_PIPELINE_FEED=1` (the default) this
-  calls `_run_crawl(n, source="daily", ignore_seen=True)`. It **fetches +
-  enqueues** each lot's primary photo to the async Gemini→GCS pipeline and
-  returns the count fed; detection/Gemini/CLIP happen in the pipeline workers,
-  which write the `match_log` rows (the `ni_*` unguided telemetry graded in
-  `log_analysis.md` / `tested_hypothesis.md`).
+  calls `_run_crawl(n, source="daily", ignore_seen=True)`. It **fetches** each
+  lot, skips relists (`relists.py`), and **POSTs** it to buttonmatcher's
+  `/internal/ebay_scout_lot` (`yolo_test.py`), which does the detection, CLIP,
+  OCR and `match_log` rows in its own request.
 - **Search caveat:** `/run-scan` uses the **daily** search
   (`EBAY_SEARCH_QUERIES`), *not* the on-demand `/crawl` CRAWL500 search. The
   `/internal/crawl` endpoint runs CRAWL500 but has **no `ignore_seen`** param
@@ -53,6 +54,12 @@ curl -sS -X POST -H "$TOK" \
 | `dry_run=1` | report the count only — post nothing, write nothing (preview) |
 
 ## After the run
+
+- Watch **#ebay-checker** in Slack for the day's summary ("handed N/N lot(s)
+  to buttonmatcher") and **#inventory-bot** for the lots themselves.
+- The grading text that follows is from the Gemini pipeline (retired
+  2026-10-25: `ni_scale_path`, `gemini_button_count` and the Phase-5 / Stage-B
+  gate no longer get new rows). Kept as it was written:
 
 - Watch **#ebay-checker** in Slack for pipeline progress + the summary (the
   container has no external console output otherwise).

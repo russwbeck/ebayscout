@@ -6,7 +6,7 @@ a daily scan that hands the day's unseen eBay lots to buttonmatcher
 `#inventory-bot` and values it against the asking price, and (2) runs
 `/crawl <N>`, the same handoff on demand over an on-demand, seen-aware eBay
 search of up to N (≤1000) lots. **The two-worker Gemini→GCS pipeline it used
-to feed (`ebayscout/PIPELINE_WATCHER_CONTRACT.md`) is retired (operator,
+to feed (`docs/archive/PIPELINE_WATCHER_CONTRACT.md`) is retired (operator,
 2026-10-25):** the watchers are off, and its routes and code are removed, with
 the detector it ran and `/crawl catchup`.
 
@@ -46,6 +46,10 @@ steps, start with `ebayscout/HANDOFF.md`; the standing plan is
 
 ## Process expectations
 
+- **Sessions run on UTC; the operator works in US Eastern.** Use the operator's
+  date in docs and in dated export names (MMDD), and ask if unsure.
+- `REFERENCE.md` holds the glossary, switch list, bucket layout and the
+  contract with buttonmatcher; `README.md` is the doc map.
 - **The image starts FROM buttonmatcher's shared base image**
   (`button-base:<tag>` in `ebayscout/Dockerfile`'s `FROM`; DECISIONS.md #34).
   The base holds every package and the CLIP weights; nothing is installed here.
@@ -144,7 +148,9 @@ Real mistakes from a prior session. Do not repeat them:
 - **Be precise about what each file/artifact IS.** Never hand the user a
   throwaway analysis snapshot as if it were the live data path. Name the
   canonical source of truth (the GCS blobs the service reads/writes:
-  `seen_items.json`, `scan_log/YYYY-MM.jsonl`, `hunt_ids.json`) explicitly.
+  `seen_items.json` and `hunt_ids.json`; `scan_log/YYYY-MM.jsonl` is written
+  only by the frozen legacy CLIP scan, not by the daily feed or `/crawl`, which
+  record each lot in the Logger's `price_log` tab; see `REFERENCE.md`) explicitly.
 - **Before telling the user to run repo code, confirm it's on the branch they'll
   actually run** (usually `main` via a fresh clone). Tooling stranded on an
   unmerged branch won't exist in their checkout.
