@@ -1,11 +1,99 @@
 # eBay Scout — Session Handoff (latest entry 2026-11-11)
 
-Purpose: orient a fresh session fast. Read **`CLAUDE.md`** (hard constraints) and
-**`ebayscout/DECISIONS.md`** (full rationale, sections #1–#34) first; this file is
-the "what we did today + where it stands + what's next" layer on top.
+Purpose: orient a fresh session fast. **Read "Where things stand" first**;
+the dated entries below it are the log, newest first, and an older entry can
+describe a state that has since changed. Hard rules: `CLAUDE.md`. Full design
+rationale: `ebayscout/DECISIONS.md` (#1-#34; read the numbers a change touches,
+not all of it). Lookup tables (glossary, switches, bucket layout, the contract
+with buttonmatcher): `REFERENCE.md`. Doc map: `README.md`.
 
 The title used to read 2026-05-29, which was the date of the OLDEST entry; the
 newest is at the top, as in buttonmatcher's copy.
+
+---
+
+## Where things stand (2026-11-12)
+
+**What the service does today.** The daily scan (Cloud Scheduler, 9 AM ET,
+`POST /run-scan`) and `/crawl <N>` search eBay (Etsy is searched only by the
+frozen scan), skip lots already seen and lots that are relists (`relists.py`), and hand every
+other lot to buttonmatcher (`POST <BUTTONMATCHER_URL>/internal/ebay_scout_lot`,
+`yolo_test.py`), which runs it as an automatic Scout lot in `#inventory-bot`.
+A lot is marked seen once buttonmatcher answers 200. Since 2026-11-12
+buttonmatcher closes, without posting it, a lot whose photo its detector
+counts no button in (a coat, a bodysuit); it still answers 200, so nothing
+changes here. ebayscout writes one
+`handoff` row per lot to the Logger's `price_log` tab (with the seller and
+condition) and posts a one-line summary to `#ebay-checker`. It does no
+detection, matching or valuation of its own on this path; the contract is in
+`REFERENCE.md`. **The legacy CLIP-only scan is frozen** (`_run_daily_scan`,
+reachable only with `DAILY_PIPELINE_FEED=0` or `?year_crawl` / `?era_crawl` /
+`?hunt_ids`; DECISIONS #33). The Gemini pipeline (watchers, `/pipeline/notify`,
+`/internal/pipeline`) was retired and its code removed 2026-10-25.
+
+**Routes** (`main.py`): `POST /run-scan` (Scheduler's OIDC token, or the
+`X-Pipeline-Secret` header), `POST /slack/events` (Slack; only `/crawl` is
+registered), `GET /health`, `GET /test-clip` (`X-Pipeline-Secret`),
+`GET|POST /ebay/account-deletion` (eBay's compliance endpoint), and the
+internal `POST /internal/crawl`, `/internal/seller`, `/internal/shipping`,
+`/internal/purchases`, `/internal/titles` (per-process secret; each is the
+CPU-funded body of a `/crawl` form). Slash command: `/crawl <N>`,
+`/crawl seller <user>`, `/crawl shipping`, `/crawl purchases [days]`,
+`/crawl titles` (2026-11-11: the titles of lots already handed over, for
+buttonmatcher's "not a button" filter; lookups only); `/crawl catchup`
+answers that it is retired.
+
+**Off switches** (environment variables on `ebay-scout`; what is set in
+production is not in the repo, see `REFERENCE.md`, Live configuration):
+
+| Switch | Off does |
+|---|---|
+| `EBAYSCOUT_SKIP_RELISTS=0` | Relisted lots are handed over again |
+| `DAILY_PIPELINE_FEED=0` | The daily run reverts to the frozen CLIP scan |
+| `BUTTONMATCHER_TWIN_GUARD=0` | Edition twins in the frozen scan's alerts are not guarded |
+| `EBAYSCOUT_LOOKALIKE_FLAG=0` | Deal alerts no longer flag a look-alike slogan (frozen scan) |
+| `EBAYSCOUT_BG_DIFF=0`, `EBAYSCOUT_TINY_GUARD=0`, `EBAYSCOUT_BLOB_BUSTER=0` | Detector refinements in `image_proc.py` (frozen scan) |
+| `EBAYSCOUT_RERANK=1` or `BUTTONMATCHER_RERANK=1` | Turns reference re-ranking on (off by default) |
+
+`EBAYSCOUT_YOLO_TEST` does nothing now (removed 2026-10-25). `DAILY_HUNT_BUDGET`
+is a constant in `config.py`, not a variable.
+
+**Files named in the log below that are gone from this repo.** The dated
+entries say "`detect.py`", "`watcher.py`" and so on as they were. Today:
+
+| Gone from ebayscout, and from buttonmatcher too | Where they went |
+|---|---|
+| `catchup.py`, `detect_pipeline.py`, `gemini_resolve.py`, `pipeline_ingest.py`, `tests/test_catchup.py`, `tests/test_pipeline_ingest.py`, `tests/test_price_log_wiring.py` | Deleted with the Gemini pipeline (2026-10-25) |
+| `watcher.py` | Never in this repo: the separate Chromebook watcher, now off |
+
+| Gone from ebayscout, still in buttonmatcher | |
+|---|---|
+| `detect.py` (the detector; ebayscout's copy was `detect_pipeline.py`), `detect_color.py`, `detect_gate.py`, `gemini_geometry.py` (only `synth_box` is left), `label_harvest.py`, `crop_vectors.py`, `GEMINI_PIPELINE.md` (the record of the retired pipeline) | buttonmatcher's repo root |
+| `ebay_handoff.py`, `ocr_reader.py` | buttonmatcher's (they were never ebayscout's: the receiving side of the handoff, and the OCR reader) |
+
+Moved to `docs/archive/` here: `PIPELINE_WATCHER_CONTRACT.md`,
+`GEMINI_TRIAGE_REMOVED.md`, `HOUGH_AND_LOGGING_UPDATES.md`, and the three
+reviews buttonmatcher archived too.
+
+**Shared with buttonmatcher** (byte-identical; `diff` before and after;
+`CLAUDE.md`): `bank_cache.py`, `confusable_slogans.py`, `detect_mask.py`,
+`detect_scale.py`, `edition_twins.py`, `match_logging.py`, `price_log.py`,
+`sheet_retry.py` and the shared docs; `rerank.py` by hand.
+
+**Open.**
+
+1. **Relist false matches.** One seller using one title for different lots would
+   be skipped as a relist; the day's `#ebay-checker` line lists each skipped
+   lot with both links, which is where it shows (2026-11-08).
+2. **Bank-cache phase 2** (both repos): drop the `.pt` banks once the `.npz`
+   twins have carried a few deploys (2026-10-25).
+3. **Rotate `PIPELINE_SHARED_SECRET`** (the operator; both services take the
+   new value; 2026-10-25).
+4. **The frozen scan's code** (`_run_daily_scan`, `_evaluate_listing`, the
+   `?year_crawl` / `?era_crawl` / `?hunt_ids` paths, `scan_log.py`, `hunt_ids.json`)
+   still ships; deleting it is the next cleanup if the operator wants it gone.
+5. Nothing else is pending: buttonmatcher's `HANDOFF.md` is where the matching
+   work (twin ladder, shadows, detector retrain) is tracked.
 
 ---
 
@@ -161,7 +249,7 @@ YOLO week's handoff has carried every lot since 2026-10-15 (`#ebay-checker`:
 - `/pipeline/notify` (it took the watcher's shared secret from the internet),
   `/internal/pipeline` and `/internal/pipelinetest` are removed.
   `process_pipeline_lot` and the rest of the Gemini path stay until the code
-  is removed. `PIPELINE_WATCHER_CONTRACT.md` is the record.
+  is removed. `docs/archive/PIPELINE_WATCHER_CONTRACT.md` is the record.
 - `clip_matcher.init()` reads buttonmatcher's CLIP banks from their `.npz`
   twins when they match the `.pt` in the bucket (`bank_cache.py`, shared,
   phase 1): `torch.load(weights_only=True)` does not stop a planted `.pt`
@@ -929,7 +1017,7 @@ shared byte-identical with buttonmatcher:
 - **`LOGGER_FRONTS.md`** — the register of every front we measure with the
   Logger (instrument, gate, standing), spanning the four docs above. The
   Progress Trackers workbook is generated from it.
-- `HOUGH_AND_LOGGING_UPDATES.md` is historical (frozen); `match_logging.py`
+- `docs/archive/HOUGH_AND_LOGGING_UPDATES.md` is historical (frozen); `match_logging.py`
   is the canonical log schema.
 
 buybot was decommissioned 2026-07-05 — shared files sync across
@@ -1018,7 +1106,7 @@ now takes the lot count instead of two fixed-size endpoints:
 (crc32 sharding by `worker_index`/`worker_count`), each with its own Chrome profile
 (`user_data_dir`) pre-authenticated to that account. Full schema + the Google
 "browser not secure" login workaround + the Gem JSON-validity rule (single quotes
-inside slogans, never raw `"`) are in **`PIPELINE_WATCHER_CONTRACT.md`**.
+inside slogans, never raw `"`) are in **`docs/archive/PIPELINE_WATCHER_CONTRACT.md`**.
 
 Related buttonmatcher work this session: `/reference` 404-race fix (concurrency
 guard + tolerant promotion) and the revert to manual review (`REF_FLOOR=2`).

@@ -1,5 +1,15 @@
 # eBay Button Scout — Deployment Guide
 
+> **Status (2026-11-10):** the deploy, secrets, scheduler and Cloud Build
+> sections below are current. These parts are not, and are marked where they
+> appear: the manual-upload flow and the `/scout` slash command (removed,
+> PR #17, 2026-06-03; only `/crawl` exists), the `?ignore_seen` / `?year_crawl`
+> / `?era_crawl` / needed-year material (the **frozen legacy CLIP scan**, reached
+> only with `DAILY_PIPELINE_FEED=0` or those query flags), and every mention of
+> `/pipeline/notify` and the watcher (retired 2026-10-25). Today the daily
+> `POST /run-scan` hands each unseen lot to buttonmatcher
+> (`ebayscout/HANDOFF.md`, "Where things stand").
+
 A Cloud Run **Service** (gunicorn + Flask, entry point `ebayscout/main.py`)
 that scans eBay + Etsy for Penn State football button lots and posts Slack
 alerts for undervalued lots and listings containing buttons you still need.
@@ -44,7 +54,12 @@ Estimated cost: **~$1/month** (Cloud Run + Cloud Scheduler).
 4. **Install to Workspace** → copy the **Bot User OAuth Token** (`xoxb-...`)
 5. Invite the bot to your `#ebay-scout` channel: `/invite @eBay Scout`
 
-The manual-upload flow also needs the Events API and a slash command pointed at
+> **Removed (PR #17, 2026-06-03):** the manual-upload flow, `/scout`, the
+> `file_shared` / `message.channels` subscriptions and the era buttons below no
+> longer exist in this service; they live in buttonmatcher. Only `/crawl`
+> (`@app.command("/crawl")`) is registered here. Kept as history.
+
+The manual-upload flow also needed the Events API and a slash command pointed at
 the same `/slack/events` endpoint (Slack Bolt routes both through it). The flow
 is two steps: upload a photo → reply `$price | source` → the bot replies
 *"Found ~N buttons, era looks like X — reply `go` or correct count/era"* → reply
@@ -65,7 +80,7 @@ is two steps: upload a photo → reply `$price | source` → the bot replies
 9. **Reinstall to Workspace** (Slack requires a reinstall whenever event
    subscriptions, slash commands, or interactivity change).
 
-> **Why `/scout` exists.** CLIP (~30-60s to load) hydrates in a background
+> **Why `/scout` existed (removed; history).** CLIP (~30-60s to load) hydrates in a background
 > thread, but Cloud Run throttles CPU to ~0% between requests, so on a cold/idle
 > container that thread can stall and uploads would otherwise sit on "waking
 > up". Running `/scout` forces a synchronous load *inside* a request (where CPU
@@ -209,19 +224,22 @@ gcloud run deploy ebay-scout \
 > cannot present Google credentials, so `--no-allow-unauthenticated` (what this
 > page used to say) would break both. Every other route checks for itself:
 > `/run-scan` takes Cloud Scheduler's OIDC token or the `X-Pipeline-Secret`
-> header, `/test-clip` and `/pipeline/notify` take `X-Pipeline-Secret`, and the
-> `/internal/*` routes take only the per-process secret. Until 2026-09-26
+> header, `/test-clip` takes `X-Pipeline-Secret`, and the `/internal/*` routes
+> take only the per-process secret (`/pipeline/notify` is removed). Until 2026-09-26
 > `/run-scan` and `/test-clip` checked nothing.
 
-> **`--timeout=1800` matters.** `/run-scan` **and** `/internal/manual-analysis`
+> **`--timeout=1800` matters.** `/run-scan` **and** `/internal/crawl`
+> (`/crawl <N>`'s run; `/internal/manual-analysis` is removed)
 > run their work **synchronously** inside the request and return 200 only when
 > finished — this is what keeps Cloud Run's CPU allocated for the whole encode
 > (a background thread gets throttled to ~0%). The request timeout (max 3600s)
 > must comfortably exceed the work.
 
 > **`SERVICE_BASE_URL`** (`config.py`, env-overridable) must match this service's
-> own URL — the manual-upload flow self-POSTs to `<SERVICE_BASE_URL>/internal/
-> manual-analysis` to run the analysis in an in-flight request. The default is
+> own URL — the eBay account-deletion endpoint URL is built from it
+> (`config.EBAY_DELETION_ENDPOINT`). (It once also served the manual-upload flow's
+> self-POST to `/internal/manual-analysis`, which is removed; `/crawl` reaches
+> `/internal/crawl` through `SERVICE_URL`.) The default is
 > the current URL; if you rename/relocate the service, set the `SERVICE_BASE_URL`
 > env var on the deploy.
 
@@ -239,8 +257,9 @@ gcloud run deploy ebay-scout \
 ---
 
 ## Create the Cloud Scheduler Trigger (daily 9 AM ET)
-The scheduler calls the service's `/run-scan` endpoint, which kicks off the
-daily scan in a background thread and returns 200 immediately.
+The scheduler calls the service's `/run-scan` endpoint, which runs the daily
+hand-off to buttonmatcher synchronously and returns 200 when it finishes
+(`DAILY_PIPELINE_FEED=1`, the default; `0` runs the frozen CLIP scan).
 ```bash
 SERVICE_URL=$(gcloud run services describe ebay-scout \
   --region=us-east1 --format='value(status.url)')
@@ -329,7 +348,13 @@ After a successful smoke test:
 
 ---
 
-## One-time backfill (re-evaluate existing inventory)
+## One-time backfill (re-evaluate existing inventory) — FROZEN LEGACY SCAN
+
+> **Applies only to the frozen CLIP-only scan** (`DAILY_PIPELINE_FEED=0` or
+> these query flags; DECISIONS.md #33). With the default feed, `ignore_seen`
+> hands every fetched lot to buttonmatcher: see `CRAWL_TRIGGER.md`. Everything
+> from here to "Updating the Excluded Sellers List" is the same: `year_crawl`,
+> `era_crawl`, `NEEDED_MATCH_THRESHOLD`, `seen_items.json` checkpoints.
 
 The scan only processes listings not already in `seen_items.json`. After a
 logic change (e.g. the needed-button detector), use the one-shot backfill to
@@ -340,7 +365,7 @@ windows, not all of eBay's history.
 ```bash
 SERVICE_URL=$(gcloud run services describe ebay-scout \
   --region=us-east1 --format='value(status.url)')
-# The watcher's shared secret (the one mapped to the PIPELINE_SHARED_SECRET env
+# The shared secret (it was the watcher's; the one mapped to the PIPELINE_SHARED_SECRET env
 # var). A personal `gcloud auth print-identity-token` is refused since
 # 2026-09-26: /run-scan accepts only the scheduler's account or this header.
 # If the Secret Manager name differs, find it with:
