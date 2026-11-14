@@ -35,6 +35,11 @@ n_in_lot = 3, so a lot is one observation whatever its duplicates.
                        handed over again; one row like a handoff row, run_id
                        relist-of-<earlier item number>, whose button rows are
                        the lot's (ebayscout's relists.py, 2026-11-08)
+  listing  ticket      ebayscout: /crawl tickets, every listing its ticket
+                       search finds, one row per lot with no year or slogan
+                       (tickets are not identified yet), so it never enters an
+                       average; each pull appends, run_id tickets-<pulled_at>
+                       (ebayscout's ticket_photos.py, 2026-11-14)
 
 Seller and condition
 --------------------

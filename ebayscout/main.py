@@ -612,13 +612,14 @@ def _start_title_recovery(ack) -> None:
 def _start_ticket_photos(ack) -> None:
     """`/crawl tickets`: ack now, pull inside /internal/tickets.
 
-    A few Browse search pages, one photo download per listing and the GCS
-    writes: no CLIP, nothing handed to buttonmatcher, nothing logged or marked
-    seen.  It runs inside its own request, like the other /crawl forms."""
+    A few Browse search pages, one photo download per listing, the GCS writes
+    and one sheet write: no CLIP, nothing handed to buttonmatcher, nothing
+    marked seen.  It runs inside its own request, like the other /crawl forms."""
     ack("🎟️ Saving the first photo of each ticket listing "
-        f"(`{ticket_photos.QUERIES[0]}`) to the bucket for training. Photos "
-        "only: nothing is matched, logged or marked seen. A summary posts "
-        "here when it's done, in a few minutes.")
+        f"(`{ticket_photos.QUERIES[0]}`) to the bucket for training, and its "
+        f"price to the `{price_log.PRICE_TAB}` tab of the Logger sheet (source "
+        f"`{ticket_photos.SOURCE_TICKET}`). Nothing is matched or marked seen. "
+        "A summary posts here when it's done, in a few minutes.")
 
     def _kick():
         base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
@@ -763,14 +764,15 @@ def internal_titles():
 def internal_tickets():
     """Save the first photo of each listing the ticket search finds
     (ticket_photos.py), synchronously in this request: a few Browse search
-    pages, one download per new listing, the photos and an index to GCS, and
-    the index to Slack as a file.
+    pages, one download per new listing, the photos and an index to GCS, the
+    index to Slack as a file, and one price_log row per listing.
     Auth: per-startup X-Internal-Secret header."""
     if not _internal_request_ok(request):
         return jsonify({"status": "forbidden"}), 403
     from google.cloud import storage
     from . import ebay_client, image_proc
     records, saved, kept, failed, index_text, error = {}, [], [], [], "", None
+    items, pulled_at, rows, price_error = [], "", [], None
     try:
         items = ebay_client.find_ticket_listings(
             _get_secret("EBAY_APP_ID"), _get_secret("EBAY_CERT_ID"))
@@ -792,9 +794,19 @@ def internal_tickets():
     except Exception as exc:
         traceback.print_exc()
         error = f"{type(exc).__name__}: {exc}"
+    if not error and items:
+        # After the photos, and on its own: a sheet failure must not lose them.
+        try:
+            rows = ticket_photos.price_rows(items, pulled_at)
+            gclient = sheets_client.get_gspread_client(_get_secret("GOOGLE_SHEETS_JSON"))
+            seller_listings.write_tab(gclient, _get_secret("LOGGER_ID"), "", rows)
+        except Exception as exc:
+            traceback.print_exc()
+            price_error = f"{type(exc).__name__}: {exc}"
     n_index = len(json.loads(index_text)) if index_text else 0
-    text = ticket_photos.summary_text(len(records), len(saved), len(kept),
-                                      len(failed), n_index, error)
+    text = ticket_photos.summary_text(
+        len(records), len(saved), len(kept), len(failed), n_index,
+        0 if price_error else len(rows), error, price_error)
     try:
         if error or not index_text or not notifier.send_file(
                 _slack_token, _channel_id, text,
@@ -805,7 +817,9 @@ def internal_tickets():
     if error:
         return jsonify({"status": "failed", "error": error}), 500
     return jsonify({"status": "ok", "listings": len(records), "saved": len(saved),
-                    "kept": len(kept), "failed": len(failed)}), 200
+                    "kept": len(kept), "failed": len(failed),
+                    "price_rows": 0 if price_error else len(rows),
+                    "price_error": price_error}), 200
 
 
 @flask_app.route("/internal/seller", methods=["POST"])

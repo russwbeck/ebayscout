@@ -108,9 +108,41 @@ def test_merge_index_adds_keeps_and_drops_failures():
     assert sorted(json.loads(tp.merge_index("[1]", recs, []))) == ["1", "2", "3"]
 
 
+def test_price_row_is_a_price_log_listing_row():
+    from ebayscout import price_log as pl
+    item = _item("123", buyingOptions=["FIXED_PRICE"], bidCount=None,
+                 seller={"username": "SomeSeller"}, condition="Used",
+                 shippingOptions=[{"shippingCost": {"value": "4.50"}}])
+    row = tp.price_row(item, "2026-11-14T00:00:00+00:00")
+    assert len(row) == len(pl.PRICE_HEADER)
+    got = dict(zip(pl.PRICE_HEADER, row))
+    assert got["kind"] == pl.KIND_LISTING and got["source"] == "ticket"
+    assert got["ebay_id"] == "123" and got["lot_price"] == 12.5 and got["shipping"] == 4.5
+    assert got["year"] == "" and got["slogan"] == "" and got["price_per_button"] == ""
+    assert got["sale_format"] == pl.FORMAT_BUY_IT_NOW and got["superseded"] == "no"
+    assert got["price_basis"] == pl.BASIS_ASKING
+    assert got["seller"] == "someseller" and got["condition"] == "Used"
+    assert got["run_id"] == "tickets-2026-11-14T00:00:00+00:00"
+    assert got["title"].startswith("1980") and got["listing_url"].endswith("/123")
+    calc = _item("5", shippingOptions=[{"shippingCostType": "CALCULATED"}], bidCount=3)
+    got = dict(zip(pl.PRICE_HEADER, tp.price_row(calc, "t")))
+    assert got["shipping"] == "" and got["bids"] == 3
+    assert tp.price_row({"itemId": "junk"}, "t") is None
+
+
+def test_price_rows_need_no_photo_and_count_each_listing_once():
+    rows = tp.price_rows([_item("1"), _item("2", image=""), _item("1"), {"itemId": "x"}], "t")
+    assert [r[3] for r in rows] == ["1", "2"]
+    assert len(tp.price_rows([_item("1"), _item("2")], "t", limit=1)) == 1
+    assert tp.price_rows(None, "t") == []
+
+
 def test_summary_text():
     assert "failed" in tp.summary_text(0, 0, 0, 0, 0, error="boom")
     assert "no listings" in tp.summary_text(0, 0, 0, 0, 0)
-    text = tp.summary_text(419, 400, 15, 4, 415)
+    text = tp.summary_text(419, 400, 15, 4, 415, 419)
     assert "419 listings" in text and "400 photos" in text and "4 could not" in text
-    assert "could not" not in tp.summary_text(10, 10, 0, 0, 10)
+    assert "419 price rows" in text and "source `ticket`" in text
+    assert "could not" not in tp.summary_text(10, 10, 0, 0, 10, 10)
+    bad = tp.summary_text(10, 10, 0, 0, 10, 0, price_error="quota")
+    assert "not written" in bad and "quota" in bad and "price rows added" not in bad

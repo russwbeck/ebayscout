@@ -41,7 +41,8 @@ CPU-funded body of a `/crawl` form). Slash command: `/crawl <N>`,
 `/crawl seller <user>`, `/crawl shipping`, `/crawl purchases [days]`,
 `/crawl titles` (2026-11-11: the titles of lots already handed over, for
 buttonmatcher's "not a button" filter; lookups only), `/crawl tickets`
-(2026-11-14: ticket listing photos for training; photos only);
+(2026-11-14: ticket listing photos for training, and their prices into
+`price_log`);
 `/crawl catchup` answers that it is retired.
 
 **Off switches** (environment variables on `ebay-scout`; what is set in
@@ -114,7 +115,7 @@ photos on the 10 October purchases. Never commit an `.mbox`.
 
 ---
 
-## 2026-11-14 — `/crawl tickets`: ticket listing photos, for training
+## 2026-11-14 — `/crawl tickets`: ticket listing photos and prices
 
 The operator is considering ticket stubs as a second kind of item. A first
 look at 28 stubs (four photos the operator sent and two Scout lots from
@@ -139,15 +140,27 @@ look at 28 stubs (four photos the operator sent and two Scout lots from
   `ebay_scout/tickets/photos/<item number>.jpg` and
   `ebay_scout/tickets/index.json`. The index also posts to `#ebay-checker`
   as a file, which a web session can read.
+- **Prices** (operator, same day: "the same pricing and sales data as the
+  buttons"): every listing found also gets one `price_log` row, shaped like a
+  `/crawl seller` row: kind `listing`, source `ticket`, price, shipping,
+  format, bids, seller, condition, title, link, run_id `tickets-<pulled_at>`,
+  no year or slogan, so it stays out of the per-slogan averages. Each pull
+  appends, so repeated pulls are a price history. The sheet write comes after
+  the photos and a failure in it is reported without losing them.
+- **Not captured yet:** the game and a price per ticket (nothing identifies
+  or counts tickets), and sales. eBay's search gives no sold prices, and
+  `/scout sold` in buttonmatcher only knows buttons.
+- **Side effect:** `/crawl shipping` fills blank shipping on every listing
+  row, so its next run also looks up the ticket rows with calculated shipping.
 - **Re-runnable:** a photo already in the bucket is skipped and the index is
-  merged, so a later pull adds only new listings.
-- **Cost:** a few search pages and one photo download per new listing, a few
-  minutes. No CLIP, nothing handed to buttonmatcher, nothing in the Logger,
+  merged, so a later pull adds only new listings' photos.
+- **Cost:** a few search pages, one photo download per new listing and one
+  sheet write, a few minutes. No CLIP, nothing handed to buttonmatcher,
   nothing marked seen.
 - **Not built:** the boxes, the detector class, the type check and the
   OCR-to-game matcher. The search will also return basketball and bowl
   tickets, full tickets, passes and reprints.
-- **Tests:** `tests/test_ticket_photos.py` (9, run here). Not run here: the
+- **Tests:** `tests/test_ticket_photos.py` (11, run here). Not run here: the
   route and the eBay call, which need the full stack.
 
 ---

@@ -24,17 +24,31 @@ with the one already there, so a later pull only adds what is new and a listing
 that has ended keeps its photo.  The index also goes to #ebay-checker as a
 file, where a web session (no GCS access) can read it.
 
-It is cheap on purpose: a few search pages and one photo per listing.  Nothing
-goes to CLIP or the detector, nothing is handed to buttonmatcher, nothing is
-written to the Logger and nothing is marked seen, so these listings never
-reach the deal scan through here.  It only runs when someone types it.
+Prices (operator, 2026-11-14: "the same pricing and sales data as the
+buttons").  Every listing the search finds also gets one row in ``price_log``
+in the Logger workbook, like a ``/crawl seller`` row: kind ``listing``, source
+``ticket``, the lot's price, shipping, format, bids, seller, condition, title
+and link, no year or slogan (nothing is identified yet, so it never enters a
+per-slogan average), run_id ``tickets-<pulled_at>``.  Each pull appends, so a
+later pull is a later price for the same item.  What is not captured: which
+game a ticket is from and a price per ticket (nothing identifies or counts
+them yet), and sales (eBay's search gives none; button sales are entered by
+the operator through buttonmatcher's /scout sold, which only knows buttons).
 
-Pure: the caller does the eBay calls, the downloads and the GCS reads and
-writes.
+It is cheap on purpose: a few search pages, one photo per new listing and one
+sheet write.  Nothing goes to CLIP or the detector, nothing is handed to
+buttonmatcher and nothing is marked seen, so these listings never reach the
+deal scan through here.  It only runs when someone types it.
+
+Pure: the caller does the eBay calls, the downloads, the GCS reads and writes
+and the sheet write.
 """
 
 import json
 import re
+
+from . import price_log
+from . import seller_listings
 
 # The operator's own search first (419 listings on 2026-11-14).  Results are
 # deduplicated by item number, so a second wording only adds what it finds.
@@ -46,6 +60,8 @@ MAX_ITEMS = 1000           # a guard on one run's downloads
 PHOTO_PREFIX = "ebay_scout/tickets/photos/"
 INDEX_BLOB = "ebay_scout/tickets/index.json"
 INDEX_FILENAME = "ticket_photos_index.json"
+
+SOURCE_TICKET = "ticket"   # price_log source of these rows
 
 _SIZE = re.compile(r"/s-l\d+\.(jpg|jpeg|png|webp)(?=$|\?)", re.IGNORECASE)
 
@@ -120,6 +136,47 @@ def collect(items, pulled_at, limit=MAX_ITEMS):
     return out
 
 
+def price_row(item, pulled_at):
+    """One price_log row (PRICE_HEADER order) from a Browse item summary, or
+    None without an item number.  Shaped like ``seller_listings.summary_row``:
+    calculated shipping goes in blank, year and slogan stay empty."""
+    number = item_number(item.get("itemId"))
+    if not number:
+        return None
+    try:
+        price = float((item.get("price") or {}).get("value"))
+    except (TypeError, ValueError):
+        price = ""
+    ship = seller_listings.shipping_cost(item)
+    bids = item.get("bidCount")
+    return [
+        pulled_at, price_log.KIND_LISTING, SOURCE_TICKET, number,
+        "", "", "", "",                     # year, slogan, n_in_lot, buttons_detected
+        price, "" if ship == "calculated" else ship,
+        "", "",                             # price_per_button, allocation
+        price_log.listing_format(item.get("buyingOptions")),
+        bids if isinstance(bids, int) else "",
+        "", price_log.BASIS_ASKING, "no",   # sale_date, price_basis, superseded
+        item.get("title") or "", item.get("itemWebUrl") or "",
+        f"tickets-{pulled_at}",
+        str((item.get("seller") or {}).get("username") or "").lower(),
+        item.get("condition") or "",
+    ]
+
+
+def price_rows(items, pulled_at, limit=MAX_ITEMS):
+    """A price_log row for each listing, each once, at most ``limit``."""
+    rows, seen = [], set()
+    for item in items or []:
+        row = price_row(item, pulled_at)
+        if row and row[3] not in seen:
+            seen.add(row[3])
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+    return rows
+
+
 def save_photos(records, exists, fetch, store):
     """Download and keep each record's photo.
 
@@ -179,7 +236,8 @@ def merge_index(old_text, records, failed):
     return json.dumps(index, indent=1, sort_keys=True)
 
 
-def summary_text(n_found, n_saved, n_kept, n_failed, n_index, error=None):
+def summary_text(n_found, n_saved, n_kept, n_failed, n_index, n_prices=0,
+                 error=None, price_error=None):
     """The line posted to #ebay-checker."""
     if error:
         return f"⚠️ `/crawl tickets` failed: {error}"
@@ -189,5 +247,10 @@ def summary_text(n_found, n_saved, n_kept, n_failed, n_index, error=None):
             f"saved, {n_kept} already there")
     if n_failed:
         text += f", {n_failed} could not be downloaded"
-    return (text + f". {n_index} in `{INDEX_BLOB}`, photos under "
-            f"`{PHOTO_PREFIX}`. Nothing was matched, logged or marked seen.")
+    text += f". {n_index} in `{INDEX_BLOB}`, photos under `{PHOTO_PREFIX}`. "
+    if price_error:
+        text += f"⚠️ The prices were not written to the Logger: {price_error}. "
+    else:
+        text += (f"{n_prices} price rows added to `{price_log.PRICE_TAB}` "
+                 f"(source `{SOURCE_TICKET}`). ")
+    return text + "Nothing was matched or marked seen."

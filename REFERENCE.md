@@ -45,9 +45,9 @@ Contents: [Glossary](#glossary) · [Shared schemas](#shared-schemas) ·
   buttonmatcher's `REFERENCE.md`. The daily feed and `/crawl` write no confirmations here:
   buttonmatcher writes them when the operator answers in `#inventory-bot`.
 - **`price_log`** (columns A to V and the `source` values `scan`, `scout`, `scout_sold`,
-  `seller`, `handoff`, `relist`): buttonmatcher's `REFERENCE.md`; the module is the shared
-  `price_log.py`. This service writes `handoff` (every lot handed over), `relist`, and
-  `seller` (`/crawl seller`) rows; the frozen CLIP scan writes `scan` rows.
+  `seller`, `handoff`, `relist`, `ticket`): buttonmatcher's `REFERENCE.md`; the module is the shared
+  `price_log.py`. This service writes `handoff` (every lot handed over), `relist`,
+  `seller` (`/crawl seller`) and `ticket` (`/crawl tickets`) rows; the frozen CLIP scan writes `scan` rows.
 - **`match_log` columns and which are still written:** buttonmatcher's `LOGGING.md`.
 
 ## The contract between the two services
@@ -116,7 +116,7 @@ byte-identical in buttonmatcher (`CLAUDE.md`).
 | `seller_listings.py` | `/crawl seller`: one seller's Penn State listings into the Logger |
 | `shipping_backfill.py` | `/crawl shipping`: fills shipping on existing `price_log` rows |
 | `title_recovery.py` | `/crawl titles` (2026-11-11): looks up on eBay the titles of lots already handed over, from buttonmatcher's saved hand-off log lines, and writes `ebay_scout/titles.json` for buttonmatcher's `tools/ebay_triage.py`. Lookups only; the seller is not written |
-| `ticket_photos.py` | `/crawl tickets` (2026-11-14): saves the first photo of each listing the ticket search finds (`QUERIES`) to `ebay_scout/tickets/`, with an index, for training a ticket stub detector. Photos only: nothing matched, logged, handed over or marked seen |
+| `ticket_photos.py` | `/crawl tickets` (2026-11-14): saves the first photo of each listing the ticket search finds (`QUERIES`) to `ebay_scout/tickets/`, with an index, for training a ticket stub detector, and one `price_log` row per listing (source `ticket`). Nothing matched, handed over or marked seen |
 | `purchases.py` | `/crawl purchases`: the operator's own eBay purchases into the Logger |
 | `price_log.py` | Shared. The `price_log` tab |
 | `match_logging.py` | Shared. `match_log` / `confirm_log` schemas and records |
