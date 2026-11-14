@@ -44,6 +44,7 @@ from . import seen_items
 from . import seller_listings
 from . import shipping_backfill
 from . import title_recovery
+from . import ticket_photos
 from . import confusable_slogans as cfs
 from . import edition_twins as edt
 from .utils import (
@@ -533,6 +534,9 @@ def handle_crawl_command(ack, body):
     if title_recovery.parse_command(raw):
         _start_title_recovery(ack)
         return
+    if ticket_photos.parse_command(raw):
+        _start_ticket_photos(ack)
+        return
     if re.match(r"(?i)^\s*catch-?up\b", raw):
         # Retired 2026-10-25 with the Gemini pipeline: it fed still-listed lots
         # to the Gem so their price rows got written.
@@ -547,7 +551,8 @@ def handle_crawl_command(ack, body):
             f"seller's Penn State prices into the Logger sheet, "
             f"or `/crawl purchases` to pull your own last 90 days of eBay "
             f"purchases into it, or `/crawl titles` to look up the titles of "
-            f"lots already handed over.")
+            f"lots already handed over, or `/crawl tickets` to save the first "
+            f"photo of each ticket listing for training.")
         return
     if n < 1 or n > cap:
         ack(f"`/crawl {raw}` is out of range — pick N between 1 and {cap}. "
@@ -598,6 +603,33 @@ def _start_title_recovery(ack) -> None:
             try:
                 notifier.send_warning(_slack_token, _channel_id,
                                       f"/crawl titles failed to start: {exc}")
+            except Exception:
+                pass
+
+    threading.Thread(target=_kick, daemon=True).start()
+
+
+def _start_ticket_photos(ack) -> None:
+    """`/crawl tickets`: ack now, pull inside /internal/tickets.
+
+    A few Browse search pages, one photo download per listing and the GCS
+    writes: no CLIP, nothing handed to buttonmatcher, nothing logged or marked
+    seen.  It runs inside its own request, like the other /crawl forms."""
+    ack("🎟️ Saving the first photo of each ticket listing "
+        f"(`{ticket_photos.QUERIES[0]}`) to the bucket for training. Photos "
+        "only: nothing is matched, logged or marked seen. A summary posts "
+        "here when it's done, in a few minutes.")
+
+    def _kick():
+        base    = _SERVICE_URL if _SERVICE_URL else "http://localhost:8080"
+        headers = {"X-Internal-Secret": _INTERNAL_SECRET}
+        try:
+            requests.post(f"{base}/internal/tickets", headers=headers, timeout=3500)
+        except Exception as exc:
+            print(f"!!! TICKETS: internal kick failed: {exc}", flush=True)
+            try:
+                notifier.send_warning(_slack_token, _channel_id,
+                                      f"/crawl tickets failed to start: {exc}")
             except Exception:
                 pass
 
@@ -725,6 +757,55 @@ def internal_titles():
     if error:
         return jsonify({"status": "failed", "error": error}), 500
     return jsonify({"status": "ok", "lots": len(jobs), "titles": len(titles)}), 200
+
+
+@flask_app.route("/internal/tickets", methods=["POST"])
+def internal_tickets():
+    """Save the first photo of each listing the ticket search finds
+    (ticket_photos.py), synchronously in this request: a few Browse search
+    pages, one download per new listing, the photos and an index to GCS, and
+    the index to Slack as a file.
+    Auth: per-startup X-Internal-Secret header."""
+    if not _internal_request_ok(request):
+        return jsonify({"status": "forbidden"}), 403
+    from google.cloud import storage
+    from . import ebay_client, image_proc
+    records, saved, kept, failed, index_text, error = {}, [], [], [], "", None
+    try:
+        items = ebay_client.find_ticket_listings(
+            _get_secret("EBAY_APP_ID"), _get_secret("EBAY_CERT_ID"))
+        pulled_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        records = ticket_photos.collect(items, pulled_at)
+        bucket = storage.Client().bucket(config.BUCKET_NAME)
+        saved, kept, failed = ticket_photos.save_photos(
+            records,
+            lambda name: bucket.blob(name).exists(),
+            image_proc.download_image,
+            lambda name, data: bucket.blob(name).upload_from_string(
+                data, content_type="image/jpeg"))
+        index_blob = bucket.blob(ticket_photos.INDEX_BLOB)
+        old = index_blob.download_as_text() if index_blob.exists() else ""
+        index_text = ticket_photos.merge_index(old, records, failed)
+        index_blob.upload_from_string(index_text, content_type="application/json")
+        print(f">>> TICKETS: {len(records)} listings, {len(saved)} photos saved, "
+              f"{len(kept)} already there, {len(failed)} failed.", flush=True)
+    except Exception as exc:
+        traceback.print_exc()
+        error = f"{type(exc).__name__}: {exc}"
+    n_index = len(json.loads(index_text)) if index_text else 0
+    text = ticket_photos.summary_text(len(records), len(saved), len(kept),
+                                      len(failed), n_index, error)
+    try:
+        if error or not index_text or not notifier.send_file(
+                _slack_token, _channel_id, text,
+                ticket_photos.INDEX_FILENAME, index_text):
+            notifier.send_text(_slack_token, _channel_id, text)
+    except Exception as exc:
+        print(f"!!! TICKETS: Slack summary failed: {exc}", flush=True)
+    if error:
+        return jsonify({"status": "failed", "error": error}), 500
+    return jsonify({"status": "ok", "listings": len(records), "saved": len(saved),
+                    "kept": len(kept), "failed": len(failed)}), 200
 
 
 @flask_app.route("/internal/seller", methods=["POST"])

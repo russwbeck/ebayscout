@@ -22,7 +22,8 @@ Current state: the top of `ebayscout/HANDOFF.md`.
   `/crawl seller <username>` (one seller's listings into `price_log`),
   `/crawl shipping` (fill shipping on existing rows), `/crawl purchases [days]` (the
   operator's own eBay purchases), `/crawl titles` (look up the titles of lots
-  already handed over; lookups only).
+  already handed over; lookups only), `/crawl tickets` (save the first photo of
+  each ticket listing to the bucket, for training; photos only).
 - **Handoff:** each lot is `POST`ed to buttonmatcher's `/internal/ebay_scout_lot`;
   the contract is in `REFERENCE.md`.
 - Also `GET /health`, `GET /test-clip` (secret-protected debug) and eBay's

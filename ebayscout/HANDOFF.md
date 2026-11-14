@@ -36,12 +36,13 @@ reachable only with `DAILY_PIPELINE_FEED=0` or `?year_crawl` / `?era_crawl` /
 registered), `GET /health`, `GET /test-clip` (`X-Pipeline-Secret`),
 `GET|POST /ebay/account-deletion` (eBay's compliance endpoint), and the
 internal `POST /internal/crawl`, `/internal/seller`, `/internal/shipping`,
-`/internal/purchases`, `/internal/titles` (per-process secret; each is the
+`/internal/purchases`, `/internal/titles`, `/internal/tickets` (per-process secret; each is the
 CPU-funded body of a `/crawl` form). Slash command: `/crawl <N>`,
 `/crawl seller <user>`, `/crawl shipping`, `/crawl purchases [days]`,
 `/crawl titles` (2026-11-11: the titles of lots already handed over, for
-buttonmatcher's "not a button" filter; lookups only); `/crawl catchup`
-answers that it is retired.
+buttonmatcher's "not a button" filter; lookups only), `/crawl tickets`
+(2026-11-14: ticket listing photos for training; photos only);
+`/crawl catchup` answers that it is retired.
 
 **Off switches** (environment variables on `ebay-scout`; what is set in
 production is not in the repo, see `REFERENCE.md`, Live configuration):
@@ -110,6 +111,44 @@ the output and writes nothing; the rows are checked and merged into the
 Logger's `sales`, `purchases` and `price_log` tabs by hand. October's export
 (38 emails) was the first run: 14 new `sales` rows, 9 `price_log` sold rows,
 photos on the 10 October purchases. Never commit an `.mbox`.
+
+---
+
+## 2026-11-14 — `/crawl tickets`: ticket listing photos, for training
+
+The operator is considering ticket stubs as a second kind of item. A first
+look at 28 stubs (four photos the operator sent and two Scout lots from
+`#inventory-bot`, cut by hand; not in either repo) found:
+
+- **OCR plus the game list names the game.** The stub's printed date and
+  opponent, read by the service's OCR engine and scored against the 1,374
+  games in the operator's "Penn State Memorabilia Tracker" sheet, put 26 of
+  28 on the right row. One tied (no year read) and one matched the right game
+  where the sheet's date is a day off the stub's (1928 George Washington).
+- **CLIP tells stubs of one season's design apart poorly** (1935 and 1936
+  score 0.94), and nothing yet tells a stub from a pass for the same game.
+- **The detector never boxes a stub** (both Scout lots: buttons only), so it
+  needs stub labels before any of this can run on a lot.
+
+`/crawl tickets` is the first step toward those labels, and only that.
+
+- **`/crawl tickets`** (`ticket_photos.py`, `/internal/tickets`,
+  `ebay_client.find_ticket_listings`): searches `vintage penn state ticket`
+  (the operator's search, 419 listings on the site that day; up to 1,000),
+  downloads each listing's first photo at full size and writes
+  `ebay_scout/tickets/photos/<item number>.jpg` and
+  `ebay_scout/tickets/index.json`. The index also posts to `#ebay-checker`
+  as a file, which a web session can read.
+- **Re-runnable:** a photo already in the bucket is skipped and the index is
+  merged, so a later pull adds only new listings.
+- **Cost:** a few search pages and one photo download per new listing, a few
+  minutes. No CLIP, nothing handed to buttonmatcher, nothing in the Logger,
+  nothing marked seen.
+- **Not built:** the boxes, the detector class, the type check and the
+  OCR-to-game matcher. The search will also return basketball and bowl
+  tickets, full tickets, passes and reprints.
+- **Tests:** `tests/test_ticket_photos.py` (9, run here). Not run here: the
+  route and the eBay call, which need the full stack.
 
 ---
 

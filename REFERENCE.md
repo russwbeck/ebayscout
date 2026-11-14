@@ -116,6 +116,7 @@ byte-identical in buttonmatcher (`CLAUDE.md`).
 | `seller_listings.py` | `/crawl seller`: one seller's Penn State listings into the Logger |
 | `shipping_backfill.py` | `/crawl shipping`: fills shipping on existing `price_log` rows |
 | `title_recovery.py` | `/crawl titles` (2026-11-11): looks up on eBay the titles of lots already handed over, from buttonmatcher's saved hand-off log lines, and writes `ebay_scout/titles.json` for buttonmatcher's `tools/ebay_triage.py`. Lookups only; the seller is not written |
+| `ticket_photos.py` | `/crawl tickets` (2026-11-14): saves the first photo of each listing the ticket search finds (`QUERIES`) to `ebay_scout/tickets/`, with an index, for training a ticket stub detector. Photos only: nothing matched, logged, handed over or marked seen |
 | `purchases.py` | `/crawl purchases`: the operator's own eBay purchases into the Logger |
 | `price_log.py` | Shared. The `price_log` tab |
 | `match_logging.py` | Shared. `match_log` / `confirm_log` schemas and records |
@@ -190,6 +191,8 @@ buttonmatcher's `REFERENCE.md` has the full table; this service's part:
 | `ebay_scout/ondemand2_state.json` | Whether `/crawl` has made its first run | R/W |
 | `ebay_scout/title_jobs.txt` | buttonmatcher's `EBAY_LOT: <item> -> Scout job <job>` log lines, saved by the operator from Cloud Logging | R (`/crawl titles`) |
 | `ebay_scout/titles.json` | `{job_id: {item_id, title, condition}}` for the lots still on eBay | W (`/crawl titles`) |
+| `ebay_scout/tickets/photos/<item number>.jpg` | The first photo of each ticket listing, full size | W (`/crawl tickets`) |
+| `ebay_scout/tickets/index.json` | `{item number: {title, price, url, image_url, photo, pulled_at}}`, merged across pulls | R/W (`/crawl tickets`) |
 | `ebay_scout/scan_log/YYYY-MM.jsonl` (and `ebay_scout/scan_log.jsonl`) | The frozen scan's per-lot records; **the daily feed and `/crawl` do not write it** (since 2026-11-08 their lots are recorded in `price_log`) | W (frozen scan only) |
 | `text_db.json`, `vectors.pt`, `text_features.pt` and their `.npz` twins | buttonmatcher's catalog and CLIP banks | R |
 

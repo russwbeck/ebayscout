@@ -410,6 +410,39 @@ def find_seller_listings(
     return list(items.values())
 
 
+def find_ticket_listings(client_id: str, client_secret: str) -> list[dict]:
+    """
+    Raw Browse item summaries for ``/crawl tickets`` (ticket_photos.py): the
+    ticket search, a few pages a query, deduplicated by item id.
+
+    Summaries only (title, price, first image): no getItem.  None of the deal
+    scan's exclusions apply, since these listings are not buttons and are only
+    kept as photos.  Raises when the token or a page fails.
+    """
+    from . import ticket_photos as tp
+
+    token = _get_app_token(client_id, client_secret)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-EBAY-C-MARKETPLACE-ID": _MARKETPLACE,
+    }
+    items: dict[str, dict] = {}
+    for query in tp.QUERIES:
+        for page in range(tp.MAX_PAGES):
+            params = tp.search_params(query, page * tp.PAGE_SIZE)
+            batch = _get_with_retry(config.EBAY_BROWSE_SEARCH_URL, params, headers).json()
+            summaries = batch.get("itemSummaries") or []
+            for item in summaries:
+                iid = item.get("itemId")
+                if iid and iid not in items:
+                    items[iid] = item
+            if len(summaries) < tp.PAGE_SIZE:
+                break
+    print(f">>> EBAY TICKETS: {len(items)} listings over {len(tp.QUERIES)} "
+          f"quer{'y' if len(tp.QUERIES) == 1 else 'ies'}.", flush=True)
+    return list(items.values())
+
+
 def get_purchases(user_token: str, days: int, now=None) -> list[dict]:
     """
     The operator's own purchases from the last ``days`` days, one dict per line
